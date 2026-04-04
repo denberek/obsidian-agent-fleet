@@ -2,11 +2,13 @@
 
 **Turn Obsidian into an AI-powered command center. Create autonomous agents, schedule tasks, chat in real-time, and connect to any MCP service — all from your vault.**
 
+![Agent Fleet Dashboard](screenshot.png)
+
 ---
 
 ## What is Agent Fleet?
 
-Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
+Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Agents are powered by **Claude Code CLI** — works with a Claude Max/Pro subscription or Anthropic API key. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
 
 ### Core Capabilities
 
@@ -48,12 +50,12 @@ The installer automatically finds your Obsidian vaults and copies the plugin fil
 ### Requirements
 
 - **Obsidian** 1.6.0+ (desktop only)
-- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** installed and authenticated:
+- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** — the engine behind all agent execution:
   ```bash
   npm install -g @anthropic-ai/claude-code
   claude  # authenticate on first run
   ```
-- **Claude Max subscription** or Anthropic API key
+- **Claude subscription** (Max or Pro) or **Anthropic API key** — Claude Code works with your existing subscription, no separate API costs. If you're already paying for Claude, you're ready to go.
 
 ### First Launch
 
@@ -336,22 +338,10 @@ Everything is searchable, version-controllable, and fully yours.
 
 ---
 
-## Status Colors
-
-Consistent across the entire UI:
-
-| Status | Color | Meaning |
-|--------|-------|---------|
-| Success | 🟢 Green | Completed successfully |
-| Failure | 🔴 Red | Error or exception |
-| Timeout | 🟠 Orange | Exceeded time limit |
-| Cancelled | 🟡 Yellow | Manually stopped |
-| Pending | 🔵 Blue | Waiting for approval |
-| Running | 🟡 Yellow | Currently executing |
-
----
-
 ## FAQ
+
+**Q: Do I need an API key?**
+Not necessarily. Agent Fleet works with your **Claude Max or Pro subscription** via Claude Code CLI. No separate API key or billing. If you prefer, you can also use an Anthropic API key directly.
 
 **Q: Does it work without internet?**
 No — agents need the Claude API to run. But all your data (agents, tasks, skills, memory) is local markdown.
