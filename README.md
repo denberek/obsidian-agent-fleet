@@ -32,17 +32,17 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 **Via npm (recommended):**
 ```bash
-npm install -g agent-fleet
+npm install -g obsidian-agent-fleet
 ```
 The installer automatically finds your Obsidian vaults and copies the plugin files.
 
 **Via BRAT:**
 1. Install the [BRAT plugin](https://github.com/TfTHacker/obsidian42-brat)
-2. Add beta plugin: `denberek/agent-fleet`
+2. Add beta plugin: `denberek/obsidian-agent-fleet`
 3. Enable Agent Fleet in Settings → Community Plugins
 
 **Manual:**
-1. Download `main.js`, `manifest.json`, `styles.css` from the [latest release](https://github.com/denberek/agent-fleet/releases)
+1. Download `main.js`, `manifest.json`, `styles.css` from the [latest release](https://github.com/denberek/obsidian-agent-fleet/releases)
 2. Create `<vault>/.obsidian/plugins/agent-fleet/`
 3. Copy the 3 files into that folder
 4. Restart Obsidian → Enable Agent Fleet
@@ -76,7 +76,7 @@ The **Fleet Orchestrator** agent is ready — click Chat to ask it to create new
 ### Update
 
 ```bash
-npm update -g agent-fleet
+npm update -g obsidian-agent-fleet
 ```
 
 Or via BRAT: settings → check for updates.
@@ -362,6 +362,6 @@ Yes. Each agent has persistent chat sessions that survive Obsidian restarts via 
 
 ## Links
 
-- [Releases](https://github.com/denberek/agent-fleet/releases)
-- [npm package](https://www.npmjs.com/package/agent-fleet)
-- [Report Issues](https://github.com/denberek/agent-fleet/issues)
+- [Releases](https://github.com/denberek/obsidian-agent-fleet/releases)
+- [npm package](https://www.npmjs.com/package/obsidian-agent-fleet)
+- [Report Issues](https://github.com/denberek/obsidian-agent-fleet/issues)
