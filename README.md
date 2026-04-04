@@ -365,3 +365,7 @@ Yes. Each agent has persistent chat sessions that survive Obsidian restarts via 
 - [Releases](https://github.com/denberek/obsidian-agent-fleet/releases)
 - [npm package](https://www.npmjs.com/package/obsidian-agent-fleet)
 - [Report Issues](https://github.com/denberek/obsidian-agent-fleet/issues)
+
+---
+
+© 2026 Denis Berekchiyan. All rights reserved.
