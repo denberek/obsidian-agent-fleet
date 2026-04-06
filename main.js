@@ -3677,7 +3677,8 @@ var DEFAULT_SETTINGS = {
   maxConcurrentChannelSessions: 5,
   channelIdleTimeoutMinutes: 15,
   channelRateLimitPerConversation: 20,
-  channelRateLimitWindowMinutes: 5
+  channelRateLimitWindowMinutes: 5,
+  defaultFileHashes: {}
 };
 var FLEET_SUBFOLDERS = ["agents", "skills", "tasks", "runs", "memory", "channels"];
 
@@ -15425,6 +15426,14 @@ function asNumber(value, fallback) {
 function asStringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    hash = (hash << 5) - hash + ch | 0;
+  }
+  return hash.toString(36);
+}
 var FleetRepository = class {
   constructor(vault, settings) {
     this.vault = vault;
@@ -15462,6 +15471,39 @@ var FleetRepository = class {
       await this.ensureFolder(parentDir);
       await this.createFileIfMissing(fullPath, file.content);
     }
+  }
+  /**
+   * Update default files that the user hasn't customized. For each default file:
+   * - If missing on disk → write it and store the hash
+   * - If on disk and hash matches stored hash → user hasn't touched it → overwrite
+   * - If on disk and hash differs → user customized it → leave it alone
+   *
+   * Returns the updated hashes map so the caller can persist it to settings.
+   */
+  async updateDefaults(storedHashes) {
+    const root = this.getFleetRoot();
+    const updatedHashes = { ...storedHashes };
+    for (const file of DEFAULT_FILES) {
+      const fullPath = (0, import_obsidian2.normalizePath)(`${root}/${file.path}`);
+      const newHash = simpleHash(file.content);
+      const storedHash = storedHashes[file.path];
+      if (storedHash === newHash) continue;
+      const existing = this.vault.getAbstractFileByPath(fullPath);
+      if (!(existing instanceof import_obsidian2.TFile)) {
+        const parentDir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+        await this.ensureFolder(parentDir);
+        await this.createFileIfMissing(fullPath, file.content);
+        updatedHashes[file.path] = newHash;
+        continue;
+      }
+      const currentContent = await this.vault.cachedRead(existing);
+      const currentHash = simpleHash(currentContent);
+      if (!storedHash || currentHash === storedHash) {
+        await this.vault.modify(existing, file.content);
+        updatedHashes[file.path] = newHash;
+      }
+    }
+    return updatedHashes;
   }
   async loadAll() {
     this.agents.clear();
@@ -23054,7 +23096,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
         grid,
         "radio",
         "No channels configured",
-        "Create a file under _fleet/channels/ to wire an agent to Slack"
+        "Connect an agent to Slack or another chat platform"
       );
       return;
     }
@@ -26847,6 +26889,11 @@ var AgentFleetPlugin = class extends import_obsidian14.Plugin {
     const isFirstRun = await this.repository.ensureFleetStructure();
     if (isFirstRun) {
       await this.repository.ensureSamples();
+    }
+    const updatedHashes = await this.repository.updateDefaults(this.settings.defaultFileHashes ?? {});
+    if (JSON.stringify(updatedHashes) !== JSON.stringify(this.settings.defaultFileHashes ?? {})) {
+      this.settings.defaultFileHashes = updatedHashes;
+      await this.saveData(this.settings);
     }
     await this.runtime.initialize();
     await this.verifyClaudeCli(false);

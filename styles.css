@@ -2242,6 +2242,8 @@
   justify-content: center;
   padding: 60px 20px;
   color: var(--af-text-muted);
+  grid-column: 1 / -1;
+  text-align: center;
 }
 
 .af-empty-icon {
