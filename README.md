@@ -1,6 +1,6 @@
 # Agent Fleet for Obsidian
 
-**Turn Obsidian into an AI-powered command center. Create autonomous agents, schedule tasks, chat in real-time, and connect to any MCP service — all from your vault.**
+**Turn Obsidian into an AI-powered command center. Create autonomous agents, schedule tasks, chat in real-time, connect via Slack, and hook into any MCP service — all from your vault.**
 
 ![Agent Fleet Dashboard](screenshot.png)
 
@@ -12,9 +12,13 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 ### Core Capabilities
 
-🤖 **AI Agents** — Create specialized agents with system prompts, skills, permissions, and memory. Each agent is a folder of markdown files you fully own and control.
+🤖 **AI Agents** — Create specialized agents with system prompts, skills, permissions, heartbeat schedules, and memory. Each agent is a folder of markdown files you fully own and control.
 
 💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works.
+
+📡 **Slack Channels** — Chat with your agents from Slack. Multi-agent routing via `@agent-name` prefix. Native "is thinking..." indicator via Slack Assistants API. Session persistence across restarts.
+
+💓 **Heartbeat** — Autonomous periodic agent runs. Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted to Slack.
 
 📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand.
 
@@ -22,7 +26,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 🧠 **Agent Memory** — Agents persist context across sessions using `[REMEMBER]` tags stored as markdown.
 
-📊 **Dashboard** — Overview with run charts, success rates, activity timeline, fleet status, and streaming output from active agents.
+📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, and streaming output from active agents.
 
 ---
 
@@ -67,11 +71,12 @@ _fleet/
 │   └── fleet-orchestrator/    ← default agent (manages the fleet)
 ├── skills/                    ← 18 built-in skills
 ├── tasks/
+├── channels/
 ├── runs/
 └── memory/
 ```
 
-The **Fleet Orchestrator** agent is ready — click Chat to ask it to create new agents, tasks, or skills.
+The **Fleet Orchestrator** agent is ready — click Chat to ask it to create new agents, tasks, skills, or channels.
 
 ### Update
 
@@ -94,7 +99,8 @@ agents/my-agent/
 ├── agent.md       ← Identity: name, description, system prompt
 ├── config.md      ← Runtime: model, timeout, permissions
 ├── SKILLS.md      ← Agent-specific skills
-└── CONTEXT.md     ← Project context
+├── CONTEXT.md     ← Project context
+└── HEARTBEAT.md   ← Autonomous periodic run instruction (optional)
 ```
 
 **What you can configure:**
@@ -113,6 +119,7 @@ agents/my-agent/
 | **Skills** | Shared skills from the skill library |
 | **MCP Servers** | Which MCP servers the agent can access |
 | **Memory** | Persistent context across sessions via `[REMEMBER]` tags |
+| **Heartbeat** | Autonomous periodic run with schedule and instruction |
 
 **Permission Modes:**
 
@@ -122,6 +129,76 @@ agents/my-agent/
 | `dontAsk` | Only allow-listed commands run |
 | `acceptEdits` | File edits auto-approved, bash blocked unless allowed |
 | `plan` | Read-only — no writes, no commands |
+
+---
+
+### Heartbeat
+
+A heartbeat gives an agent autonomous behavior — what it does when no one is asking. Think periodic monitoring, daily reports, health checks, or trend analysis.
+
+**Setup:** Create a `HEARTBEAT.md` file in the agent's folder, or configure it in the dashboard's agent edit page:
+
+```yaml
+---
+enabled: true
+schedule: "0 */6 * * *"     # every 6 hours
+notify: true                 # Obsidian notice on completion
+channel: my-slack            # post results to Slack (optional)
+---
+
+Check all monitored endpoints for availability and response time.
+Compare with previous checks using your memory. Report anomalies.
+If everything is healthy, respond with a one-line "all clear".
+```
+
+**Key behaviors:**
+- The **"Run Now" button** on any agent with a heartbeat uses the heartbeat instruction (no more generic fallback)
+- **Agent memory integration** — heartbeats can use `[REMEMBER]` tags to track trends across runs
+- **Slack delivery** — results automatically posted to a configured Slack channel
+- **Dashboard** — heartbeat status shown on the agent's Overview tab with enable/disable toggle, schedule, and next run time
+
+---
+
+### Slack Channels
+
+Chat with your agents from Slack — every message flows through the same Claude CLI session pipeline, with full tool use, session persistence, and agent memory.
+
+**Setup:**
+1. Create a Slack app at [api.slack.com](https://api.slack.com/apps) with Socket Mode + Agents & AI Apps enabled
+2. Add credentials in Settings → Agent Fleet → Channel Credentials
+3. Create `_fleet/channels/my-slack.md` with agent binding + user allowlist
+4. DM the bot from Slack
+
+```yaml
+---
+name: my-slack
+type: slack
+default_agent: fleet-orchestrator
+allowed_agents:
+  - fleet-orchestrator
+  - site-monitor
+  - code-reviewer
+enabled: true
+credential_ref: my-slack-creds
+allowed_users:
+  - U0AQW6P37N1
+per_user_sessions: true
+channel_context: |
+  You are being contacted via Slack. Keep replies concise.
+---
+```
+
+**Features:**
+- **Socket Mode** — outbound WebSocket, works behind NAT/firewalls, no public URL needed
+- **Slack Assistants API** — native "is thinking..." indicator, threaded conversations, thread titles
+- **Multi-agent routing** — type `@agent-name: message` to switch agents mid-thread. Each agent gets its own isolated session. `/agents` slash command lists available agents.
+- **Session persistence** — conversations survive Obsidian restarts via `claude --resume`
+- **Idle hibernation** — subprocess eviction after configurable idle time, transparent resume on next message
+- **Allowlist** — only approved Slack users (by user ID) can reach the bot
+- **Rate limiting** — per-conversation sliding window to prevent budget burn
+- **Markdown → mrkdwn** — automatic formatting conversion with fence-aware chunking for long replies
+
+**Important:** Obsidian must be running for channels to work. When Obsidian is closed, the bot goes offline.
 
 ---
 
@@ -139,10 +216,6 @@ The chat panel is a first-class Obsidian view — dock it in the sidebar, center
 - **Streaming Markdown** — responses render in real-time with syntax highlighting
 - **Code Block Copy** — hover any code block for a copy button
 - **Tool Activity** — see which tools the agent is using in real-time
-
-**Keyboard shortcuts:**
-- `Ctrl+Enter` / `Cmd+Enter` — send message
-- Ribbon icon (💬) or command palette to open chat
 
 ---
 
@@ -166,14 +239,6 @@ A kanban view for managing agent tasks with five columns:
 - **Catch Up If Missed** — auto-run overdue tasks when Obsidian opens
 - **Run Now** — execute any task immediately regardless of schedule
 - **Drag & Drop** — move tasks between backlog and scheduled columns
-
-**Creating tasks:**
-
-Full-page form with:
-1. Title + Agent + Priority + Tags
-2. Instructions (what the agent should do)
-3. Optional schedule with frequency picker
-4. "Catch up if missed" toggle for scheduled tasks
 
 ---
 
@@ -200,9 +265,6 @@ One-click browser-based auth for MCP servers:
 - Server cards show status, tool count, type, description
 - Detail slideover with full tool list, descriptions, input schemas, parameters
 - Assign MCP servers to specific agents in the agent editor
-
-**Progress Indicator:**
-Animated loading during discovery with phase-specific feedback (scanning → details → tools → done).
 
 ---
 
@@ -245,20 +307,21 @@ skills/my-skill/
 
 The main overview with:
 
-- **Stat Cards** — active agents, runs today, tokens used, scheduled tasks
+- **Stat Cards** — active agents, runs today, tokens used (with cost), scheduled tasks
 - **Run Activity Chart** — 14-day bar chart with green (success), yellow (cancelled), red (failure)
 - **Success Rate Donut** — overall success percentage
 - **Active Agent Cards** — fixed-height streaming output from running agents with agent→task title
 - **Activity Timeline** — recent runs with status, duration, tokens
 - **Fleet Status** — agent list with quick-run capability
 
-**Additional tabs:**
-- **Agents** — grid of agent cards with stats, toggle, edit, run
-- **Tasks Board** — kanban view (described above)
-- **Run History** — searchable table of all executions
-- **Skills Library** — browse, create, and edit skills
-- **Approvals** — pending tool use approvals
-- **MCP Servers** — server discovery and management
+**Sidebar navigation:**
+- Dashboard / Agents / Tasks Board / Run History / Approvals / Skills / MCP Servers / Channels
+
+**Agent detail page tabs:**
+- Overview (stats, heartbeat status, skills, permissions, recent runs)
+- Config (all settings, system prompt, heartbeat instruction)
+- Runs (full history for this agent)
+- Memory (learned context)
 
 ---
 
@@ -269,7 +332,7 @@ Agents persist context across sessions:
 1. Agent includes `[REMEMBER]important context[/REMEMBER]` in its output
 2. Extracted and appended to `_fleet/memory/<agent-name>.md`
 3. Injected into the agent's prompt on every future run
-4. The Fleet Orchestrator automatically includes memory instructions when creating new agents
+4. Memory is agent-scoped — shared across all conversations including Slack channels
 
 ---
 
@@ -287,7 +350,9 @@ started: 2026-04-03T09:00:00
 completed: 2026-04-03T09:02:30
 duration_seconds: 150
 tokens_used: 4500
+cost_usd: 0.07
 model: claude-opus-4-6
+tags: [heartbeat]
 ---
 
 ## Prompt
@@ -319,15 +384,24 @@ Click any run in the dashboard to see full details in a slideover panel.
 | Catch Up Missed Tasks | `true` | Run overdue tasks on startup |
 | Notification Level | `all` | `all`, `failures-only`, `none` |
 
+### Channel Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Max Concurrent Sessions | `5` | Live claude subprocesses across all channels |
+| Idle Timeout | `15` min | Hibernate sessions after inactivity |
+| Rate Limit | `20` msgs / `5` min | Per-conversation sliding window |
+
 ### File Structure
 
 All data lives in `_fleet/` as plain markdown:
 
 ```
 _fleet/
-├── agents/           Agent folders (agent.md, config.md, etc.)
+├── agents/           Agent folders (agent.md, config.md, HEARTBEAT.md, etc.)
 ├── skills/           Shared skill folders (skill.md, tools.md, etc.)
 ├── tasks/            Task files with frontmatter
+├── channels/         Channel bindings (Slack, etc.)
 ├── runs/             Execution logs by date
 │   └── YYYY-MM-DD/
 ├── memory/           Agent memory files
@@ -357,6 +431,15 @@ Yes, up to `maxConcurrentRuns` (default 2). Additional tasks queue until a slot 
 
 **Q: Does the chat remember previous conversations?**
 Yes. Each agent has persistent chat sessions that survive Obsidian restarts via Claude CLI `--resume`.
+
+**Q: Does the Slack bot work when Obsidian is closed?**
+No. The bot runs inside Obsidian via Socket Mode — when Obsidian is closed, the bot goes offline. Slack buffers messages briefly during short disconnects.
+
+**Q: Can I use multiple agents in Slack?**
+Yes. Type `@agent-name: message` to switch agents within a Slack thread. Each agent maintains its own session. Use `/agents` to see available agents.
+
+**Q: What is a heartbeat?**
+An autonomous periodic run — what an agent does on a schedule without user input. Configured via `HEARTBEAT.md` in the agent's folder. Results can be posted to a Slack channel automatically.
 
 ---
 
