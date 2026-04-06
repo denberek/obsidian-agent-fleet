@@ -26197,7 +26197,7 @@ function channelStatusPillColor(status) {
 
 // src/views/agentChatView.ts
 var import_obsidian13 = require("obsidian");
-var AgentChatView = class extends import_obsidian13.ItemView {
+var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -26225,10 +26225,19 @@ var AgentChatView = class extends import_obsidian13.ItemView {
     return VIEW_TYPE_CHAT;
   }
   getDisplayText() {
-    return "Agent Chat";
+    return this.selectedAgentName ? `Chat: ${this.selectedAgentName}` : "Agent Chat";
   }
   getIcon() {
     return "message-circle";
+  }
+  getState() {
+    return { agentName: this.selectedAgentName ?? null };
+  }
+  async setState(state, result) {
+    await super.setState(state, result);
+    if (state?.agentName && typeof state.agentName === "string") {
+      this.selectAgent(state.agentName);
+    }
   }
   async onOpen() {
     this.plugin.subscribeView(this);
@@ -26244,10 +26253,18 @@ var AgentChatView = class extends import_obsidian13.ItemView {
   }
   /** Called externally to switch to a specific agent */
   selectAgent(agentName) {
+    const leaves = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+    for (const leaf of leaves) {
+      if (leaf.view !== this && leaf.view instanceof _AgentChatView && leaf.view.selectedAgentName === agentName) {
+        this.plugin.app.workspace.revealLeaf(leaf);
+        return;
+      }
+    }
     this.selectedAgentName = agentName;
     if (this.agentSelect) {
       this.agentSelect.value = agentName;
     }
+    this.leaf.updateHeader();
     void this.switchToAgent(agentName);
   }
   /** Build the static shell (header, messages area, input). Only runs once. */
@@ -26267,6 +26284,14 @@ var AgentChatView = class extends import_obsidian13.ItemView {
     this.agentSelect.onchange = () => {
       const val = this.agentSelect.value;
       if (val) {
+        const leaves = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+        for (const leaf of leaves) {
+          if (leaf.view !== this && leaf.view instanceof _AgentChatView && leaf.view.selectedAgentName === val) {
+            this.plugin.app.workspace.revealLeaf(leaf);
+            this.agentSelect.value = this.selectedAgentName ?? "";
+            return;
+          }
+        }
         this.textarea.disabled = false;
         this.textarea.placeholder = "Message the agent\u2026 (Ctrl+Enter to send)";
         void this.switchToAgent(val);
@@ -26390,13 +26415,16 @@ var AgentChatView = class extends import_obsidian13.ItemView {
       this.textarea.disabled = false;
     } else {
       this.selectedAgentName = null;
+      this.leaf.updateHeader();
       this.textarea.disabled = true;
       this.textarea.placeholder = "Select an agent to start chatting\u2026";
       this.showEmptyState();
       return;
     }
+    this.leaf.updateHeader();
     this.textarea.placeholder = "Message the agent\u2026 (Ctrl+Enter to send)";
-    if (this.selectedAgentName && !this.messagesInner.hasChildNodes()) {
+    const hasMessages = this.messagesInner.querySelector(".af-chat-bubble") !== null;
+    if (this.selectedAgentName && !hasMessages) {
       void this.switchToAgent(this.selectedAgentName);
     }
   }
@@ -26423,6 +26451,7 @@ var AgentChatView = class extends import_obsidian13.ItemView {
     const agent = agents.find((a) => a.name === agentName);
     if (!agent) return;
     this.selectedAgentName = agentName;
+    this.leaf.updateHeader();
     this.activityEl = null;
     this.streamingDot = null;
     this.messagesInner.empty();
@@ -26898,7 +26927,14 @@ var AgentFleetPlugin = class extends import_obsidian14.Plugin {
     await this.runtime.initialize();
     await this.verifyClaudeCli(false);
     this.addRibbonIcon("bot", "Agent Fleet Dashboard", () => void this.activateDashboardView());
-    this.addRibbonIcon("message-circle", "Agent Chat", () => void this.openChatView());
+    this.addRibbonIcon("message-circle", "Agent Chat", () => {
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+      if (existing.length > 0) {
+        this.app.workspace.revealLeaf(existing[0]);
+      } else {
+        void this.openChatView();
+      }
+    });
     this.addCommands();
     this.registerVaultHandlers();
     this.registerRuntimeListeners();
@@ -27005,17 +27041,17 @@ ${output}`
     this.app.workspace.revealLeaf(leaf);
   }
   async openChatView(agentName) {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
-    if (existing.length > 0) {
-      const leaf2 = existing[0];
-      this.app.workspace.revealLeaf(leaf2);
-      if (agentName && leaf2.view instanceof AgentChatView) {
-        leaf2.view.selectAgent(agentName);
+    if (agentName) {
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+      for (const leaf2 of existing) {
+        if (leaf2.view instanceof AgentChatView && leaf2.view.selectedAgentName === agentName) {
+          this.app.workspace.revealLeaf(leaf2);
+          return;
+        }
       }
-      return;
     }
     const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
-    await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true });
+    await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true, state: agentName ? { agentName } : {} });
     this.app.workspace.revealLeaf(leaf);
     if (agentName && leaf.view instanceof AgentChatView) {
       leaf.view.selectAgent(agentName);
@@ -27163,6 +27199,18 @@ ${output}`
     this.addCommand({
       id: "open-chat",
       name: "Open Agent Chat",
+      callback: () => {
+        const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+        if (existing.length > 0) {
+          this.app.workspace.revealLeaf(existing[0]);
+        } else {
+          void this.openChatView();
+        }
+      }
+    });
+    this.addCommand({
+      id: "new-chat-tab",
+      name: "New Chat Tab",
       callback: () => void this.openChatView()
     });
     this.addCommand({

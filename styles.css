@@ -2747,7 +2747,7 @@
   gap: 12px;
   padding: 40px 20px;
   color: var(--af-text-muted);
-  min-height: 100%;
+  flex: 1;
 }
 
 .af-chat-view-empty-icon {
