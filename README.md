@@ -163,10 +163,12 @@ If everything is healthy, respond with a one-line "all clear".
 
 Chat with your agents from Slack — every message flows through the same Claude CLI session pipeline, with full tool use, session persistence, and agent memory.
 
-**Setup:**
+> **📖 [Step-by-step Slack setup guide →](SLACK_SETUP.md)** — complete walkthrough from creating the Slack app to sending your first message.
+
+**Quick overview:**
 1. Create a Slack app at [api.slack.com](https://api.slack.com/apps) with Socket Mode + Agents & AI Apps enabled
 2. Add credentials in Settings → Agent Fleet → Channel Credentials
-3. Create `_fleet/channels/my-slack.md` with agent binding + user allowlist
+3. Create a channel via the dashboard or as `_fleet/channels/my-slack.md`
 4. DM the bot from Slack
 
 ```yaml
@@ -445,6 +447,7 @@ An autonomous periodic run — what an agent does on a schedule without user inp
 
 ## Links
 
+- [Slack Setup Guide](SLACK_SETUP.md)
 - [Releases](https://github.com/denberek/obsidian-agent-fleet/releases)
 - [npm package](https://www.npmjs.com/package/obsidian-agent-fleet)
 - [Report Issues](https://github.com/denberek/obsidian-agent-fleet/issues)
