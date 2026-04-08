@@ -16,7 +16,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works.
 
-📡 **Slack Channels** — Chat with your agents from Slack. Multi-agent routing via `@agent-name` prefix. Native "is thinking..." indicator via Slack Assistants API. Session persistence across restarts.
+📡 **Slack & Telegram** — Chat with your agents from Slack or Telegram. Multi-agent routing via `@agent-name` prefix or interactive buttons. Slack Assistants API with native "is thinking..." indicator. Telegram with inline keyboard agent picker and typing dots. Session persistence across restarts.
 
 💓 **Heartbeat** — Autonomous periodic agent runs. Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted to Slack.
 
@@ -201,6 +201,29 @@ channel_context: |
 - **Markdown → mrkdwn** — automatic formatting conversion with fence-aware chunking for long replies
 
 **Important:** Obsidian must be running for channels to work. When Obsidian is closed, the bot goes offline.
+
+---
+
+### Telegram
+
+Chat with your agents from Telegram — simpler setup than Slack, no @mention required in DMs.
+
+**Setup:**
+1. Create a bot via [@BotFather](https://t.me/botfather) — `/newbot`, pick a name and username, copy the token
+2. Add the token in Settings → Agent Fleet → Channel Credentials (type: Telegram)
+3. Create a channel via the dashboard or as `_fleet/channels/my-telegram.md`
+4. Message the bot in Telegram
+
+**Features:**
+- **Zero dependencies** — long-poll via HTTPS, no WebSocket, no SDK
+- **Typing indicator** — `typing...` dots while the agent works (auto-refreshed every 4.5s)
+- **Inline keyboard agent picker** — `/agents` command shows interactive buttons to switch agents
+- **Slash command autocomplete** — commands registered automatically via `setMyCommands`
+- **Agent name prefix** — replies show `[agent-name]` when multiple agents are configured
+- **Group chat support** — add the bot to groups (disable privacy mode via BotFather for full access)
+- **Forum topics** — enable Threaded Mode in BotFather for topic-based conversations
+- **Session persistence** — conversations survive Obsidian restarts via `claude --resume`
+- **4096-char message splitting** — long replies automatically chunked at paragraph boundaries
 
 ---
 
@@ -437,11 +460,14 @@ Yes. Each agent has persistent chat sessions that survive Obsidian restarts via 
 **Q: Does the Slack bot work when Obsidian is closed?**
 No. The bot runs inside Obsidian via Socket Mode — when Obsidian is closed, the bot goes offline. Slack buffers messages briefly during short disconnects.
 
-**Q: Can I use multiple agents in Slack?**
-Yes. Type `@agent-name: message` to switch agents within a Slack thread. Each agent maintains its own session. Use `/agents` to see available agents.
+**Q: Can I use multiple agents in Slack or Telegram?**
+Yes. Type `@agent-name: message` to switch agents, or use `/agents` to get interactive buttons. Each agent maintains its own session. Works in both Slack and Telegram.
+
+**Q: Which is easier to set up — Slack or Telegram?**
+Telegram. Create a bot via @BotFather (30 seconds), paste the token, create a channel. Slack requires creating an app with Socket Mode, scopes, events, and reinstalls after scope changes.
 
 **Q: What is a heartbeat?**
-An autonomous periodic run — what an agent does on a schedule without user input. Configured via `HEARTBEAT.md` in the agent's folder. Results can be posted to a Slack channel automatically.
+An autonomous periodic run — what an agent does on a schedule without user input. Configured via `HEARTBEAT.md` in the agent's folder. Results can be posted to Slack or Telegram automatically.
 
 ---
 

@@ -3655,7 +3655,7 @@ module.exports = __toCommonJS(main_exports);
 var import_child_process4 = require("child_process");
 var import_fs2 = require("fs");
 var import_os = require("os");
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/constants.ts
 var VIEW_TYPE_AGENTS = "agent-fleet-agents";
@@ -16877,48 +16877,62 @@ var AgentFleetSettingTab = class extends import_obsidian4.PluginSettingTab {
     addForm.style.padding = "12px";
     addForm.style.border = "1px dashed var(--background-modifier-border)";
     addForm.style.borderRadius = "6px";
-    addForm.createEl("strong", { text: "Add a Slack credential" });
+    addForm.createEl("strong", { text: "Add a channel credential" });
     const state = {
       ref: "",
+      type: "slack",
       botToken: "",
       appToken: ""
     };
-    new import_obsidian4.Setting(addForm).setName("Reference name").setDesc("Used by `credential_ref` in _fleet/channels/*.md files. Letters, digits, hyphens.").addText(
-      (text) => text.setPlaceholder("my-slack-creds").onChange((value) => {
+    new import_obsidian4.Setting(addForm).setName("Reference name").setDesc("Used by `credential_ref` in _fleet/channels/*.md files.").addText(
+      (text) => text.setPlaceholder("my-creds").onChange((value) => {
         state.ref = value.trim();
       })
     );
-    new import_obsidian4.Setting(addForm).setName("Bot token (xoxb-...)").addText((text) => {
+    new import_obsidian4.Setting(addForm).setName("Type").addDropdown(
+      (dropdown) => dropdown.addOption("slack", "Slack").addOption("telegram", "Telegram").setValue("slack").onChange((value) => {
+        state.type = value;
+        slackFields.style.display = value === "slack" ? "" : "none";
+        telegramFields.style.display = value === "telegram" ? "" : "none";
+      })
+    );
+    const slackFields = addForm.createDiv();
+    new import_obsidian4.Setting(slackFields).setName("Bot token (xoxb-...)").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("xoxb-...").onChange((value) => {
         state.botToken = value.trim();
       });
     });
-    new import_obsidian4.Setting(addForm).setName("App-level token (xapp-...)").setDesc("Generated in your Slack app's Basic Information \u2192 App-Level Tokens, with scope `connections:write`.").addText((text) => {
+    new import_obsidian4.Setting(slackFields).setName("App-level token (xapp-...)").setDesc("Generated in your Slack app's Basic Information \u2192 App-Level Tokens.").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("xapp-...").onChange((value) => {
         state.appToken = value.trim();
       });
     });
+    const telegramFields = addForm.createDiv();
+    telegramFields.style.display = "none";
+    new import_obsidian4.Setting(telegramFields).setName("Bot token").setDesc("From @BotFather on Telegram.").addText((text) => {
+      text.inputEl.type = "password";
+      text.setPlaceholder("123456:ABC-DEF1234...").onChange((value) => {
+        state.botToken = value.trim();
+      });
+    });
     new import_obsidian4.Setting(addForm).addButton(
       (button) => button.setButtonText("Add credential").setCta().onClick(async () => {
-        if (!state.ref || !state.botToken || !state.appToken) {
-          new import_obsidian4.Notice("Fill in the reference name and both tokens.");
+        if (!state.ref || !state.botToken) {
+          new import_obsidian4.Notice("Fill in the reference name and bot token.");
           return;
         }
-        if (!state.botToken.startsWith("xoxb-")) {
-          new import_obsidian4.Notice("Bot token must start with xoxb-.");
-          return;
+        let entry;
+        if (state.type === "telegram") {
+          entry = { type: "telegram", botToken: state.botToken };
+        } else {
+          if (!state.appToken) {
+            new import_obsidian4.Notice("Slack requires both bot token and app-level token.");
+            return;
+          }
+          entry = { type: "slack", botToken: state.botToken, appToken: state.appToken };
         }
-        if (!state.appToken.startsWith("xapp-")) {
-          new import_obsidian4.Notice("App token must start with xapp-.");
-          return;
-        }
-        const entry = {
-          type: "slack",
-          botToken: state.botToken,
-          appToken: state.appToken
-        };
         this.plugin.channelCredentials.set(state.ref, entry);
         new import_obsidian4.Notice(`Added credential \`${state.ref}\`.`);
         this.display();
@@ -20462,6 +20476,15 @@ var ChannelManager = class {
       })
     );
     unsubs.push(adapter.onStatusChange(() => this.notifyStatusListeners()));
+    if (adapter.onAgentSwitch) {
+      unsubs.push(
+        adapter.onAgentSwitch((conversationId, agentName, _userId) => {
+          const convKey = `${channel.name}:${conversationId}`;
+          this.threadBindings.set(convKey, agentName);
+          void this.persistBindings(channel.name);
+        })
+      );
+    }
     this.adapters.set(channel.name, adapter);
     this.adapterConfigs.set(channel.name, channel);
     this.adapterUnsubscribes.set(channel.name, unsubs);
@@ -20569,7 +20592,8 @@ var ChannelManager = class {
           return;
         }
       } else {
-        agentName = this.threadBindings.get(convKey) ?? channel.defaultAgent;
+        const channelUserKey = `${channel.name}:${msg.conversationId.replace(/:thread:[^:]+$/, `:user:${msg.externalUserId}`)}`;
+        agentName = this.threadBindings.get(convKey) ?? this.threadBindings.get(channelUserKey) ?? channel.defaultAgent;
         messageText = msg.text;
       }
       try {
@@ -20594,6 +20618,11 @@ _${toolSummary}_`;
       }
       try {
         if (replyText) {
+          const multiAgent = channel.allowedAgents.length > 1 || channel.allowedAgents.length === 0 && this.resolveAllowedAgents(channel).length > 1;
+          if (multiAgent) {
+            replyText = `*[${agentName}]*
+${replyText}`;
+          }
           await this.deliverReply(adapter, msg.conversationId, replyText);
           metrics.messagesSent += 1;
         }
@@ -20937,6 +20966,7 @@ var SlackAdapter = class {
   reconnectTimer = null;
   inboundHandlers = /* @__PURE__ */ new Set();
   statusHandlers = /* @__PURE__ */ new Set();
+  agentSwitchHandlers = /* @__PURE__ */ new Set();
   /**
    * Per-channel outbound queue to honor Slack's ~1 msg/sec/channel rate limit on
    * chat.postMessage. Keyed by Slack channel id, not conversation id.
@@ -21066,6 +21096,10 @@ var SlackAdapter = class {
     this.statusHandlers.add(handler);
     return () => this.statusHandlers.delete(handler);
   }
+  onAgentSwitch(handler) {
+    this.agentSwitchHandlers.add(handler);
+    return () => this.agentSwitchHandlers.delete(handler);
+  }
   // ═══════════════════════════════════════════════════════
   //  Socket Mode handshake + event loop
   // ═══════════════════════════════════════════════════════
@@ -21145,6 +21179,11 @@ var SlackAdapter = class {
       void this.handleSlashCommand(envelope.payload);
       return;
     }
+    if (envelope.type === "interactive" && envelope.envelope_id) {
+      this.ackEnvelope(envelope.envelope_id);
+      void this.handleInteraction(envelope.payload);
+      return;
+    }
     if (envelope.envelope_id) {
       this.ackEnvelope(envelope.envelope_id);
     }
@@ -21155,29 +21194,98 @@ var SlackAdapter = class {
     const channelId = payload.channel_id;
     const userId = payload.user_id;
     if (!command || !channelId || !userId) return;
-    let text;
     if (command === "/agents") {
-      const agents = this.config.allowedAgents.length > 0 ? this.config.allowedAgents : ["(all agents \u2014 set `allowed_agents` in the channel file to filter)"];
-      const defaultLabel = this.config.defaultAgent;
-      const lines = agents.map((name) => {
-        const marker = name === defaultLabel ? " \u2190 default" : "";
-        return `  \u2022 ${name}${marker}`;
-      });
-      text = `*Available agents in this channel:*
-${lines.join("\n")}
-
-Switch with \`@agent-name: your message\``;
-    } else {
-      text = `Unknown command: ${command}`;
+      const agents = this.config.allowedAgents.length > 0 ? this.config.allowedAgents : [];
+      if (agents.length === 0) {
+        await this.slackApi("chat.postEphemeral", {
+          channel: channelId,
+          user: userId,
+          text: "No agents configured. Set `allowed_agents` in the channel file."
+        });
+        return;
+      }
+      const buttons = agents.map((name) => ({
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: name === this.config.defaultAgent ? `${name} \u2713` : name,
+          emoji: true
+        },
+        action_id: `switch_agent_${name}`,
+        value: name
+      }));
+      const blocks = [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: "*Select an agent to chat with:*" }
+        }
+      ];
+      for (let i = 0; i < buttons.length; i += 5) {
+        blocks.push({
+          type: "actions",
+          elements: buttons.slice(i, i + 5)
+        });
+      }
+      try {
+        await this.slackApi("chat.postEphemeral", {
+          channel: channelId,
+          user: userId,
+          text: "Select an agent",
+          blocks
+        });
+      } catch (err) {
+        console.error(`Agent Fleet: /agents response failed`, err);
+      }
+      return;
     }
     try {
       await this.slackApi("chat.postEphemeral", {
         channel: channelId,
         user: userId,
-        text
+        text: `Unknown command: ${command}`
       });
     } catch (err) {
       console.error(`Agent Fleet: slash command response failed for ${command}`, err);
+    }
+  }
+  async handleInteraction(payload) {
+    if (!payload) return;
+    const type = payload.type;
+    if (type !== "block_actions") return;
+    const actions = payload.actions;
+    const user = payload.user;
+    const channel = payload.channel;
+    const message = payload.message;
+    if (!actions?.length || !user || !channel) return;
+    const action = actions[0];
+    if (!action) return;
+    const actionId = action.action_id;
+    const agentName = action.value;
+    if (!actionId?.startsWith("switch_agent_") || !agentName) return;
+    const userId = user.id;
+    const channelId = channel.id;
+    if (!userId || !channelId) return;
+    const teamId = payload.team?.id ?? "unknown";
+    const channelUserKey = `slack:${teamId}:${channelId}:user:${userId}`;
+    for (const handler of this.agentSwitchHandlers) {
+      try {
+        handler(channelUserKey, agentName, userId);
+      } catch (err) {
+        console.error("Agent Fleet: agent switch handler threw", err);
+      }
+    }
+    try {
+      await this.slackApi("chat.postEphemeral", {
+        channel: channelId,
+        user: userId,
+        text: `Switched to *${agentName}*. Send your next message to start.`
+      });
+    } catch (err) {
+      console.warn("Agent Fleet: agent switch confirmation failed", err);
+    }
+    try {
+      await this.setThreadTitle(channelUserKey, agentName);
+    } catch {
     }
   }
   ackEnvelope(envelopeId) {
@@ -21211,6 +21319,10 @@ Switch with \`@agent-name: your message\``;
     if (!isMessage && !isAppMention) return;
     if (messageEvent.bot_id) return;
     if (!messageEvent.user || !messageEvent.text) return;
+    if (isAppMention) {
+      messageEvent.text = messageEvent.text.replace(/^<@[A-Z0-9]+>\s*/, "").trim();
+      if (!messageEvent.text) return;
+    }
     const conversationId = buildConversationId(messageEvent);
     const threadTs = messageEvent.thread_ts ?? messageEvent.ts;
     if (messageEvent.channel && threadTs) {
@@ -21317,9 +21429,335 @@ Switch with \`@agent-name: your message\``;
   }
 };
 
-// src/views/sidebarView.ts
+// src/services/channels/telegramAdapter.ts
 var import_obsidian9 = require("obsidian");
-var SidebarView = class extends import_obsidian9.ItemView {
+var TG_API = "https://api.telegram.org";
+var TelegramAdapter = class {
+  type = "telegram";
+  config;
+  credential;
+  status = "stopped";
+  stopping = false;
+  pollOffset = 0;
+  pollTimer = null;
+  backoffMs = 1e3;
+  typingIntervals = /* @__PURE__ */ new Map();
+  inboundHandlers = /* @__PURE__ */ new Set();
+  statusHandlers = /* @__PURE__ */ new Set();
+  agentSwitchHandlers = /* @__PURE__ */ new Set();
+  constructor(config, credential) {
+    if (credential.type !== "telegram") {
+      throw new Error(`TelegramAdapter requires a telegram credential, got ${credential.type}`);
+    }
+    this.config = config;
+    this.credential = credential;
+  }
+  // ═══════════════════════════════════════════════════════
+  //  Lifecycle
+  // ═══════════════════════════════════════════════════════
+  async start() {
+    this.stopping = false;
+    try {
+      const resp = await this.tgApi("getUpdates", {
+        offset: -1,
+        limit: 1
+      });
+      const last = resp.result?.[0];
+      if (last) {
+        this.pollOffset = last.update_id + 1;
+      }
+    } catch {
+    }
+    try {
+      await this.tgApi("setMyCommands", {
+        commands: [
+          { command: "agents", description: "List available agents" }
+        ]
+      });
+    } catch {
+    }
+    this.setStatus("connected");
+    this.poll();
+  }
+  async stop() {
+    this.stopping = true;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    for (const [, interval] of this.typingIntervals) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
+    this.setStatus("stopped");
+  }
+  getStatus() {
+    return this.status;
+  }
+  // ═══════════════════════════════════════════════════════
+  //  Outbound
+  // ═══════════════════════════════════════════════════════
+  async send(conversationId, text) {
+    const chatId = chatIdFromConversationId(conversationId);
+    if (!chatId) return;
+    const chunks = splitText(text, 4096);
+    for (const chunk of chunks) {
+      await this.tgApi("sendMessage", {
+        chat_id: chatId,
+        text: chunk,
+        parse_mode: "Markdown"
+      });
+    }
+  }
+  async setTyping(conversationId, on) {
+    const chatId = chatIdFromConversationId(conversationId);
+    if (!chatId) return;
+    if (on) {
+      try {
+        await this.tgApi("sendChatAction", { chat_id: chatId, action: "typing" });
+      } catch (err) {
+        console.warn("Agent Fleet: Telegram sendChatAction failed", err);
+      }
+      const interval = setInterval(() => {
+        void this.tgApi("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {
+        });
+      }, 4500);
+      this.typingIntervals.set(conversationId, interval);
+    } else {
+      const interval = this.typingIntervals.get(conversationId);
+      if (interval) {
+        clearInterval(interval);
+        this.typingIntervals.delete(conversationId);
+      }
+    }
+  }
+  async setThreadTitle(_conversationId, _title) {
+  }
+  async broadcast(text) {
+    const userId = this.config.allowedUsers[0];
+    if (!userId) return;
+    try {
+      const chunks = splitText(text, 4096);
+      for (const chunk of chunks) {
+        await this.tgApi("sendMessage", {
+          chat_id: userId,
+          text: chunk,
+          parse_mode: "Markdown"
+        });
+      }
+    } catch (err) {
+      console.error(`Agent Fleet: Telegram broadcast failed on ${this.config.name}`, err);
+    }
+  }
+  // ═══════════════════════════════════════════════════════
+  //  Event subscription
+  // ═══════════════════════════════════════════════════════
+  onInbound(handler) {
+    this.inboundHandlers.add(handler);
+    return () => this.inboundHandlers.delete(handler);
+  }
+  onStatusChange(handler) {
+    this.statusHandlers.add(handler);
+    return () => this.statusHandlers.delete(handler);
+  }
+  onAgentSwitch(handler) {
+    this.agentSwitchHandlers.add(handler);
+    return () => this.agentSwitchHandlers.delete(handler);
+  }
+  // ═══════════════════════════════════════════════════════
+  //  Long-polling loop
+  // ═══════════════════════════════════════════════════════
+  poll() {
+    if (this.stopping) return;
+    void (async () => {
+      try {
+        const resp = await this.tgApi("getUpdates", {
+          offset: this.pollOffset,
+          timeout: 30,
+          // Long-poll: Telegram holds the connection for 30s
+          allowed_updates: ["message", "callback_query"]
+        });
+        if (resp.ok && resp.result) {
+          for (const update of resp.result) {
+            this.pollOffset = update.update_id + 1;
+            if (update.callback_query) {
+              void this.handleCallbackQuery(update.callback_query);
+              continue;
+            }
+            if (update.message) {
+              this.routeMessage(update.message);
+            }
+          }
+        }
+        this.backoffMs = 1e3;
+        if (this.status !== "connected") this.setStatus("connected");
+      } catch (err) {
+        console.warn(`Agent Fleet: Telegram poll failed on ${this.config.name}`, err);
+        if (this.status !== "error" && this.status !== "needs-auth") {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.setStatus(msg.includes("401") || msg.includes("Unauthorized") ? "needs-auth" : "error");
+        }
+        await new Promise((r) => setTimeout(r, this.backoffMs));
+        this.backoffMs = Math.min(3e4, this.backoffMs * 2);
+      }
+      if (!this.stopping) {
+        this.pollTimer = setTimeout(() => this.poll(), 100);
+      }
+    })();
+  }
+  routeMessage(message) {
+    if (!message.text || !message.from) return;
+    if (message.text === "/agents" || message.text.startsWith("/agents@")) {
+      void this.handleAgentsCommand(message);
+      return;
+    }
+    if (message.text.startsWith("/")) return;
+    const userId = String(message.from.id);
+    const chatId = String(message.chat.id);
+    const conversationId = `tg:${chatId}`;
+    const msg = {
+      conversationId,
+      externalUserId: userId,
+      text: message.text,
+      timestamp: new Date(message.date * 1e3).toISOString(),
+      meta: {
+        telegram_chat_id: chatId,
+        telegram_message_id: message.message_id,
+        chat_type: message.chat.type
+      }
+    };
+    for (const handler of this.inboundHandlers) {
+      try {
+        handler(msg);
+      } catch (err) {
+        console.error("Agent Fleet: Telegram inbound handler threw", err);
+      }
+    }
+  }
+  // ═══════════════════════════════════════════════════════
+  //  /agents command — inline keyboard buttons
+  // ═══════════════════════════════════════════════════════
+  async handleAgentsCommand(message) {
+    const chatId = String(message.chat.id);
+    const agents = this.config.allowedAgents.length > 0 ? this.config.allowedAgents : [];
+    if (agents.length === 0) {
+      await this.tgApi("sendMessage", {
+        chat_id: chatId,
+        text: "No agents configured. Set `allowed_agents` in the channel file."
+      });
+      return;
+    }
+    const keyboard = agents.map((name) => [{
+      text: name === this.config.defaultAgent ? `${name} \u2713` : name,
+      callback_data: `switch:${name}`
+    }]);
+    await this.tgApi("sendMessage", {
+      chat_id: chatId,
+      text: "*Select an agent to chat with:*",
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  }
+  async handleCallbackQuery(query) {
+    const data = query.data;
+    if (!data?.startsWith("switch:")) {
+      await this.tgApi("answerCallbackQuery", { callback_query_id: query.id });
+      return;
+    }
+    const agentName = data.slice("switch:".length);
+    const userId = String(query.from.id);
+    const chatId = String(query.message?.chat?.id ?? query.from.id);
+    const conversationId = `tg:${chatId}`;
+    for (const handler of this.agentSwitchHandlers) {
+      try {
+        handler(conversationId, agentName, userId);
+      } catch (err) {
+        console.error("Agent Fleet: Telegram agent switch handler threw", err);
+      }
+    }
+    await this.tgApi("answerCallbackQuery", {
+      callback_query_id: query.id,
+      text: `Switched to ${agentName}`
+    });
+    if (query.message) {
+      const agents = this.config.allowedAgents.length > 0 ? this.config.allowedAgents : [];
+      const keyboard = agents.map((name) => [{
+        text: name === agentName ? `${name} \u2713` : name,
+        callback_data: `switch:${name}`
+      }]);
+      try {
+        await this.tgApi("editMessageText", {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          text: `*Active agent: ${agentName}*`,
+          parse_mode: "Markdown",
+          reply_markup: { inline_keyboard: keyboard }
+        });
+      } catch {
+      }
+    }
+  }
+  // ═══════════════════════════════════════════════════════
+  //  Telegram Bot API
+  // ═══════════════════════════════════════════════════════
+  async tgApi(method, params) {
+    const url = `${TG_API}/bot${this.credential.botToken}/${method}`;
+    const res = await (0, import_obsidian9.requestUrl)({
+      url,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify(params),
+      throw: false
+    });
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Telegram ${method} ${res.status} Unauthorized`);
+    }
+    if (res.status === 429) {
+      const retryAfter = res.json?.parameters;
+      const wait = retryAfter?.retry_after ?? 1;
+      await new Promise((r) => setTimeout(r, wait * 1e3));
+      return this.tgApi(method, params);
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`Telegram ${method} HTTP ${res.status}: ${res.text}`);
+    }
+    return res.json;
+  }
+  setStatus(next) {
+    if (this.status === next) return;
+    this.status = next;
+    for (const h of this.statusHandlers) {
+      try {
+        h(next);
+      } catch {
+      }
+    }
+  }
+};
+function chatIdFromConversationId(conversationId) {
+  if (conversationId.startsWith("tg:")) {
+    return conversationId.slice(3);
+  }
+  return null;
+}
+function splitText(text, limit) {
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let cutAt = remaining.lastIndexOf("\n\n", limit);
+    if (cutAt < limit / 2) cutAt = remaining.lastIndexOf("\n", limit);
+    if (cutAt < limit / 2) cutAt = limit;
+    chunks.push(remaining.slice(0, cutAt));
+    remaining = remaining.slice(cutAt).replace(/^\n+/, "");
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+// src/views/sidebarView.ts
+var import_obsidian10 = require("obsidian");
+var SidebarView = class extends import_obsidian10.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -21366,7 +21804,7 @@ var SidebarView = class extends import_obsidian9.ItemView {
     for (const item of navItems) {
       const navEl = navSection.createDiv({ cls: "af-sidebar-nav-item" });
       const iconEl = navEl.createSpan({ cls: "af-sidebar-nav-icon" });
-      (0, import_obsidian9.setIcon)(iconEl, item.icon);
+      (0, import_obsidian10.setIcon)(iconEl, item.icon);
       navEl.createSpan({ cls: "af-sidebar-nav-label", text: item.label });
       const badgeValue = item.badge?.();
       if (badgeValue !== void 0 && badgeValue > 0) {
@@ -21395,7 +21833,7 @@ var SidebarView = class extends import_obsidian9.ItemView {
   renderQuickAction(container, icon, label, onClick) {
     const item = container.createDiv({ cls: "af-sidebar-action-item" });
     const iconEl = item.createSpan({ cls: "af-sidebar-action-icon" });
-    (0, import_obsidian9.setIcon)(iconEl, icon);
+    (0, import_obsidian10.setIcon)(iconEl, icon);
     item.createSpan({ text: label });
     item.onclick = onClick;
   }
@@ -21416,10 +21854,10 @@ var SidebarView = class extends import_obsidian9.ItemView {
 };
 
 // src/views/dashboardView.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/modals/iconPickerModal.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 var POPULAR_ICONS = [
   "bot",
   "brain",
@@ -21459,7 +21897,7 @@ var POPULAR_ICONS = [
   "flag",
   "bookmark"
 ];
-var IconPickerModal = class extends import_obsidian10.Modal {
+var IconPickerModal = class extends import_obsidian11.Modal {
   constructor(app, currentIcon, onSelect) {
     super(app);
     this.onSelect = onSelect;
@@ -21470,7 +21908,7 @@ var IconPickerModal = class extends import_obsidian10.Modal {
   allIcons = [];
   gridContainer;
   onOpen() {
-    this.allIcons = (0, import_obsidian10.getIconIds)().sort();
+    this.allIcons = (0, import_obsidian11.getIconIds)().sort();
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("af-icon-picker-modal");
@@ -21513,7 +21951,7 @@ var IconPickerModal = class extends import_obsidian10.Modal {
     });
     item.setAttribute("title", iconName);
     item.setAttribute("aria-label", iconName);
-    (0, import_obsidian10.setIcon)(item, iconName);
+    (0, import_obsidian11.setIcon)(item, iconName);
     item.addEventListener("click", () => {
       this.selectedIcon = iconName;
       this.onSelect(iconName);
@@ -21526,10 +21964,10 @@ var IconPickerModal = class extends import_obsidian10.Modal {
 };
 
 // src/utils/icons.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 function createIcon(parent, iconName, cls) {
   const el = parent.createSpan({ cls: cls ?? "af-icon" });
-  (0, import_obsidian11.setIcon)(el, iconName);
+  (0, import_obsidian12.setIcon)(el, iconName);
   return el;
 }
 
@@ -21834,7 +22272,7 @@ var ADAPTER_MODELS = {
     { value: "default", label: "Default" }
   ]
 };
-var FleetDashboardView = class extends import_obsidian12.ItemView {
+var FleetDashboardView = class extends import_obsidian13.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -21960,14 +22398,14 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     title.createSpan({ text: "Agent Fleet" });
     const breadcrumb = bar.createDiv({ cls: "af-breadcrumb" });
     const chevron1 = breadcrumb.createSpan({ cls: "af-breadcrumb-sep" });
-    (0, import_obsidian12.setIcon)(chevron1, "chevron-right");
+    (0, import_obsidian13.setIcon)(chevron1, "chevron-right");
     const addCrumb = (label, page, ctx) => {
       const el = breadcrumb.createSpan({ cls: page ? "af-breadcrumb-link" : "", text: label });
       if (page) el.onclick = () => this.navigate(page, ctx);
     };
     const addSep = () => {
       const s = breadcrumb.createSpan({ cls: "af-breadcrumb-sep" });
-      (0, import_obsidian12.setIcon)(s, "chevron-right");
+      (0, import_obsidian13.setIcon)(s, "chevron-right");
     };
     switch (this.currentPage) {
       case "agent-detail":
@@ -22061,7 +22499,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
         cls: `af-tab-item${isActive ? " active" : ""}`
       });
       const tabIcon = tab.createSpan({ cls: "af-tab-icon" });
-      (0, import_obsidian12.setIcon)(tabIcon, PAGE_ICON_NAMES[page]);
+      (0, import_obsidian13.setIcon)(tabIcon, PAGE_ICON_NAMES[page]);
       tab.appendText(page === "dashboard" ? "Overview" : PAGE_LABELS[page]);
       if (page === "agents") {
         tab.createSpan({ cls: "af-badge", text: String(snapshot.agents.length) });
@@ -22229,7 +22667,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
   renderApprovalBanner(container, run, tool) {
     const banner = container.createDiv({ cls: "af-approval-banner" });
     const iconEl = banner.createDiv({ cls: "af-approval-icon" });
-    (0, import_obsidian12.setIcon)(iconEl, "shield-check");
+    (0, import_obsidian13.setIcon)(iconEl, "shield-check");
     const text = banner.createDiv({ cls: "af-approval-text" });
     text.createDiv({ cls: "af-approval-title", text: `${run.agent} wants to run: ${tool}` });
     text.createDiv({ cls: "af-approval-desc", text: `Approval required for tool: ${tool}` });
@@ -22271,7 +22709,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const item = container.createDiv({ cls: "af-timeline-item" });
     const iconCls = this.statusToTimelineClass(run.status);
     const iconEl = item.createDiv({ cls: `af-tl-icon ${iconCls}` });
-    (0, import_obsidian12.setIcon)(iconEl, this.statusToIconName(run.status));
+    (0, import_obsidian13.setIcon)(iconEl, this.statusToIconName(run.status));
     const body = item.createDiv({ cls: "af-tl-body" });
     const titleEl = body.createDiv({ cls: "af-tl-title" });
     titleEl.createSpan({ cls: "af-agent-tag", text: run.agent });
@@ -22386,7 +22824,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     nameRow.appendText(agent.name);
     if (agent.heartbeatEnabled && agent.heartbeatSchedule) {
       const hbIcon = nameRow.createSpan({ cls: "af-heartbeat-indicator" });
-      (0, import_obsidian12.setIcon)(hbIcon, "heart-pulse");
+      (0, import_obsidian13.setIcon)(hbIcon, "heart-pulse");
       hbIcon.title = `Heartbeat: ${agent.heartbeatSchedule}`;
     }
     titleBlock.createDiv({ cls: "af-agent-card-desc", text: agent.description ?? "No description" });
@@ -22563,7 +23001,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
         const isOn = hbToggle.hasClass("on");
         await this.plugin.repository.updateHeartbeat(agent.name, { enabled: !isOn });
         await this.plugin.refreshFromVault();
-        new import_obsidian12.Notice(`Heartbeat ${!isOn ? "enabled" : "paused"} for ${agent.name}`);
+        new import_obsidian13.Notice(`Heartbeat ${!isOn ? "enabled" : "paused"} for ${agent.name}`);
       };
       const hbBody = hbSection.createDiv({ cls: "af-config-form" });
       this.renderConfigRow(hbBody, "Schedule", cronToHuman(agent.heartbeatSchedule));
@@ -22687,7 +23125,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     for (const run of runs) {
       const item = container.createDiv({ cls: "af-run-list-item" });
       const statusIcon = item.createDiv({ cls: `af-tl-icon ${this.statusToTimelineClass(run.status)}` });
-      (0, import_obsidian12.setIcon)(statusIcon, this.statusToIconName(run.status));
+      (0, import_obsidian13.setIcon)(statusIcon, this.statusToIconName(run.status));
       const body = item.createDiv({ cls: "af-tl-body" });
       const titleRow = body.createDiv({ cls: "af-tl-title" });
       titleRow.createSpan({ text: run.task });
@@ -22846,22 +23284,22 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     if (!task) return;
     if (columnId === "backlog") {
       void this.setTaskEnabled(task, false).then(() => {
-        new import_obsidian12.Notice(`Task "${taskId}" moved to backlog (disabled)`);
+        new import_obsidian13.Notice(`Task "${taskId}" moved to backlog (disabled)`);
       });
     } else if (columnId === "scheduled") {
       if (!task.schedule && !task.runAt) {
-        new import_obsidian12.Notice(`Task "${taskId}" needs a schedule. Open task details to set one.`);
+        new import_obsidian13.Notice(`Task "${taskId}" needs a schedule. Open task details to set one.`);
         this.navigate("task-detail", taskId);
         return;
       }
       void this.setTaskEnabled(task, true).then(() => {
-        new import_obsidian12.Notice(`Task "${taskId}" moved to scheduled (enabled)`);
+        new import_obsidian13.Notice(`Task "${taskId}" moved to scheduled (enabled)`);
       });
     }
   }
   async setTaskEnabled(task, enabled) {
     const file = this.plugin.app.vault.getAbstractFileByPath(task.filePath);
-    if (!file || !(file instanceof import_obsidian12.TFile)) return;
+    if (!file || !(file instanceof import_obsidian13.TFile)) return;
     const content = await this.plugin.app.vault.cachedRead(file);
     const { frontmatter, body } = parseMarkdownWithFrontmatter(content);
     frontmatter.enabled = enabled;
@@ -22873,7 +23311,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     if (draggable) {
       makeDraggable(card, task.taskId);
       const gripEl = card.createDiv({ cls: "af-kanban-card-grip" });
-      (0, import_obsidian12.setIcon)(gripEl, "grip-vertical");
+      (0, import_obsidian13.setIcon)(gripEl, "grip-vertical");
     }
     const titleRow = card.createDiv({ cls: "af-kanban-card-header" });
     titleRow.createDiv({ cls: "af-kanban-card-title", text: task.taskId });
@@ -22885,7 +23323,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     statusDot.title = isActive ? "Active" : "Inactive";
     const agentRow = card.createDiv({ cls: "af-kanban-card-agent" });
     const agentIconEl = agentRow.createSpan({ cls: "af-kanban-card-agent-icon" });
-    (0, import_obsidian12.setIcon)(agentIconEl, "bot");
+    (0, import_obsidian13.setIcon)(agentIconEl, "bot");
     agentRow.createSpan({ cls: "af-kanban-card-agent-name", text: task.agent });
     const footer = card.createDiv({ cls: "af-kanban-card-footer" });
     const scheduleEl = footer.createSpan({ cls: "af-kanban-card-schedule" });
@@ -22905,7 +23343,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     card.createDiv({ cls: "af-kanban-card-title", text: task.taskId });
     const agentRow = card.createDiv({ cls: "af-kanban-card-agent" });
     const agentIconEl = agentRow.createSpan({ cls: "af-kanban-card-agent-icon" });
-    (0, import_obsidian12.setIcon)(agentIconEl, "bot");
+    (0, import_obsidian13.setIcon)(agentIconEl, "bot");
     agentRow.createSpan({ cls: "af-kanban-card-agent-name", text: task.agent });
     const agent = this.plugin.runtime.getSnapshot().agents.find((a) => a.name === task.agent);
     const timeout = agent?.timeout ?? 300;
@@ -22923,12 +23361,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const elapsedSec = Math.round(elapsed);
     scheduleEl.appendText(` ${elapsedSec}s / ${timeout}s`);
     const stopBtn = footer.createEl("button", { cls: "af-kanban-stop-btn" });
-    (0, import_obsidian12.setIcon)(stopBtn, "square");
+    (0, import_obsidian13.setIcon)(stopBtn, "square");
     stopBtn.title = "Stop task";
     stopBtn.onclick = (e) => {
       e.stopPropagation();
       this.plugin.runtime.abortAgentRun(task.agent);
-      new import_obsidian12.Notice(`Stopped task "${task.taskId}"`);
+      new import_obsidian13.Notice(`Stopped task "${task.taskId}"`);
     };
     const interval = setInterval(() => {
       const now = (Date.now() - startTime) / 1e3;
@@ -22936,7 +23374,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       bar.style.width = `${newPct}%`;
       const nowSec = Math.round(now);
       scheduleEl.textContent = "";
-      (0, import_obsidian12.setIcon)(scheduleEl, "loader-2");
+      (0, import_obsidian13.setIcon)(scheduleEl, "loader-2");
       scheduleEl.appendText(` ${nowSec}s / ${timeout}s`);
     }, 1e3);
     this.streamingUnsubscribes.push(() => clearInterval(interval));
@@ -22946,7 +23384,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     card.createDiv({ cls: "af-kanban-card-title", text: run.task });
     const agentRow = card.createDiv({ cls: "af-kanban-card-agent" });
     const agentIconEl = agentRow.createSpan({ cls: "af-kanban-card-agent-icon" });
-    (0, import_obsidian12.setIcon)(agentIconEl, "bot");
+    (0, import_obsidian13.setIcon)(agentIconEl, "bot");
     agentRow.createSpan({ cls: "af-kanban-card-agent-name", text: run.agent });
     const footer = card.createDiv({ cls: "af-kanban-card-footer" });
     const scheduleEl = footer.createSpan({ cls: "af-kanban-card-schedule" });
@@ -22962,7 +23400,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     card.createDiv({ cls: "af-kanban-card-title", text: run.task });
     const agentRow = card.createDiv({ cls: "af-kanban-card-agent" });
     const agentIconEl = agentRow.createSpan({ cls: "af-kanban-card-agent-icon" });
-    (0, import_obsidian12.setIcon)(agentIconEl, "bot");
+    (0, import_obsidian13.setIcon)(agentIconEl, "bot");
     agentRow.createSpan({ cls: "af-kanban-card-agent-name", text: run.agent });
     const errorText = isCancelled ? `Stopped after ${run.durationSeconds}s` : run.status === "timeout" ? `Timeout after ${run.durationSeconds}s` : truncate(run.output, 60);
     const errorDiv = card.createDiv({ cls: "af-kanban-card-error" });
@@ -23015,7 +23453,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       cls: `af-status-badge ${this.statusToBadgeClass(run.status)}`
     });
     const badgeIcon = badge.createSpan();
-    (0, import_obsidian12.setIcon)(badgeIcon, this.statusToIconName(run.status));
+    (0, import_obsidian13.setIcon)(badgeIcon, this.statusToIconName(run.status));
     badge.appendText(` ${this.statusToBadgeText(run.status)}`);
     const agentTd = row.createEl("td", { cls: "af-agent-link" });
     agentTd.setText(run.agent);
@@ -23060,7 +23498,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const card = container.createDiv({ cls: "af-skill-card" });
     const cardHeader = card.createDiv({ cls: "af-skill-card-header" });
     const iconEl = cardHeader.createDiv({ cls: "af-skill-card-icon" });
-    (0, import_obsidian12.setIcon)(iconEl, this.getSkillIcon(skill.name));
+    (0, import_obsidian13.setIcon)(iconEl, this.getSkillIcon(skill.name));
     const skillEditBtn = cardHeader.createEl("button", { cls: "af-btn-sm af-btn-xs" });
     createIcon(skillEditBtn, "edit", "af-btn-icon");
     skillEditBtn.onclick = (e) => {
@@ -23112,7 +23550,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     card.style.cursor = "default";
     const header = card.createDiv({ cls: "af-agent-card-header" });
     const avatar = header.createDiv({ cls: `af-agent-card-avatar ${avatarCls}` });
-    (0, import_obsidian12.setIcon)(avatar, "radio");
+    (0, import_obsidian13.setIcon)(avatar, "radio");
     const titleBlock = header.createDiv({ cls: "af-agent-card-titleblock" });
     titleBlock.createDiv({ cls: "af-agent-card-name", text: channel.name });
     titleBlock.createDiv({
@@ -23171,7 +23609,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatar = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatar, "plus");
+    (0, import_obsidian13.setIcon)(avatar, "plus");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Channel" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Connect an external chat transport to an agent" });
@@ -23191,7 +23629,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const detailsSection = form.createDiv({ cls: "af-create-section" });
     const detailsHeader = detailsSection.createDiv({ cls: "af-create-section-header" });
     const detailsIcon = detailsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(detailsIcon, "radio");
+    (0, import_obsidian13.setIcon)(detailsIcon, "radio");
     detailsHeader.createSpan({ text: "Channel Details" });
     this.createFormField(detailsSection, "Name", "my-slack", "Unique identifier for this channel", (v) => {
       state.name = v;
@@ -23200,7 +23638,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     typeRow.createDiv({ cls: "af-form-label", text: "Type" });
     const typeSelect = typeRow.createEl("select", { cls: "af-form-select" });
     typeSelect.createEl("option", { text: "slack", attr: { value: "slack" } });
-    typeSelect.createEl("option", { text: "telegram (coming soon)", attr: { value: "telegram", disabled: "true" } });
+    typeSelect.createEl("option", { text: "telegram", attr: { value: "telegram" } });
     typeSelect.createEl("option", { text: "discord (coming soon)", attr: { value: "discord", disabled: "true" } });
     typeSelect.addEventListener("change", () => {
       state.type = typeSelect.value;
@@ -23230,7 +23668,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const agentSection = form.createDiv({ cls: "af-create-section" });
     const agentHeader = agentSection.createDiv({ cls: "af-create-section-header" });
     const agentIcon = agentHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(agentIcon, "bot");
+    (0, import_obsidian13.setIcon)(agentIcon, "bot");
     agentHeader.createSpan({ text: "Agent Routing" });
     const defaultRow = agentSection.createDiv({ cls: "af-form-row" });
     const defaultLabel = defaultRow.createDiv({ cls: "af-form-label" });
@@ -23273,7 +23711,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const accessSection = form.createDiv({ cls: "af-create-section" });
     const accessHeader = accessSection.createDiv({ cls: "af-create-section-header" });
     const accessIcon = accessHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(accessIcon, "shield-check");
+    (0, import_obsidian13.setIcon)(accessIcon, "shield-check");
     accessHeader.createSpan({ text: "Access Control" });
     const usersLabel = accessSection.createDiv({ cls: "af-form-label" });
     usersLabel.setText("Allowed users");
@@ -23288,7 +23726,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const contextSection = form.createDiv({ cls: "af-create-section" });
     const contextHeader = contextSection.createDiv({ cls: "af-create-section-header" });
     const contextIcon = contextHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(contextIcon, "message-square");
+    (0, import_obsidian13.setIcon)(contextIcon, "message-square");
     const contextHeaderLabel = contextHeader.createSpan({ text: "Channel Context" });
     this.addTooltip(contextHeaderLabel, "Extra instructions appended to the agent's system prompt when reached through this channel");
     const contextTextarea = contextSection.createEl("textarea", {
@@ -23307,11 +23745,11 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     createBtn.onclick = async () => {
       const name = state.name.trim();
       if (!name) {
-        new import_obsidian12.Notice("Channel name is required.");
+        new import_obsidian13.Notice("Channel name is required.");
         return;
       }
       if (!state.credentialRef) {
-        new import_obsidian12.Notice("Select a credential.");
+        new import_obsidian13.Notice("Select a credential.");
         return;
       }
       const parseUsers = (s) => s.split(/[\n,]+/).map((t) => t.trim()).filter(Boolean);
@@ -23336,12 +23774,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           path2,
           stringifyMarkdownWithFrontmatter(frontmatter, "")
         );
-        new import_obsidian12.Notice(`Channel "${channelSlug}" created.`);
+        new import_obsidian13.Notice(`Channel "${channelSlug}" created.`);
         await this.plugin.refreshFromVault();
         this.navigate("edit-channel", channelSlug);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to create channel: ${msg}`);
+        new import_obsidian13.Notice(`Failed to create channel: ${msg}`);
       }
     };
   }
@@ -23366,7 +23804,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatarEl = headerLeft.createDiv({ cls: `af-agent-card-avatar ${channelStatusToAvatarClass(status)}` });
-    (0, import_obsidian12.setIcon)(avatarEl, "radio");
+    (0, import_obsidian13.setIcon)(avatarEl, "radio");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Channel: ${channel.name}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: `Status: ${status}` });
@@ -23385,7 +23823,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const detailsSection = form.createDiv({ cls: "af-create-section" });
     const detailsHeader = detailsSection.createDiv({ cls: "af-create-section-header" });
     const detailsIcon = detailsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(detailsIcon, "radio");
+    (0, import_obsidian13.setIcon)(detailsIcon, "radio");
     detailsHeader.createSpan({ text: "Channel Details" });
     const nameRow = detailsSection.createDiv({ cls: "af-form-row" });
     nameRow.createDiv({ cls: "af-form-label", text: "Name" });
@@ -23398,10 +23836,11 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     typeRow.createDiv({ cls: "af-form-label", text: "Type" });
     const typeSelect = typeRow.createEl("select", { cls: "af-form-select" });
     for (const t of ["slack", "telegram", "discord"]) {
-      const label = t === "slack" ? t : `${t} (coming soon)`;
+      const isSupported = t === "slack" || t === "telegram";
+      const label = isSupported ? t : `${t} (coming soon)`;
       const opt = typeSelect.createEl("option", { text: label, attr: { value: t } });
       if (t === channel.type) opt.selected = true;
-      if (t !== "slack") opt.disabled = true;
+      if (!isSupported) opt.disabled = true;
     }
     typeSelect.addEventListener("change", () => {
       state.type = typeSelect.value;
@@ -23432,7 +23871,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const agentSection = form.createDiv({ cls: "af-create-section" });
     const agentHeader = agentSection.createDiv({ cls: "af-create-section-header" });
     const agentIcon = agentHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(agentIcon, "bot");
+    (0, import_obsidian13.setIcon)(agentIcon, "bot");
     agentHeader.createSpan({ text: "Agent Routing" });
     const defaultRow = agentSection.createDiv({ cls: "af-form-row" });
     const defaultLabel = defaultRow.createDiv({ cls: "af-form-label" });
@@ -23477,7 +23916,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const accessSection = form.createDiv({ cls: "af-create-section" });
     const accessHeader = accessSection.createDiv({ cls: "af-create-section-header" });
     const accessIconEl = accessHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(accessIconEl, "shield-check");
+    (0, import_obsidian13.setIcon)(accessIconEl, "shield-check");
     accessHeader.createSpan({ text: "Access Control" });
     const usersLabelEl = accessSection.createDiv({ cls: "af-form-label" });
     usersLabelEl.setText("Allowed users");
@@ -23493,7 +23932,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const contextSection = form.createDiv({ cls: "af-create-section" });
     const contextHeader = contextSection.createDiv({ cls: "af-create-section-header" });
     const contextIconEl = contextHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(contextIconEl, "message-square");
+    (0, import_obsidian13.setIcon)(contextIconEl, "message-square");
     const contextHeaderLabel = contextHeader.createSpan({ text: "Channel Context" });
     this.addTooltip(contextHeaderLabel, "Extra instructions appended to the agent's system prompt when reached through this channel");
     const contextTextarea = contextSection.createEl("textarea", {
@@ -23510,7 +23949,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     deleteBtn.appendText(" Delete");
     deleteBtn.onclick = async () => {
       await this.plugin.repository.deleteChannel(channel.name);
-      new import_obsidian12.Notice(`Channel "${channel.name}" deleted.`);
+      new import_obsidian13.Notice(`Channel "${channel.name}" deleted.`);
       await new Promise((r) => setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("channels");
@@ -23534,12 +23973,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           per_user_sessions: state.perUserSessions,
           channel_context: state.channelContext.trim()
         });
-        new import_obsidian12.Notice(`Channel "${channel.name}" updated.`);
+        new import_obsidian13.Notice(`Channel "${channel.name}" updated.`);
         await this.plugin.refreshFromVault();
         this.navigate("channels");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to update channel: ${msg}`);
+        new import_obsidian13.Notice(`Failed to update channel: ${msg}`);
       }
     };
   }
@@ -23591,13 +24030,13 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       const item = container.createDiv({ cls: "af-approval-item" });
       const iconEl = item.createDiv({ cls: "af-approval-item-icon" });
       if (approval.status === "pending") {
-        (0, import_obsidian12.setIcon)(iconEl, "shield-check");
+        (0, import_obsidian13.setIcon)(iconEl, "shield-check");
         iconEl.addClass("pending");
       } else if (approval.status === "approved") {
-        (0, import_obsidian12.setIcon)(iconEl, "check-circle-2");
+        (0, import_obsidian13.setIcon)(iconEl, "check-circle-2");
         iconEl.addClass("approved");
       } else {
-        (0, import_obsidian12.setIcon)(iconEl, "x-circle");
+        (0, import_obsidian13.setIcon)(iconEl, "x-circle");
         iconEl.addClass("rejected");
       }
       const body = item.createDiv({ cls: "af-approval-item-body" });
@@ -23646,7 +24085,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const taskIcon = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(taskIcon, "circle-dot");
+    (0, import_obsidian13.setIcon)(taskIcon, "circle-dot");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: task.taskId });
     headerInfo.createDiv({
@@ -23775,7 +24214,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = panel.createDiv({ cls: "af-slideover-header" });
     header.createDiv({ cls: "af-slideover-title", text: "Run Details" });
     const closeBtn = header.createEl("button", { cls: "clickable-icon" });
-    (0, import_obsidian12.setIcon)(closeBtn, "cross");
+    (0, import_obsidian13.setIcon)(closeBtn, "cross");
     closeBtn.onclick = () => overlay.remove();
     const body = panel.createDiv({ cls: "af-slideover-body" });
     const metaSection = body.createDiv({ cls: "af-slideover-section" });
@@ -23790,7 +24229,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       cls: `af-status-badge ${this.statusToBadgeClass(run.status)}`
     });
     const badgeIcon = statusBadge.createSpan();
-    (0, import_obsidian12.setIcon)(badgeIcon, this.statusToIconName(run.status));
+    (0, import_obsidian13.setIcon)(badgeIcon, this.statusToIconName(run.status));
     statusBadge.appendText(` ${this.statusToBadgeText(run.status)}`);
     this.renderDetailRow(metaSection, "Started", run.started);
     this.renderDetailRow(metaSection, "Duration", this.formatDuration(run.durationSeconds));
@@ -23805,7 +24244,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
 
 ---
 *Output truncated (${(run.output.length / 1024).toFixed(0)} KB total). Open the run note for full content.*` : run.output;
-      void import_obsidian12.MarkdownRenderer.render(this.app, outputText, outputBlock, "", this.plugin);
+      void import_obsidian13.MarkdownRenderer.render(this.app, outputText, outputBlock, "", this.plugin);
     }
     if (run.toolsUsed.length > 0) {
       const toolsSection = body.createDiv({ cls: "af-slideover-section" });
@@ -23838,7 +24277,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
   renderEmptyState(container, iconName, label, sublabel) {
     const empty = container.createDiv({ cls: "af-empty-state" });
     const iconEl = empty.createDiv({ cls: "af-empty-icon" });
-    (0, import_obsidian12.setIcon)(iconEl, iconName);
+    (0, import_obsidian13.setIcon)(iconEl, iconName);
     empty.createDiv({ cls: "af-empty-label", text: label });
     if (sublabel) {
       empty.createDiv({ cls: "af-empty-sublabel", text: sublabel });
@@ -23977,11 +24416,11 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
   renderAgentAvatar(el, agent) {
     const avatar = agent.avatar?.trim();
     if (!avatar) {
-      (0, import_obsidian12.setIcon)(el, "bot");
+      (0, import_obsidian13.setIcon)(el, "bot");
       return;
     }
     if (/^[a-z][a-z0-9-]*$/.test(avatar)) {
-      (0, import_obsidian12.setIcon)(el, avatar);
+      (0, import_obsidian13.setIcon)(el, avatar);
     } else {
       el.setText(avatar);
     }
@@ -24311,7 +24750,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatar = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatar, "plus");
+    (0, import_obsidian13.setIcon)(avatar, "plus");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Agent" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Configure a new agent for your fleet" });
@@ -24353,7 +24792,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const identitySection = form.createDiv({ cls: "af-create-section" });
     const identityHeader = identitySection.createDiv({ cls: "af-create-section-header" });
     const identityIcon = identityHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(identityIcon, "user");
+    (0, import_obsidian13.setIcon)(identityIcon, "user");
     identityHeader.createSpan({ text: "Identity" });
     this.createFormField(identitySection, "Name", "deploy-watcher", "Unique identifier (will be slugified)", (v) => {
       state.name = v;
@@ -24384,7 +24823,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const promptSection = form.createDiv({ cls: "af-create-section" });
     const promptHeader = promptSection.createDiv({ cls: "af-create-section-header" });
     const promptIcon = promptHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(promptIcon, "message-square");
+    (0, import_obsidian13.setIcon)(promptIcon, "message-square");
     promptHeader.createSpan({ text: "System Prompt" });
     const templateRow = promptSection.createDiv({ cls: "af-form-row" });
     templateRow.createDiv({ cls: "af-form-label", text: "Template" });
@@ -24409,7 +24848,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const configSection = form.createDiv({ cls: "af-create-section" });
     const configHeader = configSection.createDiv({ cls: "af-create-section-header" });
     const configIcon = configHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(configIcon, "settings");
+    (0, import_obsidian13.setIcon)(configIcon, "settings");
     configHeader.createSpan({ text: "Runtime Config" });
     const configGrid = configSection.createDiv({ cls: "af-create-config-grid" });
     const adapterRow = configGrid.createDiv({ cls: "af-form-row" });
@@ -24513,7 +24952,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       const heartbeatSection = form.createDiv({ cls: "af-create-section" });
       const heartbeatHeader = heartbeatSection.createDiv({ cls: "af-create-section-header" });
       const heartbeatIcon = heartbeatHeader.createSpan({ cls: "af-create-section-icon" });
-      (0, import_obsidian12.setIcon)(heartbeatIcon, "heart-pulse");
+      (0, import_obsidian13.setIcon)(heartbeatIcon, "heart-pulse");
       const heartbeatHeaderLabel = heartbeatHeader.createSpan({ text: "Heartbeat" });
       this.addTooltip(heartbeatHeaderLabel, "Autonomous periodic run \u2014 what the agent does when no one is asking");
       const hbEnabledRow = heartbeatSection.createDiv({ cls: "af-form-row af-form-row-toggle" });
@@ -24567,7 +25006,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const skillsSection = form.createDiv({ cls: "af-create-section" });
     const skillsHeader = skillsSection.createDiv({ cls: "af-create-section-header" });
     const skillsIcon = skillsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(skillsIcon, "puzzle");
+    (0, import_obsidian13.setIcon)(skillsIcon, "puzzle");
     skillsHeader.createSpan({ text: "Skills" });
     const snapshot = this.plugin.runtime.getSnapshot();
     if (snapshot.skills.length > 0) {
@@ -24601,7 +25040,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       const mcpSection = form.createDiv({ cls: "af-create-section" });
       const mcpHeader = mcpSection.createDiv({ cls: "af-create-section-header" });
       const mcpIcon = mcpHeader.createSpan({ cls: "af-create-section-icon" });
-      (0, import_obsidian12.setIcon)(mcpIcon, "plug");
+      (0, import_obsidian13.setIcon)(mcpIcon, "plug");
       const mcpHeaderLabel = mcpHeader.createSpan({ text: "MCP Servers" });
       this.addTooltip(mcpHeaderLabel, "Grant agent access to MCP servers");
       const cachedMcpServers = this.plugin.mcpManager.getCachedServers();
@@ -24643,7 +25082,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const contextSection = form.createDiv({ cls: "af-create-section" });
     const contextHeader = contextSection.createDiv({ cls: "af-create-section-header" });
     const contextIcon = contextHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(contextIcon, "file-text");
+    (0, import_obsidian13.setIcon)(contextIcon, "file-text");
     const contextHeaderLabel = contextHeader.createSpan({ text: "Context" });
     this.addTooltip(contextHeaderLabel, "Project-specific context included in every run");
     const contextTextarea = contextSection.createEl("textarea", {
@@ -24656,7 +25095,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const permsSection = form.createDiv({ cls: "af-create-section" });
     const permsHeader = permsSection.createDiv({ cls: "af-create-section-header" });
     const permsIcon = permsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(permsIcon, "shield-check");
+    (0, import_obsidian13.setIcon)(permsIcon, "shield-check");
     permsHeader.createSpan({ text: "Permissions" });
     this.createFormField(permsSection, "Approval required", "git_push, file_delete", "Comma-separated tool names", (v) => {
       state.approvalRequired = v;
@@ -24696,12 +25135,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     createBtn.onclick = async () => {
       const name = state.name.trim();
       if (!name) {
-        new import_obsidian12.Notice("Agent name is required.");
+        new import_obsidian13.Notice("Agent name is required.");
         return;
       }
       const slug = slugify(name);
       if (this.plugin.repository.getAgentByName(slug)) {
-        new import_obsidian12.Notice(`Agent "${slug}" already exists.`);
+        new import_obsidian13.Notice(`Agent "${slug}" already exists.`);
         return;
       }
       const parseTags = (s) => s.split(",").map((t) => t.trim()).filter(Boolean);
@@ -24740,12 +25179,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
             body: state.heartbeatBody.trim()
           });
         }
-        new import_obsidian12.Notice(`Agent "${slug}" created.`);
+        new import_obsidian13.Notice(`Agent "${slug}" created.`);
         await this.plugin.refreshFromVault();
         this.navigate("agent-detail", slug);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to create agent: ${msg}`);
+        new import_obsidian13.Notice(`Failed to create agent: ${msg}`);
       }
     };
   }
@@ -24757,7 +25196,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatar = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatar, "plus");
+    (0, import_obsidian13.setIcon)(avatar, "plus");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Skill" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Define a reusable skill for your agents" });
@@ -24782,7 +25221,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const identitySection = form.createDiv({ cls: "af-create-section" });
     const identityHeader = identitySection.createDiv({ cls: "af-create-section-header" });
     const identityIcon = identityHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(identityIcon, "puzzle");
+    (0, import_obsidian13.setIcon)(identityIcon, "puzzle");
     identityHeader.createSpan({ text: "Identity" });
     this.createFormField(identitySection, "Name", "todoist", "Unique identifier (will be slugified)", (v) => {
       state.name = v;
@@ -24796,7 +25235,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const instructionsSection = form.createDiv({ cls: "af-create-section" });
     const instructionsHeader = instructionsSection.createDiv({ cls: "af-create-section-header" });
     const instructionsIcon = instructionsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(instructionsIcon, "file-text");
+    (0, import_obsidian13.setIcon)(instructionsIcon, "file-text");
     instructionsHeader.createSpan({ text: "Core Instructions" });
     const templateRow = instructionsSection.createDiv({ cls: "af-form-row" });
     templateRow.createDiv({ cls: "af-form-label", text: "Template" });
@@ -24821,7 +25260,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const toolsSection = form.createDiv({ cls: "af-create-section" });
     const toolsHeader = toolsSection.createDiv({ cls: "af-create-section-header" });
     const toolsIcon = toolsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(toolsIcon, "wrench");
+    (0, import_obsidian13.setIcon)(toolsIcon, "wrench");
     const toolsHeaderLabel = toolsHeader.createSpan({ text: "Tools" });
     this.addTooltip(toolsHeaderLabel, "CLI commands, API endpoints, and tool definitions available to agents using this skill");
     const toolsTextarea = toolsSection.createEl("textarea", {
@@ -24834,7 +25273,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const refsSection = form.createDiv({ cls: "af-create-section" });
     const refsHeader = refsSection.createDiv({ cls: "af-create-section-header" });
     const refsIcon = refsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(refsIcon, "book-open");
+    (0, import_obsidian13.setIcon)(refsIcon, "book-open");
     const refsHeaderLabel = refsHeader.createSpan({ text: "References" });
     this.addTooltip(refsHeaderLabel, "Background docs, conventions, cheat sheets");
     const refsTextarea = refsSection.createEl("textarea", {
@@ -24847,7 +25286,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const examplesSection = form.createDiv({ cls: "af-create-section" });
     const examplesHeader = examplesSection.createDiv({ cls: "af-create-section-header" });
     const examplesIcon = examplesHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(examplesIcon, "message-circle");
+    (0, import_obsidian13.setIcon)(examplesIcon, "message-circle");
     const examplesHeaderLabel = examplesHeader.createSpan({ text: "Examples" });
     this.addTooltip(examplesHeaderLabel, "Example prompts and ideal outputs showing how to use this skill");
     const examplesTextarea = examplesSection.createEl("textarea", {
@@ -24866,12 +25305,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     createBtn.onclick = async () => {
       const name = state.name.trim();
       if (!name) {
-        new import_obsidian12.Notice("Skill name is required.");
+        new import_obsidian13.Notice("Skill name is required.");
         return;
       }
       const slug = slugify(name);
       if (this.plugin.repository.getSkillByName(slug)) {
-        new import_obsidian12.Notice(`Skill "${slug}" already exists.`);
+        new import_obsidian13.Notice(`Skill "${slug}" already exists.`);
         return;
       }
       const parseTags = (s) => s.split(",").map((t) => t.trim()).filter(Boolean);
@@ -24885,12 +25324,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           referencesBody: state.referencesBody.trim(),
           examplesBody: state.examplesBody.trim()
         });
-        new import_obsidian12.Notice(`Skill "${slug}" created.`);
+        new import_obsidian13.Notice(`Skill "${slug}" created.`);
         await this.plugin.refreshFromVault();
         this.navigate("skills");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to create skill: ${msg}`);
+        new import_obsidian13.Notice(`Failed to create skill: ${msg}`);
       }
     };
   }
@@ -24912,7 +25351,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatarEl = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatarEl, "edit");
+    (0, import_obsidian13.setIcon)(avatarEl, "edit");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Agent: ${agent.name}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Modify agent configuration" });
@@ -24947,7 +25386,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const identitySection = form.createDiv({ cls: "af-create-section" });
     const identityHeader = identitySection.createDiv({ cls: "af-create-section-header" });
     const identityIcon = identityHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(identityIcon, "user");
+    (0, import_obsidian13.setIcon)(identityIcon, "user");
     identityHeader.createSpan({ text: "Identity" });
     const nameRow = identitySection.createDiv({ cls: "af-form-row" });
     nameRow.createDiv({ cls: "af-form-label", text: "Name" });
@@ -24969,7 +25408,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       new IconPickerModal(this.app, state.avatar ?? agent.avatar, (iconName) => {
         state.avatar = iconName;
         avatarPreview.empty();
-        (0, import_obsidian12.setIcon)(avatarPreview, iconName);
+        (0, import_obsidian13.setIcon)(avatarPreview, iconName);
         avatarPickerBtn.querySelector(".af-avatar-picker-label")?.setText(iconName);
       }).open();
     });
@@ -24987,7 +25426,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const promptSection = form.createDiv({ cls: "af-create-section" });
     const promptHeader = promptSection.createDiv({ cls: "af-create-section-header" });
     const promptIcon = promptHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(promptIcon, "message-square");
+    (0, import_obsidian13.setIcon)(promptIcon, "message-square");
     promptHeader.createSpan({ text: "System Prompt" });
     const promptTextarea = promptSection.createEl("textarea", {
       cls: "af-create-prompt-textarea",
@@ -25000,7 +25439,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const configSection = form.createDiv({ cls: "af-create-section" });
     const configHeader = configSection.createDiv({ cls: "af-create-section-header" });
     const configIcon = configHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(configIcon, "settings");
+    (0, import_obsidian13.setIcon)(configIcon, "settings");
     configHeader.createSpan({ text: "Runtime Config" });
     const configGrid = configSection.createDiv({ cls: "af-create-config-grid" });
     const adapterRow = configGrid.createDiv({ cls: "af-form-row" });
@@ -25105,7 +25544,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       const heartbeatSection = form.createDiv({ cls: "af-create-section" });
       const heartbeatHeader = heartbeatSection.createDiv({ cls: "af-create-section-header" });
       const heartbeatIcon = heartbeatHeader.createSpan({ cls: "af-create-section-icon" });
-      (0, import_obsidian12.setIcon)(heartbeatIcon, "heart-pulse");
+      (0, import_obsidian13.setIcon)(heartbeatIcon, "heart-pulse");
       const heartbeatHeaderLabel = heartbeatHeader.createSpan({ text: "Heartbeat" });
       this.addTooltip(heartbeatHeaderLabel, "Autonomous periodic run \u2014 what the agent does when no one is asking");
       const hbEnabledRow = heartbeatSection.createDiv({ cls: "af-form-row af-form-row-toggle" });
@@ -25161,7 +25600,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const skillsSection = form.createDiv({ cls: "af-create-section" });
     const skillsHeader = skillsSection.createDiv({ cls: "af-create-section-header" });
     const skillsIcon = skillsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(skillsIcon, "puzzle");
+    (0, import_obsidian13.setIcon)(skillsIcon, "puzzle");
     skillsHeader.createSpan({ text: "Skills" });
     const snapshot = this.plugin.runtime.getSnapshot();
     if (snapshot.skills.length > 0) {
@@ -25196,7 +25635,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const mcpSection = form.createDiv({ cls: "af-create-section" });
     const mcpHeader = mcpSection.createDiv({ cls: "af-create-section-header" });
     const mcpIcon = mcpHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(mcpIcon, "plug");
+    (0, import_obsidian13.setIcon)(mcpIcon, "plug");
     const editMcpHeaderLabel = mcpHeader.createSpan({ text: "MCP Servers" });
     this.addTooltip(editMcpHeaderLabel, "Grant agent access to MCP servers");
     const cachedMcpServers = this.plugin.mcpManager.getCachedServers();
@@ -25238,7 +25677,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const contextSection = form.createDiv({ cls: "af-create-section" });
     const contextHeader = contextSection.createDiv({ cls: "af-create-section-header" });
     const contextIcon = contextHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(contextIcon, "file-text");
+    (0, import_obsidian13.setIcon)(contextIcon, "file-text");
     const contextHeaderLabel = contextHeader.createSpan({ text: "Context" });
     this.addTooltip(contextHeaderLabel, "Project-specific context included in every run");
     const contextTextarea = contextSection.createEl("textarea", {
@@ -25252,7 +25691,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const permsSection = form.createDiv({ cls: "af-create-section" });
     const permsHeader = permsSection.createDiv({ cls: "af-create-section-header" });
     const permsIcon = permsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(permsIcon, "shield-check");
+    (0, import_obsidian13.setIcon)(permsIcon, "shield-check");
     permsHeader.createSpan({ text: "Permissions" });
     this.createFormField(permsSection, "Approval required", "git_push, file_delete", "Comma-separated tool names", (v) => {
       state.approvalRequired = v;
@@ -25331,12 +25770,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
             body: state.heartbeatBody.trim()
           });
         }
-        new import_obsidian12.Notice(`Agent "${agent.name}" updated.`);
+        new import_obsidian13.Notice(`Agent "${agent.name}" updated.`);
         await this.plugin.refreshFromVault();
         this.navigate("agent-detail", agent.name);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to update agent: ${msg}`);
+        new import_obsidian13.Notice(`Failed to update agent: ${msg}`);
       }
     };
   }
@@ -25349,7 +25788,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatar = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatar, "plus");
+    (0, import_obsidian13.setIcon)(avatar, "plus");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Task" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Configure a new task for your fleet" });
@@ -25370,7 +25809,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const detailsSection = form.createDiv({ cls: "af-create-section" });
     const detailsHeader = detailsSection.createDiv({ cls: "af-create-section-header" });
     const detailsIcon = detailsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(detailsIcon, "file-text");
+    (0, import_obsidian13.setIcon)(detailsIcon, "file-text");
     detailsHeader.createSpan({ text: "Task Details" });
     this.createFormField(detailsSection, "Title", "Daily status report", "Used as the task identifier", (v) => {
       state.title = v;
@@ -25406,7 +25845,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const instructionsSection = form.createDiv({ cls: "af-create-section" });
     const instructionsHeader = instructionsSection.createDiv({ cls: "af-create-section-header" });
     const instructionsIcon = instructionsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(instructionsIcon, "message-square");
+    (0, import_obsidian13.setIcon)(instructionsIcon, "message-square");
     instructionsHeader.createSpan({ text: "Instructions" });
     const instructionsTextarea = instructionsSection.createEl("textarea", {
       cls: "af-create-prompt-textarea",
@@ -25418,7 +25857,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const scheduleSection = form.createDiv({ cls: "af-create-section" });
     const scheduleHeader = scheduleSection.createDiv({ cls: "af-create-section-header" });
     const scheduleIcon = scheduleHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(scheduleIcon, "clock");
+    (0, import_obsidian13.setIcon)(scheduleIcon, "clock");
     scheduleHeader.createSpan({ text: "Schedule" });
     const scheduleToggleRow = scheduleSection.createDiv({ cls: "af-form-row af-form-row-toggle" });
     scheduleToggleRow.createDiv({ cls: "af-form-label", text: "Enable schedule" });
@@ -25463,7 +25902,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     createBtn.onclick = async () => {
       const title = state.title.trim();
       if (!title) {
-        new import_obsidian12.Notice("Task title is required.");
+        new import_obsidian13.Notice("Task title is required.");
         return;
       }
       const taskId = slugify(title);
@@ -25492,12 +25931,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           path2,
           stringifyMarkdownWithFrontmatter(frontmatter, state.body.trim() || "Describe the task here.")
         );
-        new import_obsidian12.Notice(`Task "${taskId}" created.`);
+        new import_obsidian13.Notice(`Task "${taskId}" created.`);
         await this.plugin.refreshFromVault();
         this.navigate("task-detail", taskId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to create task: ${msg}`);
+        new import_obsidian13.Notice(`Failed to create task: ${msg}`);
       }
     };
   }
@@ -25524,7 +25963,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const taskIcon = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(taskIcon, "edit");
+    (0, import_obsidian13.setIcon)(taskIcon, "edit");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Task: ${task.taskId}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Modify task configuration" });
@@ -25545,7 +25984,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const detailsSection = form.createDiv({ cls: "af-create-section" });
     const detailsHeader = detailsSection.createDiv({ cls: "af-create-section-header" });
     const detailsIcon = detailsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(detailsIcon, "file-text");
+    (0, import_obsidian13.setIcon)(detailsIcon, "file-text");
     detailsHeader.createSpan({ text: "Task Details" });
     const nameRow = detailsSection.createDiv({ cls: "af-form-row" });
     nameRow.createDiv({ cls: "af-form-label", text: "Title" });
@@ -25586,7 +26025,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const instructionsSection = form.createDiv({ cls: "af-create-section" });
     const instructionsHeader = instructionsSection.createDiv({ cls: "af-create-section-header" });
     const instructionsIcon = instructionsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(instructionsIcon, "message-square");
+    (0, import_obsidian13.setIcon)(instructionsIcon, "message-square");
     instructionsHeader.createSpan({ text: "Instructions" });
     const instructionsTextarea = instructionsSection.createEl("textarea", {
       cls: "af-create-prompt-textarea",
@@ -25599,7 +26038,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const scheduleSection = form.createDiv({ cls: "af-create-section" });
     const scheduleHeader = scheduleSection.createDiv({ cls: "af-create-section-header" });
     const scheduleIcon = scheduleHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(scheduleIcon, "clock");
+    (0, import_obsidian13.setIcon)(scheduleIcon, "clock");
     scheduleHeader.createSpan({ text: "Schedule" });
     const scheduleToggleRow = scheduleSection.createDiv({ cls: "af-form-row af-form-row-toggle" });
     scheduleToggleRow.createDiv({ cls: "af-form-label", text: "Enable schedule" });
@@ -25641,7 +26080,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     deleteBtn.appendText(" Delete");
     deleteBtn.onclick = async () => {
       await this.plugin.repository.deleteTask(task.taskId);
-      new import_obsidian12.Notice(`Task "${task.taskId}" deleted.`);
+      new import_obsidian13.Notice(`Task "${task.taskId}" deleted.`);
       await new Promise((r) => setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("kanban");
@@ -25666,12 +26105,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           tags: parseTags(state.tags),
           body: state.body.trim()
         });
-        new import_obsidian12.Notice(`Task "${task.taskId}" updated.`);
+        new import_obsidian13.Notice(`Task "${task.taskId}" updated.`);
         await this.plugin.refreshFromVault();
         this.navigate("task-detail", task.taskId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to update task: ${msg}`);
+        new import_obsidian13.Notice(`Failed to update task: ${msg}`);
       }
     };
   }
@@ -25693,7 +26132,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = page.createDiv({ cls: "af-detail-header" });
     const headerLeft = header.createDiv({ cls: "af-detail-header-left" });
     const avatarEl = headerLeft.createDiv({ cls: "af-agent-card-avatar idle" });
-    (0, import_obsidian12.setIcon)(avatarEl, "edit");
+    (0, import_obsidian13.setIcon)(avatarEl, "edit");
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Skill: ${skill.name}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Modify skill definition" });
@@ -25710,7 +26149,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const identitySection = form.createDiv({ cls: "af-create-section" });
     const identityHeader = identitySection.createDiv({ cls: "af-create-section-header" });
     const identityIcon = identityHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(identityIcon, "puzzle");
+    (0, import_obsidian13.setIcon)(identityIcon, "puzzle");
     identityHeader.createSpan({ text: "Identity" });
     const nameRow = identitySection.createDiv({ cls: "af-form-row" });
     nameRow.createDiv({ cls: "af-form-label", text: "Name" });
@@ -25728,7 +26167,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const instructionsSection = form.createDiv({ cls: "af-create-section" });
     const instructionsHeader = instructionsSection.createDiv({ cls: "af-create-section-header" });
     const instructionsIcon = instructionsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(instructionsIcon, "file-text");
+    (0, import_obsidian13.setIcon)(instructionsIcon, "file-text");
     instructionsHeader.createSpan({ text: "Core Instructions" });
     const bodyTextarea = instructionsSection.createEl("textarea", {
       cls: "af-create-prompt-textarea",
@@ -25741,7 +26180,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const toolsSection = form.createDiv({ cls: "af-create-section" });
     const toolsHeader = toolsSection.createDiv({ cls: "af-create-section-header" });
     const toolsIcon = toolsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(toolsIcon, "wrench");
+    (0, import_obsidian13.setIcon)(toolsIcon, "wrench");
     const editToolsHeaderLabel = toolsHeader.createSpan({ text: "Tools" });
     this.addTooltip(editToolsHeaderLabel, "CLI commands, API endpoints, and tool definitions available to agents using this skill");
     const toolsTextarea = toolsSection.createEl("textarea", {
@@ -25755,7 +26194,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const refsSection = form.createDiv({ cls: "af-create-section" });
     const refsHeader = refsSection.createDiv({ cls: "af-create-section-header" });
     const refsIcon = refsHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(refsIcon, "book-open");
+    (0, import_obsidian13.setIcon)(refsIcon, "book-open");
     const refsHeaderLabel = refsHeader.createSpan({ text: "References" });
     this.addTooltip(refsHeaderLabel, "Background docs, conventions, cheat sheets");
     const refsTextarea = refsSection.createEl("textarea", {
@@ -25769,7 +26208,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const examplesSection = form.createDiv({ cls: "af-create-section" });
     const examplesHeader = examplesSection.createDiv({ cls: "af-create-section-header" });
     const examplesIcon = examplesHeader.createSpan({ cls: "af-create-section-icon" });
-    (0, import_obsidian12.setIcon)(examplesIcon, "message-circle");
+    (0, import_obsidian13.setIcon)(examplesIcon, "message-circle");
     const editExamplesHeaderLabel = examplesHeader.createSpan({ text: "Examples" });
     this.addTooltip(editExamplesHeaderLabel, "Example prompts and ideal outputs showing how to use this skill");
     const examplesTextarea = examplesSection.createEl("textarea", {
@@ -25786,7 +26225,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     deleteBtn.appendText(" Delete");
     deleteBtn.onclick = async () => {
       await this.plugin.repository.deleteSkill(skill.name);
-      new import_obsidian12.Notice(`Skill "${skill.name}" deleted.`);
+      new import_obsidian13.Notice(`Skill "${skill.name}" deleted.`);
       await new Promise((r) => setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("skills");
@@ -25808,12 +26247,12 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
           referencesBody: state.referencesBody.trim(),
           examplesBody: state.examplesBody.trim()
         });
-        new import_obsidian12.Notice(`Skill "${skill.name}" updated.`);
+        new import_obsidian13.Notice(`Skill "${skill.name}" updated.`);
         await this.plugin.refreshFromVault();
         this.navigate("skills");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        new import_obsidian12.Notice(`Failed to update skill: ${msg}`);
+        new import_obsidian13.Notice(`Failed to update skill: ${msg}`);
       }
     };
   }
@@ -25894,7 +26333,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = card.createDiv({ cls: "af-agent-card-header" });
     const statusClass = !server.enabled ? "disabled" : server.status === "connected" ? "idle" : server.status === "needs-auth" ? "pending" : "error";
     const avatarEl = header.createDiv({ cls: `af-agent-card-avatar ${statusClass}` });
-    (0, import_obsidian12.setIcon)(avatarEl, "plug");
+    (0, import_obsidian13.setIcon)(avatarEl, "plug");
     const titleBlock = header.createDiv({ cls: "af-agent-card-titleblock" });
     titleBlock.createDiv({ cls: "af-agent-card-name", text: server.name });
     const metaRow = titleBlock.createDiv({ cls: "af-agent-card-desc af-mcp-meta" });
@@ -25913,10 +26352,10 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const statusBadge = card.createDiv({ cls: `af-mcp-status-badge ${!server.enabled ? "disabled" : server.status}` });
     const statusIcon = statusBadge.createSpan();
     if (!server.enabled) {
-      (0, import_obsidian12.setIcon)(statusIcon, "pause");
+      (0, import_obsidian13.setIcon)(statusIcon, "pause");
       statusBadge.createSpan({ text: " Disabled" });
     } else {
-      (0, import_obsidian12.setIcon)(statusIcon, server.status === "connected" ? "check-circle" : server.status === "needs-auth" ? "alert-circle" : "x-circle");
+      (0, import_obsidian13.setIcon)(statusIcon, server.status === "connected" ? "check-circle" : server.status === "needs-auth" ? "alert-circle" : "x-circle");
       statusBadge.createSpan({
         text: server.status === "connected" ? " Connected" : server.status === "needs-auth" ? " Needs auth" : server.status === "error" ? " Error" : " Disconnected"
       });
@@ -25933,7 +26372,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const toolFooter = card.createDiv({ cls: "af-mcp-tool-footer" });
     const toolCount = toolFooter.createDiv({ cls: "af-mcp-tool-count" });
     const toolIcon = toolCount.createSpan();
-    (0, import_obsidian12.setIcon)(toolIcon, "wrench");
+    (0, import_obsidian13.setIcon)(toolIcon, "wrench");
     toolCount.createSpan({ text: ` ${toolCountText}` });
     const toolNames = server.toolDetails.length > 0 ? server.toolDetails.map((t) => t.name) : server.tools;
     if (toolNames.length > 0) {
@@ -25950,7 +26389,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       const authRow = card.createDiv({ cls: "af-mcp-auth-row" });
       const authBtn = authRow.createEl("button", { cls: "af-btn-sm primary" });
       const authIcon = authBtn.createSpan();
-      (0, import_obsidian12.setIcon)(authIcon, "key");
+      (0, import_obsidian13.setIcon)(authIcon, "key");
       authBtn.appendText(" Authenticate");
       authBtn.onclick = (e) => {
         e.stopPropagation();
@@ -25970,21 +26409,21 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
   }
   async authenticateMcpServer(server) {
     if (!server.url) {
-      new import_obsidian12.Notice("No URL found for this server \u2014 can't authenticate.");
+      new import_obsidian13.Notice("No URL found for this server \u2014 can't authenticate.");
       return;
     }
-    new import_obsidian12.Notice(`Starting OAuth flow for ${server.name}\u2026`);
+    new import_obsidian13.Notice(`Starting OAuth flow for ${server.name}\u2026`);
     try {
       await this.plugin.mcpAuth.authenticate(
         server.name,
         server.url,
         (phase, message) => {
           if (phase === "waiting") {
-            new import_obsidian12.Notice("Browser opened \u2014 complete authorization there.", 1e4);
+            new import_obsidian13.Notice("Browser opened \u2014 complete authorization there.", 1e4);
           } else if (phase === "done") {
-            new import_obsidian12.Notice(`\u2713 ${server.name} authenticated! Refreshing\u2026`);
+            new import_obsidian13.Notice(`\u2713 ${server.name} authenticated! Refreshing\u2026`);
           } else if (phase === "error") {
-            new import_obsidian12.Notice(`\u2715 Auth failed: ${message}`, 8e3);
+            new import_obsidian13.Notice(`\u2715 Auth failed: ${message}`, 8e3);
           }
         }
       );
@@ -25993,7 +26432,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
       void this.render();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new import_obsidian12.Notice(`Authentication failed: ${msg}`, 8e3);
+      new import_obsidian13.Notice(`Authentication failed: ${msg}`, 8e3);
     }
   }
   truncateDescription(text, maxLen) {
@@ -26010,7 +26449,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
     const header = panel.createDiv({ cls: "af-slideover-header" });
     header.createDiv({ cls: "af-slideover-title", text: server.name });
     const closeBtn = header.createEl("button", { cls: "clickable-icon" });
-    (0, import_obsidian12.setIcon)(closeBtn, "cross");
+    (0, import_obsidian13.setIcon)(closeBtn, "cross");
     closeBtn.onclick = () => overlay.remove();
     overlay.onclick = (e) => {
       if (e.target === overlay) overlay.remove();
@@ -26042,7 +26481,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
         const toolHeader = toolItem.createDiv({ cls: "af-mcp-tool-detail-header" });
         const toolNameEl = toolHeader.createSpan({ cls: "af-mcp-tool-detail-name" });
         const toolNameIcon = toolNameEl.createSpan();
-        (0, import_obsidian12.setIcon)(toolNameIcon, "wrench");
+        (0, import_obsidian13.setIcon)(toolNameIcon, "wrench");
         toolNameEl.createSpan({ text: ` ${tool.name}` });
         if (tool.inputSchema) {
           const params = tool.inputSchema.required ?? [];
@@ -26117,7 +26556,7 @@ var FleetDashboardView = class extends import_obsidian12.ItemView {
   /** Append a small info icon with a hover tooltip to a label element. */
   addTooltip(labelEl, text) {
     const tip = labelEl.createSpan({ cls: "af-form-tooltip" });
-    (0, import_obsidian12.setIcon)(tip, "info");
+    (0, import_obsidian13.setIcon)(tip, "info");
     tip.createSpan({ cls: "af-tooltip-text", text });
   }
 };
@@ -26196,8 +26635,8 @@ function channelStatusPillColor(status) {
 }
 
 // src/views/agentChatView.ts
-var import_obsidian13 = require("obsidian");
-var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
+var import_obsidian14 = require("obsidian");
+var AgentChatView = class _AgentChatView extends import_obsidian14.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -26434,11 +26873,11 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
     const iconEl = empty.createDiv({ cls: "af-chat-view-empty-icon" });
     const agents = this.plugin.runtime.getSnapshot().agents;
     if (agents.length === 0) {
-      (0, import_obsidian13.setIcon)(iconEl, "bot");
+      (0, import_obsidian14.setIcon)(iconEl, "bot");
       empty.createDiv({ cls: "af-chat-view-empty-text", text: "No agents available" });
       empty.createDiv({ cls: "af-chat-view-empty-hint", text: "Create an agent to start chatting" });
     } else {
-      (0, import_obsidian13.setIcon)(iconEl, "message-circle");
+      (0, import_obsidian14.setIcon)(iconEl, "message-circle");
       empty.createDiv({ cls: "af-chat-view-empty-text", text: "Select an agent to start" });
       empty.createDiv({ cls: "af-chat-view-empty-hint", text: "Choose an agent from the dropdown above" });
     }
@@ -26489,7 +26928,7 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
     const detachedBtn = copyBtn?.parentNode?.removeChild(copyBtn) ?? null;
     el.empty();
     el.addClass("af-compact-md");
-    void import_obsidian13.MarkdownRenderer.render(this.app, text, el, "", this.plugin).then(() => {
+    void import_obsidian14.MarkdownRenderer.render(this.app, text, el, "", this.plugin).then(() => {
       if (detachedBtn) el.appendChild(detachedBtn);
       el.querySelectorAll("pre").forEach((pre) => {
         pre.querySelector(".copy-code-button")?.remove();
@@ -26497,15 +26936,15 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
         if (!code) return;
         const btn = document.createElement("button");
         btn.className = "af-code-copy-btn";
-        (0, import_obsidian13.setIcon)(btn, "copy");
+        (0, import_obsidian14.setIcon)(btn, "copy");
         btn.onclick = (e) => {
           e.stopPropagation();
           void navigator.clipboard.writeText(code.textContent ?? "").then(() => {
             btn.addClass("copied");
-            (0, import_obsidian13.setIcon)(btn, "check");
+            (0, import_obsidian14.setIcon)(btn, "check");
             setTimeout(() => {
               btn.removeClass("copied");
-              (0, import_obsidian13.setIcon)(btn, "copy");
+              (0, import_obsidian14.setIcon)(btn, "copy");
             }, 1500);
           });
         };
@@ -26516,15 +26955,15 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
   }
   addCopyBtn(bubble, getText) {
     const btn = bubble.createEl("button", { cls: "af-chat-copy-btn" });
-    (0, import_obsidian13.setIcon)(btn, "copy");
+    (0, import_obsidian14.setIcon)(btn, "copy");
     btn.onclick = (e) => {
       e.stopPropagation();
       void navigator.clipboard.writeText(getText()).then(() => {
         btn.addClass("copied");
-        (0, import_obsidian13.setIcon)(btn, "check");
+        (0, import_obsidian14.setIcon)(btn, "check");
         setTimeout(() => {
           btn.removeClass("copied");
-          (0, import_obsidian13.setIcon)(btn, "copy");
+          (0, import_obsidian14.setIcon)(btn, "copy");
         }, 1500);
       });
     };
@@ -26536,7 +26975,7 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
         const pill = attachRow.createSpan({ cls: "af-chat-pill af-chat-pill-inline" });
         const iconEl = pill.createSpan({ cls: "af-chat-pill-icon" });
         const isImage = /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(name);
-        (0, import_obsidian13.setIcon)(iconEl, isImage ? "image" : "file-text");
+        (0, import_obsidian14.setIcon)(iconEl, isImage ? "image" : "file-text");
         pill.createSpan({ cls: "af-chat-pill-name", text: name });
       }
     }
@@ -26569,7 +27008,7 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
       grouped.set(t.name, existing);
     }
     const toolIcon = summary.createSpan({ cls: "af-chat-tool-icon" });
-    (0, import_obsidian13.setIcon)(toolIcon, "wrench");
+    (0, import_obsidian14.setIcon)(toolIcon, "wrench");
     summary.appendText(` ${tools.length} tool call${tools.length !== 1 ? "s" : ""}`);
     const list = details.createDiv({ cls: "af-chat-tool-list" });
     for (const [name, commands] of grouped) {
@@ -26648,17 +27087,17 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
   attachActiveDocument() {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
-      new import_obsidian13.Notice("No active document to attach");
+      new import_obsidian14.Notice("No active document to attach");
       return;
     }
     if (this.attachedFiles.some((f) => f.path === activeFile.path)) {
-      new import_obsidian13.Notice(`"${activeFile.name}" is already attached`);
+      new import_obsidian14.Notice(`"${activeFile.name}" is already attached`);
       return;
     }
     const ext = activeFile.extension.toLowerCase();
     const textExts = /* @__PURE__ */ new Set(["md", "txt", "json", "yaml", "yml", "toml", "csv", "xml", "html", "css", "js", "ts", "py", "sh", "sql", "env", "cfg", "ini", "log"]);
     if (!textExts.has(ext)) {
-      new import_obsidian13.Notice(`Can't attach "${activeFile.name}" \u2014 only text files are supported`);
+      new import_obsidian14.Notice(`Can't attach "${activeFile.name}" \u2014 only text files are supported`);
       return;
     }
     this.attachedFiles.push(activeFile);
@@ -26669,7 +27108,7 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
     const timestamp = Date.now();
     const name = file.name && file.name !== "image" ? file.name : `pasted-${timestamp}.${ext}`;
     if (this.attachedImages.some((img) => img.name === name)) {
-      new import_obsidian13.Notice(`"${name}" is already attached`);
+      new import_obsidian14.Notice(`"${name}" is already attached`);
       return;
     }
     const dir = `${this.plugin.settings.fleetFolder}/chat-images`;
@@ -26687,7 +27126,7 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
       this.renderPills();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new import_obsidian13.Notice(`Failed to save image: ${msg}`);
+      new import_obsidian14.Notice(`Failed to save image: ${msg}`);
     }
   }
   removeAttachment(filePath) {
@@ -26706,10 +27145,10 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
     for (const file of this.attachedFiles) {
       const pill = this.pillsRow.createDiv({ cls: "af-chat-pill" });
       const iconEl = pill.createSpan({ cls: "af-chat-pill-icon" });
-      (0, import_obsidian13.setIcon)(iconEl, "file-text");
+      (0, import_obsidian14.setIcon)(iconEl, "file-text");
       pill.createSpan({ cls: "af-chat-pill-name", text: file.name });
       const removeBtn = pill.createSpan({ cls: "af-chat-pill-remove" });
-      (0, import_obsidian13.setIcon)(removeBtn, "x");
+      (0, import_obsidian14.setIcon)(removeBtn, "x");
       removeBtn.onclick = (e) => {
         e.stopPropagation();
         this.removeAttachment(file.path);
@@ -26718,10 +27157,10 @@ var AgentChatView = class _AgentChatView extends import_obsidian13.ItemView {
     for (const img of this.attachedImages) {
       const pill = this.pillsRow.createDiv({ cls: "af-chat-pill" });
       const iconEl = pill.createSpan({ cls: "af-chat-pill-icon" });
-      (0, import_obsidian13.setIcon)(iconEl, "image");
+      (0, import_obsidian14.setIcon)(iconEl, "image");
       pill.createSpan({ cls: "af-chat-pill-name", text: img.name });
       const removeBtn = pill.createSpan({ cls: "af-chat-pill-remove" });
-      (0, import_obsidian13.setIcon)(removeBtn, "x");
+      (0, import_obsidian14.setIcon)(removeBtn, "x");
       removeBtn.onclick = (e) => {
         e.stopPropagation();
         this.removeAttachment(img.path);
@@ -26796,7 +27235,11 @@ ${sections.join("\n\n")}
             hasText = true;
           }
           accumulated += event.content;
-          assistantBubble.setText(accumulated);
+          let streamText = assistantBubble.querySelector(".af-chat-stream-text");
+          if (!streamText) {
+            streamText = assistantBubble.createDiv({ cls: "af-chat-stream-text" });
+          }
+          streamText.setText(accumulated);
         } else if (event.type === "tool_use") {
           this.setActivity(event.toolName);
         } else if (event.type === "result") {
@@ -26885,7 +27328,7 @@ ${sections.join("\n\n")}
 };
 
 // src/main.ts
-var AgentFleetPlugin = class extends import_obsidian14.Plugin {
+var AgentFleetPlugin = class extends import_obsidian15.Plugin {
   settings = { ...DEFAULT_SETTINGS };
   repository;
   runtime;
@@ -26956,6 +27399,9 @@ var AgentFleetPlugin = class extends import_obsidian14.Plugin {
         if (config.type === "slack") {
           return new SlackAdapter(config, credential);
         }
+        if (config.type === "telegram") {
+          return new TelegramAdapter(config, credential);
+        }
         throw new Error(`Channel type \`${config.type}\` is not yet supported in this version.`);
       }
     });
@@ -26963,7 +27409,7 @@ var AgentFleetPlugin = class extends import_obsidian14.Plugin {
       await this.channelManager.start(this.runtime.getSnapshot());
     } catch (err) {
       console.error("Agent Fleet: channel manager failed to start", err);
-      new import_obsidian14.Notice("Agent Fleet: channel manager failed to start \u2014 check console.");
+      new import_obsidian15.Notice("Agent Fleet: channel manager failed to start \u2014 check console.");
     }
     this.runtime.onHeartbeatResult((agentName, channelName, output) => {
       void this.channelManager?.broadcastToChannel(
@@ -26980,7 +27426,7 @@ ${output}`
     void this.mcpManager.getServers().then(() => {
       this.notifyViews();
     });
-    new import_obsidian14.Notice("Agent Fleet loaded.");
+    new import_obsidian15.Notice("Agent Fleet loaded.");
   }
   onunload() {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_DASHBOARD);
@@ -27099,22 +27545,22 @@ ${output}`
           console.error("Agent Fleet: Claude CLI verification failed", stderr);
         }
         if (showNotice) {
-          new import_obsidian14.Notice(ok ? "Claude CLI available." : "Claude CLI verification failed \u2014 check Claude CLI Path in settings.");
+          new import_obsidian15.Notice(ok ? "Claude CLI available." : "Claude CLI verification failed \u2014 check Claude CLI Path in settings.");
         }
         resolve(ok);
       });
       proc.on("error", (error) => {
         console.error("Agent Fleet: Claude CLI verification error", error);
         if (showNotice) {
-          new import_obsidian14.Notice("Claude CLI verification failed \u2014 check Claude CLI Path in settings.");
+          new import_obsidian15.Notice("Claude CLI verification failed \u2014 check Claude CLI Path in settings.");
         }
         resolve(false);
       });
     });
   }
   async openPath(path2) {
-    const file = this.app.vault.getAbstractFileByPath((0, import_obsidian14.normalizePath)(path2));
-    if (file instanceof import_obsidian14.TFile) {
+    const file = this.app.vault.getAbstractFileByPath((0, import_obsidian15.normalizePath)(path2));
+    if (file instanceof import_obsidian15.TFile) {
       await this.app.workspace.getLeaf(true).openFile(file);
     }
   }
@@ -27130,7 +27576,7 @@ ${output}`
   async runAgentPrompt(agentName) {
     const agent = this.repository.getAgentByName(agentName);
     if (!agent) {
-      new import_obsidian14.Notice(`Unknown agent: ${agentName}`);
+      new import_obsidian15.Notice(`Unknown agent: ${agentName}`);
       return;
     }
     await this.runtime.runAgentNow(agent, "Run now and summarize the current state.");
@@ -27138,7 +27584,7 @@ ${output}`
   async chatWithAgent(agentName) {
     const agent = this.repository.getAgentByName(agentName);
     if (!agent) {
-      new import_obsidian14.Notice(`Unknown agent: ${agentName}`);
+      new import_obsidian15.Notice(`Unknown agent: ${agentName}`);
       return;
     }
     await this.openChatView(agentName);
@@ -27146,7 +27592,7 @@ ${output}`
   async deleteAgent(agentName) {
     const agent = this.repository.getAgentByName(agentName);
     if (!agent) {
-      new import_obsidian14.Notice(`Unknown agent: ${agentName}`);
+      new import_obsidian15.Notice(`Unknown agent: ${agentName}`);
       return;
     }
     const tasks = this.repository.getTasksForAgent(agentName);
@@ -27165,7 +27611,7 @@ ${output}`
         const result = await this.repository.deleteAgent(agentName, deleteTasks);
         await new Promise((r) => setTimeout(r, 200));
         await this.refreshFromVault();
-        new import_obsidian14.Notice(`Deleted agent "${agentName}" (${result.trashedFiles.length} files moved to trash)`);
+        new import_obsidian15.Notice(`Deleted agent "${agentName}" (${result.trashedFiles.length} files moved to trash)`);
         await this.navigateDashboard("agents");
       }
     ).open();
@@ -27176,7 +27622,7 @@ ${output}`
       return;
     }
     const file = this.app.vault.getAbstractFileByPath(agent.filePath);
-    if (!(file instanceof import_obsidian14.TFile)) {
+    if (!(file instanceof import_obsidian15.TFile)) {
       return;
     }
     const content = await this.app.vault.cachedRead(file);
@@ -27236,7 +27682,7 @@ ${output}`
         if (agent) {
           void this.runAgentPrompt(agent.name);
         } else {
-          new import_obsidian14.Notice("No agents configured.");
+          new import_obsidian15.Notice("No agents configured.");
         }
       }
     });
@@ -27245,7 +27691,7 @@ ${output}`
       name: "Pause All",
       callback: () => {
         this.runtime.scheduler.pauseAll();
-        new import_obsidian14.Notice("Agent Fleet paused.");
+        new import_obsidian15.Notice("Agent Fleet paused.");
       }
     });
     this.addCommand({
@@ -27253,7 +27699,7 @@ ${output}`
       name: "Resume All",
       callback: () => {
         this.runtime.scheduler.resumeAll();
-        new import_obsidian14.Notice("Agent Fleet resumed.");
+        new import_obsidian15.Notice("Agent Fleet resumed.");
       }
     });
     this.addCommand({
@@ -27261,7 +27707,7 @@ ${output}`
       name: "View Fleet Status",
       callback: () => {
         const status = this.runtime.getFleetStatus();
-        new import_obsidian14.Notice(`${status.running} running \xB7 ${status.pending} pending \xB7 ${status.completedToday} completed today`);
+        new import_obsidian15.Notice(`${status.running} running \xB7 ${status.pending} pending \xB7 ${status.completedToday} completed today`);
       }
     });
   }
@@ -27277,14 +27723,14 @@ ${output}`
   registerVaultHandlers() {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian14.TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
+        if (file instanceof import_obsidian15.TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
           this.debouncedVaultRefresh();
         }
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian14.TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
+        if (file instanceof import_obsidian15.TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
           this.debouncedVaultRefresh();
         }
       })
