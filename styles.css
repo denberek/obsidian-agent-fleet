@@ -3926,6 +3926,16 @@
   opacity: 1;
 }
 
+/* ── MCP Slideover Actions ── */
+
+.af-slideover-section .af-btn-sm {
+  margin-top: 6px;
+}
+
+.af-slideover-section .af-btn-sm + .af-btn-sm {
+  margin-left: 8px;
+}
+
 /* ── MCP Disabled State ── */
 
 .af-mcp-card-disabled {
