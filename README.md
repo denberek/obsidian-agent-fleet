@@ -22,7 +22,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand.
 
-🔌 **MCP Integration** — Discover, authenticate, and inspect MCP servers. One-click OAuth 2.1 authentication. Assign MCP tools to specific agents.
+🔌 **MCP Integration** — Add, remove, authenticate, and inspect MCP servers from the dashboard. One-click OAuth 2.1 with automatic CLI token injection — agents can use authenticated servers immediately.
 
 🧠 **Agent Memory** — Agents persist context across sessions using `[REMEMBER]` tags stored as markdown.
 
@@ -269,7 +269,18 @@ A kanban view for managing agent tasks with five columns:
 
 ### MCP Servers
 
-Discover and manage all MCP (Model Context Protocol) servers configured in Claude Code.
+Add, remove, authenticate, and manage MCP servers directly from the dashboard — no terminal needed.
+
+**Add Server UI:**
+- Click **"Add Server"** on the MCP page to open the form
+- **stdio** — command, arguments, environment variables
+- **HTTP / SSE** — URL, API key (stored securely), custom headers
+- Scope selection (user or local) — defaults to "user" so servers are visible across projects
+- Servers appear immediately after adding, with tools auto-discovered
+
+**Remove Server:**
+- Open any server's detail slideover → click **"Remove Server"**
+- Cleans up CLI registration and stored secrets in one step
 
 **Discovery:**
 - **stdio servers** — spawned and probed directly via JSON-RPC (~1-2s)
@@ -278,12 +289,14 @@ Discover and manage all MCP (Model Context Protocol) servers configured in Claud
 
 **OAuth 2.1 Authentication:**
 
-One-click browser-based auth for MCP servers:
+One-click browser-based auth with unified CLI token injection:
 1. Click "Authenticate" on any server card
 2. Plugin discovers OAuth endpoints automatically
 3. Registers via Dynamic Client Registration
 4. Opens browser for approval (PKCE flow)
-5. Tokens stored in plugin settings, auto-refresh
+5. Tokens stored securely in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+6. Token automatically injected into Claude CLI config — agents can use the server immediately without separate CLI authentication
+7. Background token refresh — expiring tokens are refreshed and re-injected automatically
 
 **Server Management:**
 - Enable/disable toggle per server (writes to Claude's settings)
@@ -408,6 +421,12 @@ Click any run in the dashboard to see full details in a slideover panel.
 | Run Log Retention | `30` days | Auto-cleanup old logs |
 | Catch Up Missed Tasks | `true` | Run overdue tasks on startup |
 | Notification Level | `all` | `all`, `failures-only`, `none` |
+
+### Security
+
+All secrets — MCP OAuth tokens, API keys, and channel credentials (Slack/Telegram) — are stored in your OS keychain via Obsidian's SecretStorage API. On first load after updating to v0.6.0, existing plaintext credentials are automatically migrated from `data.json` to the keychain and the plaintext copies are cleared.
+
+Requires Obsidian 1.11.4+ for keychain support. On older versions, credentials remain in `data.json` with a console warning.
 
 ### Channel Settings
 
