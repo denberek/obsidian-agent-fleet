@@ -3908,6 +3908,16 @@
   height: 14px;
 }
 
+.af-spin {
+  display: inline-flex;
+  animation: af-spin 1s linear infinite;
+}
+
+@keyframes af-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .af-mcp-hint-row {
   font-size: 11px;
   color: var(--af-text-secondary);
