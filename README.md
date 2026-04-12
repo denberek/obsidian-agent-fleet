@@ -53,7 +53,7 @@ The installer automatically finds your Obsidian vaults and copies the plugin fil
 
 ### Requirements
 
-- **Obsidian** 1.6.0+ (desktop only)
+- **Obsidian** 1.6.0+ (desktop — macOS, Windows, Linux)
 - **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** — the engine behind all agent execution:
   ```bash
   npm install -g @anthropic-ai/claude-code
@@ -499,4 +499,4 @@ An autonomous periodic run — what an agent does on a schedule without user inp
 
 ---
 
-© 2026 Denis Berekchiyan. All rights reserved.
+MIT License — © 2026 Denis Berekchiyan
