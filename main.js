@@ -13,6 +13,11 @@
 You operate inside an Obsidian vault with the Agent Fleet plugin installed.
 The fleet data lives in the \`_fleet/\` folder at the vault root.
 You can read and write files in this folder to manage the fleet.
+
+The plugin runs on macOS, Windows, and Linux. Agent processes are spawned
+via the Claude Code CLI, which must be installed separately. Credentials
+for channels and MCP servers are stored securely in the OS keychain
+(macOS Keychain, Windows Credential Manager, Linux Secret Service).
 `},{path:"agents/fleet-orchestrator/SKILLS.md",content:`---
 {}
 ---
@@ -41,10 +46,12 @@ You have deep knowledge of:
 - How to create, modify, and configure agents, tasks, skills, and channels
 - The scheduling system (cron expressions, task types, heartbeat schedules)
 - Heartbeat configuration \u2014 autonomous periodic agent runs via HEARTBEAT.md
-- Channels \u2014 connecting agents to external chat platforms (Slack, etc.)
-- Multi-agent routing via @agent-name prefix in channel conversations
+- Channels \u2014 connecting agents to external chat platforms (Slack, Telegram)
+- Multi-agent routing via @agent-name prefix, /agents command, and Telegram inline keyboard
+- MCP server management \u2014 assigning servers to agents via mcp_servers field
 - Permission modes and security rules
 - The folder structure and file formats
+- Cross-platform support (macOS, Windows, Linux)
 
 When asked to create a new agent, task, skill, or channel:
 1. Create the proper folder structure and files
@@ -59,8 +66,13 @@ When asked to set up a heartbeat:
 
 When asked to set up a channel:
 1. Create a channel file in _fleet/channels/
-2. Explain required Slack app configuration (external to the plugin)
+2. Explain required external setup (Slack app with Socket Mode, or Telegram bot via BotFather)
 3. Set up the allowed agents for multi-agent routing if needed
+
+When asked about MCP servers:
+1. Explain that MCP servers are managed from the dashboard (add/remove/authenticate)
+2. Show how to assign servers to agents via the mcp_servers field in agent.md
+3. Explain OAuth authentication flow for HTTP/SSE servers
 
 When asked to troubleshoot:
 1. Check the relevant files in _fleet/
@@ -191,7 +203,36 @@ channel_context: |
 ---
 \`\`\`
 
-Then explains: "You need to set up a Slack app at api.slack.com with Socket Mode enabled, and add the bot token + app token as a credential named \`slack-creds\` in Settings \u2192 Agent Fleet \u2192 Channel Credentials. Once configured, send a DM to the bot from Slack \u2014 use \`@agent-name: message\` to switch between agents."
+Then explains: "You need to set up a Slack app at api.slack.com with Socket Mode enabled, and add the bot token + app token as a credential named \`slack-creds\` in Settings \u2192 Agent Fleet \u2192 Channel Credentials. Credentials are stored securely in your OS keychain. Once configured, send a DM to the bot from Slack \u2014 use \`@agent-name: message\` to switch between agents, or type \`/agents\` to see available agents."
+
+---
+
+## Example 3b: Set up a Telegram channel
+
+**User:** I want to chat with my agents from Telegram.
+
+**Agent:** Creates a channel binding file:
+
+**_fleet/channels/my-telegram.md:**
+\`\`\`yaml
+---
+name: my-telegram
+type: telegram
+default_agent: fleet-orchestrator
+allowed_agents:
+  - fleet-orchestrator
+  - site-monitor
+enabled: true
+credential_ref: telegram-creds
+allowed_users:
+  - "110810710"
+per_user_sessions: true
+channel_context: |
+  You are being contacted via Telegram. Keep replies concise.
+---
+\`\`\`
+
+Then explains: "Create a bot via @BotFather on Telegram \u2014 use \`/newbot\`, pick a name and username, and copy the token. Add the token as a credential named \`telegram-creds\` in Settings \u2192 Agent Fleet \u2192 Channel Credentials (type: Telegram). Then message the bot in Telegram. Use \`/agents\` to get interactive buttons for switching agents."
 
 ---
 
@@ -259,6 +300,28 @@ allowed_agents:
 \`\`\`
 
 Explains: "Users can now type \`@code-reviewer: review this\` to switch agents mid-conversation. Each agent gets its own isolated session. Type \`/agents\` in Slack to see the full list."
+
+---
+
+## Example 8: Assign MCP servers to an agent
+
+**User:** I want my assistant agent to use the Todoist and Linear MCP servers.
+
+**Agent:** Updates \`_fleet/agents/assistant/agent.md\` frontmatter to include \`mcp_servers\`:
+
+\`\`\`yaml
+---
+name: assistant
+description: Personal assistant with task and project management
+mcp_servers:
+  - todoist
+  - linear
+skills:
+  - agent-fleet-system
+---
+\`\`\`
+
+Explains: "The agent will now have access to Todoist and Linear tools during its runs. Make sure these MCP servers are added and authenticated in the dashboard (MCP Servers page). For HTTP/SSE servers that need OAuth, click 'Authenticate' on the server card \u2014 the plugin handles the browser-based auth flow and injects tokens into the CLI automatically."
 `},{path:"skills/agent-fleet-system/references.md",content:`# References
 
 ## Permission Modes
@@ -297,15 +360,14 @@ The plugin spawns Claude Code with:
 claude -p "<prompt>" --output-format stream-json --verbose [--model <model>]
 \`\`\`
 
-Through a login shell (\`/bin/zsh -l -c\`) so \`~/.zshenv\` environment variables are available.
+On macOS/Linux, commands run through a login shell (\`/bin/zsh -l -c\` or \`/bin/bash -l -c\`) so shell profile environment variables are available. On Windows, commands spawn directly \u2014 Windows inherits environment variables from the system without a shell wrapper.
 
 ## Environment Variables
 
-API tokens and secrets should be set in \`~/.zshenv\`:
-\`\`\`bash
-export TODOIST_API_TOKEN="..."
-export GITHUB_TOKEN="..."
-\`\`\`
+API tokens and secrets should be set in your shell profile:
+- **macOS:** \`~/.zshenv\` or \`~/.zprofile\`
+- **Linux:** \`~/.bashrc\` or \`~/.profile\`
+- **Windows:** System Environment Variables (Settings \u2192 System \u2192 Advanced \u2192 Environment Variables)
 
 These are inherited by all agent processes. Never store tokens in vault files.
 
@@ -314,15 +376,17 @@ These are inherited by all agent processes. Never store tokens in vault files.
 | Type | Transport | Status |
 |---|---|---|
 | slack | Socket Mode WebSocket + Assistants API | Supported |
-| telegram | Long-poll via getUpdates | Coming soon |
+| telegram | Long-poll via HTTPS (getUpdates) | Supported |
 | discord | Gateway WebSocket | Coming soon |
 
 **Slack requirements:** Slack app with Socket Mode enabled, bot token (xoxb-) + app-level token (xapp-), scopes: chat:write, im:history, im:read, im:write, app_mentions:read, assistant:write, commands.
 
+**Telegram requirements:** Bot created via @BotFather, bot token. Optional: disable privacy mode for group access, enable threaded mode for forum topics.
+
 **Channel constraints:**
 - Agents with \`approval_required\` cannot be bound to channels (would deadlock)
-- Credentials live in plugin data.json, never in vault markdown files
-- \`allowed_users\` is checked against Slack's verified sender field (Socket Mode envelopes are signed)
+- Credentials are stored in the OS keychain via Obsidian's SecretStorage API (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+- \`allowed_users\` is checked against the platform's verified sender field
 
 ## Heartbeat vs Tasks
 
@@ -421,7 +485,7 @@ who it is, how it behaves, what it does.
 \`\`\`yaml
 ---
 model: default                    # "default", "claude-sonnet-4-6", "claude-opus-4-6", etc.
-adapter: claude-code              # "claude-code", "codex", "process", "http"
+adapter: claude-code              # Currently the only supported adapter
 timeout: 300                      # Seconds before kill
 max_retries: 1
 cwd: ""                           # Working directory (empty = vault root)
@@ -496,33 +560,57 @@ a one-line "all clear". Use [REMEMBER] to track trends across heartbeats.
 
 ## Creating a Channel
 
-Channels connect agents to external chat platforms. Create a markdown file in \`_fleet/channels/<name>.md\`:
+Channels connect agents to external chat platforms. Create a markdown file in \`_fleet/channels/<name>.md\`.
 
+### Slack Channel
 \`\`\`yaml
 ---
-name: my-slack                        # Required, unique identifier
-type: slack                           # "slack" (telegram/discord coming soon)
-default_agent: fleet-orchestrator     # Agent used when no @prefix is given
-allowed_agents:                       # Agents reachable via @prefix (empty = all)
+name: my-slack
+type: slack
+default_agent: fleet-orchestrator
+allowed_agents:
   - fleet-orchestrator
   - site-monitor
 enabled: true
-credential_ref: my-slack-creds        # References a credential in plugin settings
-allowed_users:                        # Slack user IDs (U...) \u2014 only these can message
+credential_ref: my-slack-creds
+allowed_users:
   - U0AQW6P37N1
-per_user_sessions: true               # Each user gets their own Claude session
-channel_context: |                    # Extra instructions for channel conversations
+per_user_sessions: true
+channel_context: |
   You are being contacted via Slack. Keep replies concise.
 ---
 \`\`\`
 
+Slack uses Socket Mode (outbound WebSocket) with the Assistants API for native "is thinking..." indicators and thread titles.
+
+### Telegram Channel
+\`\`\`yaml
+---
+name: my-telegram
+type: telegram
+default_agent: fleet-orchestrator
+allowed_agents:
+  - fleet-orchestrator
+  - site-monitor
+enabled: true
+credential_ref: my-telegram-creds
+allowed_users:
+  - "110810710"
+per_user_sessions: true
+channel_context: |
+  You are being contacted via Telegram. Keep replies concise.
+---
+\`\`\`
+
+Telegram uses long-poll HTTPS (no WebSocket, no SDK). Features: typing indicators, inline keyboard agent picker via \`/agents\`, slash command autocomplete, group chat and forum topic support.
+
 **Important notes:**
 - \`credential_ref\` must match a credential name in Settings \u2192 Agent Fleet \u2192 Channel Credentials
-- Credentials (bot tokens) are stored in the plugin's data.json, NOT in vault files
-- \`allowed_users\` contains Slack user IDs (start with U)
+- Credentials are stored securely in the OS keychain via Obsidian's SecretStorage API
+- \`allowed_users\`: Slack user IDs (start with U) or Telegram user IDs (numeric)
 - Agents with \`approval_required\` set cannot be bound to a channel
-- Multi-agent routing: users type \`@agent-name: message\` to switch agents in a thread
-- The \`/agents\` slash command lists available agents in the channel
+- Multi-agent routing: type \`@agent-name: message\` to switch agents, or use \`/agents\` for interactive picker
+- Obsidian must be running for channels to work \u2014 when closed, bots go offline
 
 ## Creating a Task
 
@@ -581,6 +669,42 @@ Core skill instructions go here.
 ### tools.md \u2014 Tool Documentation (optional)
 ### references.md \u2014 Background Docs (optional)
 ### examples.md \u2014 Few-Shot Examples (optional)
+
+## MCP Servers
+
+MCP (Model Context Protocol) servers give agents access to external tools and services. Servers are managed from the dashboard \u2014 add, remove, authenticate, and inspect servers without touching the terminal.
+
+### Assigning MCP Servers to Agents
+
+Add the \`mcp_servers\` field to the agent's \`agent.md\` frontmatter:
+
+\`\`\`yaml
+---
+name: my-agent
+description: Agent with MCP access
+mcp_servers:
+  - todoist
+  - linear
+  - github
+---
+\`\`\`
+
+At runtime, the plugin writes a temporary \`settings.local.json\` in the agent's working directory that maps these server names to Claude Code's \`mcp__<name>\` allow entries. The file is restored after the run.
+
+### Server Types
+
+- **stdio** \u2014 local process spawned by Claude CLI (e.g., \`npx @some/mcp-server\`)
+- **HTTP / SSE** \u2014 remote server accessed via URL, often with OAuth authentication
+
+### OAuth Authentication
+
+HTTP/SSE servers that require OAuth can be authenticated from the dashboard:
+1. Click "Authenticate" on the server card
+2. Plugin discovers OAuth endpoints automatically (RFC 8414 / RFC 9728)
+3. Registers via Dynamic Client Registration
+4. Opens browser for PKCE authorization flow
+5. Tokens stored in OS keychain and injected into Claude CLI config
+6. Background token refresh keeps agents authenticated
 
 ## Modifying Agents, Tasks, Skills, or Channels
 

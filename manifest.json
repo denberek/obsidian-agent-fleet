@@ -1,7 +1,7 @@
 {
     "id": "agent-fleet",
     "name": "Agent Fleet",
-    "version": "0.8.0",
+    "version": "0.8.1",
     "minAppVersion": "1.6.0",
     "description": "File-backed AI agents, task scheduling, and inbox monitoring inside Obsidian.",
     "author": "Denis Berekchiyan",
