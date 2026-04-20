@@ -1301,6 +1301,20 @@
   gap: 8px 16px;
 }
 
+.af-form-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  font-size: 12px;
+  color: var(--af-text-primary);
+  cursor: pointer;
+}
+
+.af-form-checkbox-row input[type="checkbox"] {
+  margin: 0;
+}
+
 .af-form-checkbox-label {
   display: flex;
   align-items: center;
