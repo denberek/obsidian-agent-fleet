@@ -14,19 +14,25 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 🤖 **AI Agents** — Create specialized agents with system prompts, skills, permissions, heartbeat schedules, and memory. Each agent is a folder of markdown files you fully own and control.
 
-💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works.
+📚 **Wiki Keeper** — Turn any folder in your vault into a self-maintaining wiki. Drop sources into an inbox, point at existing note folders as passive watched sources, and a scoped keeper agent ingests them nightly into an interlinked `_topics/` tree with cross-references, citations, and a log. Scales from one whole-vault keeper to many project-scoped instances. Any other agent (e.g. a PM agent) can reference a keeper's scope and query or contribute to it. See the [Wiki Keeper Guide](WIKI_KEEPER_GUIDE.md).
+
+💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works. **Inline threads** under any assistant reply let you tangent without polluting the main thread — each thread has its own Claude session, its own context, its own stats.
+
+📊 **Live chat stats** — Compact terminal-style strip under the composer shows the model and a context-usage bar so you always know where you stand on context.
 
 📡 **Slack & Telegram** — Chat with your agents from Slack or Telegram. Multi-agent routing via `@agent-name` prefix or interactive buttons. Slack Assistants API with native "is thinking..." indicator. Telegram with inline keyboard agent picker and typing dots. Session persistence across restarts.
 
 💓 **Heartbeat** — Autonomous periodic agent runs. Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted to Slack.
 
-📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand.
+📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand. Per-task model override lets you route a simple nightly summary to Haiku while keeping the agent on Opus.
+
+🎛️ **Model picker** — Choose between aliases (`opus` / `sonnet` / `haiku` / `opusplan` — backend-agnostic), pinned IDs, or Bedrock/Vertex/Foundry formats. One place to configure: settings default, per-agent, or per-task override. Runs log both the requested alias and the concrete resolved model.
 
 🔌 **MCP Integration** — Add, remove, authenticate, and inspect MCP servers from the dashboard. One-click OAuth 2.1 with automatic CLI token injection — agents can use authenticated servers immediately.
 
 🧠 **Agent Memory** — Agents persist context across sessions using `[REMEMBER]` tags stored as markdown.
 
-📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, and streaming output from active agents.
+📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, streaming output from active agents, and focused run-detail panels that lead with the final result and hide the full reasoning transcript behind a toggle.
 
 ---
 
@@ -415,7 +421,7 @@ Click any run in the dashboard to see full details in a slideover panel.
 |---------|---------|-------------|
 | Fleet Folder | `_fleet` | Root folder for all fleet data |
 | Claude CLI Path | `claude` | Path to Claude Code CLI |
-| Default Model | `default` | Default model for new agents |
+| Default Model | `default` | Default model for new agents. Pick Default / Alias (opus/sonnet/haiku/opusplan) / Custom (manual ID for Bedrock/Vertex/etc.) |
 | AWS Region | `us-east-1` | For AWS Bedrock model support |
 | Max Concurrent Runs | `2` | Parallel task execution limit |
 | Run Log Retention | `30` days | Auto-cleanup old logs |
@@ -464,8 +470,8 @@ Not necessarily. Agent Fleet works with your **Claude Max or Pro subscription** 
 **Q: Does it work without internet?**
 No — agents need the Claude API to run. But all your data (agents, tasks, skills, memory) is local markdown.
 
-**Q: Can I use different models per agent?**
-Yes. Each agent has its own model setting. Supports Anthropic direct (Opus, Sonnet, Haiku) and AWS Bedrock models.
+**Q: Can I use different models per agent or per task?**
+Yes. Each agent has its own model setting, and you can override it per task (e.g. keep the agent on Opus but run a simple nightly summary task on Haiku to cut cost). Supports Anthropic direct, AWS Bedrock, Google Vertex, Foundry, and Mantle. Aliases `opus` / `sonnet` / `haiku` / `opusplan` work on every backend — pick those unless you need a pinned version. Resolution order: task → agent → settings → Claude CLI default.
 
 **Q: What happens if I delete the plugin?**
 Your `_fleet/` folder stays. All agents, tasks, skills, run logs, and memory are plain markdown files in your vault.

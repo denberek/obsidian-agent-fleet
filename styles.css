@@ -3054,8 +3054,9 @@
 
 .af-chat-bubble-user {
   align-self: flex-end;
-  background: var(--af-accent);
-  color: #fff;
+  background: transparent;
+  color: var(--af-text-primary);
+  border: 1px solid var(--af-accent);
   border-bottom-right-radius: var(--af-radius-sm);
 }
 
@@ -4026,4 +4027,477 @@
 .af-mcp-overview-tools.af-muted {
   opacity: 0.6;
   font-style: italic;
+}
+
+/* ── Model picker ── */
+
+.af-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.af-mp-select {
+  width: 100%;
+}
+
+.af-mp-custom-input {
+  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+/* ── Chat stats strip (terminal-style) ── */
+
+.af-chat-stats {
+  display: flex;
+  align-items: center;
+  /* Align with input: attach btn (18px) + gap (8px), plus a small inset so
+   * the model name breathes rather than hugging the textarea edge. */
+  padding: 6px 12px 0 calc(18px + 8px + 10px);
+  min-height: 12px;
+  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--af-text-faint);
+}
+
+.af-chat-stats-muted {
+  color: transparent;
+}
+
+/* One-line row: `<model>  <bar> <pct>` — space-between for nice separation. */
+.af-chat-stats-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.af-chat-stats-model {
+  color: var(--af-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.af-chat-stats-ctx {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--af-text-faint);
+  flex-shrink: 0;
+}
+
+.af-chat-stats-bar {
+  /* Render the blocks at a reduced size so the bar reads as a thin rule
+   * rather than competing vertically with the model name. */
+  font-size: 8px;
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--af-text-secondary);
+}
+
+.af-chat-stats-pct {
+  color: var(--af-text-secondary);
+  min-width: 28px;
+  text-align: right;
+}
+
+.af-chat-stats-ctx.warn .af-chat-stats-bar,
+.af-chat-stats-ctx.warn .af-chat-stats-pct {
+  color: var(--color-orange, #e8a23a);
+}
+
+/* ── Chat threading ── */
+
+/* Thread badge: mirrors the `.af-chat-tool-summary summary` treatment —
+ * bordered rounded pill, surface bg, muted text, darker-bg on hover. Keeps
+ * thread and tool-calls affordances visually consistent. */
+/* Affordances row — a horizontal flex container that hosts the thread
+ * badge and the tool-calls summary side-by-side under an assistant bubble.
+ * `flex-start` alignment keeps the two buttons flush at the top even when
+ * the tool-calls <details> is expanded and its block height grows below. */
+.af-chat-affordances {
+  align-self: flex-start;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The tool-summary already sets `align-self: flex-start` for its messages-list
+ * position, but inside the affordances row we want it to sit on the
+ * baseline next to the thread badge — reset. */
+.af-chat-affordances .af-chat-tool-summary {
+  align-self: auto;
+}
+
+/* Inside the affordances row, keep the original `<details>` + `<summary>` +
+ * `.af-chat-tool-list` structure so that expanding the tool-calls pill
+ * reads as ONE bordered component (summary on top, list below, single
+ * border wraps both). Height matching is done by sizing the inner summary
+ * so that summary+border == thread-badge total height. */
+.af-thread-badge,
+.af-chat-affordances .af-chat-tool-summary,
+.af-chat-affordances .af-chat-tool-summary details,
+.af-chat-affordances .af-chat-tool-summary summary {
+  font-size: 11px;
+  line-height: 1.4;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+/* Border lives on <details> (wraps summary + list). `overflow: hidden`
+ * clips the list's corners to the details radius. */
+.af-chat-affordances .af-chat-tool-summary details {
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-bg-surface);
+  overflow: hidden;
+}
+
+/* Summary is the button surface — no border of its own (its parent
+ * details provides one). Height 26px + details' 2px border = 28px total,
+ * matching the thread badge exactly. */
+.af-chat-affordances .af-chat-tool-summary summary {
+  height: 26px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--af-text-muted);
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.af-chat-affordances .af-chat-tool-summary summary:hover {
+  color: var(--af-text-primary);
+  background: var(--af-bg-secondary);
+}
+
+/* Thread badge keeps its own border because it has no details wrapper —
+ * full 28px with border+padding baked in. */
+.af-thread-badge {
+  height: 28px;
+}
+
+.af-chat-affordances .af-chat-tool-summary summary::-webkit-details-marker {
+  display: none;
+}
+
+.af-chat-affordances .af-chat-tool-summary summary::marker {
+  content: "";
+}
+
+/* When open, a subtle separator line sits between summary and list —
+ * both wrapped by the outer details border, so the whole thing reads as a
+ * single component. */
+.af-chat-affordances .af-chat-tool-summary details[open] summary {
+  border-bottom: 1px solid var(--af-border);
+}
+
+.af-chat-affordances .af-chat-tool-summary .af-chat-tool-list {
+  border: none;
+  background: transparent;
+  padding: 6px 10px 8px 10px;
+}
+
+/* Mirrors `.af-chat-tool-summary summary` one-for-one. Rendered as a
+ * `<div role="button">` rather than `<button>` to avoid Obsidian's global
+ * button styling (`--interactive-normal` bg, etc.) bleeding through. */
+.af-thread-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-bg-surface);
+  color: var(--af-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.af-thread-badge:hover {
+  color: var(--af-text-primary);
+  background: var(--af-bg-secondary);
+}
+
+.af-thread-badge:active,
+.af-thread-badge:focus {
+  box-shadow: none;
+  outline: none;
+}
+
+.af-thread-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+.af-thread-badge.expanded {
+  color: var(--af-text-primary);
+  background: var(--af-bg-secondary);
+  border-color: var(--af-accent);
+}
+
+.af-thread-badge-label {
+  line-height: 1;
+}
+
+/* Thread container: nested region under the anchor bubble, read as an
+ * indented sidebar-style subconversation. */
+.af-thread-container {
+  margin: 2px 0 14px 0;
+  padding: 10px 12px 10px 14px;
+  border-left: 2px solid var(--af-accent);
+  background: var(--af-bg-surface);
+  border-radius: 0 var(--af-radius-md) var(--af-radius-md) 0;
+  align-self: stretch;
+}
+
+.af-thread-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.af-thread-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Thread bubbles: same visual language as main chat (accent-fill for user,
+ * surface-fill with border for assistant, asymmetric tail corner) but
+ * denser — smaller font, tighter padding, lower max-width — to read as a
+ * compact subconversation. */
+.af-thread-bubble {
+  max-width: 82%;
+  padding: 7px 11px;
+  border-radius: var(--af-radius-md);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  position: relative;
+}
+
+.af-thread-bubble-user {
+  align-self: flex-end;
+  background: transparent;
+  color: var(--af-text-primary);
+  border: 1px solid var(--af-accent);
+  border-bottom-right-radius: var(--af-radius-sm);
+}
+
+.af-thread-bubble-assistant {
+  align-self: flex-start;
+  background: var(--background-primary);
+  color: var(--af-text-primary);
+  border: 1px solid var(--af-border);
+  border-bottom-left-radius: var(--af-radius-sm);
+}
+
+/* Compact markdown tweaks so assistant thread bubbles stay tight. */
+.af-thread-bubble-assistant.af-compact-md {
+  font-size: 12px;
+}
+
+/* Thread composer reuses the main .af-chat-input-row so attach/input/send
+ * styles are inherited verbatim — the one knob is a slightly smaller input
+ * height to match the thread's density. */
+.af-thread-composer {
+  padding-top: 2px;
+}
+
+.af-thread-input {
+  font-size: 12px;
+  min-height: 28px;
+  max-height: 120px;
+}
+
+.af-thread-error {
+  padding: 6px 10px;
+  border-radius: var(--af-radius-sm);
+  background: rgba(243, 139, 168, 0.12);
+  color: var(--af-red);
+  border: 1px solid var(--af-red);
+  font-size: 11px;
+  align-self: stretch;
+}
+
+/* ── Wiki Keepers settings section ── */
+.af-wk-list {
+  margin: 8px 0 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.af-wk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-bg-surface);
+}
+
+.af-wk-row-left {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.af-wk-name {
+  font-weight: 500;
+  color: var(--af-text-primary);
+}
+
+.af-wk-scope {
+  font-size: 11px;
+  color: var(--af-text-secondary);
+  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.af-wk-empty {
+  padding: 10px 12px;
+  color: var(--af-text-muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.af-wk-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.af-wk-row-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-bg-card);
+  color: var(--af-text-secondary);
+  cursor: pointer;
+}
+
+.af-wk-row-btn:hover {
+  background: var(--af-bg-secondary);
+  color: var(--af-text-primary);
+}
+
+.af-wk-row-btn-danger:hover {
+  color: var(--af-red);
+  border-color: var(--af-red);
+}
+
+/* ── Add / Edit Wiki Keeper modal ── */
+
+.af-wk-modal .af-wk-banner {
+  padding: 10px 12px;
+  background: var(--af-bg-surface);
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  color: var(--af-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.af-wk-modal .af-wk-banner strong {
+  color: var(--af-text-primary);
+}
+
+.af-wk-modal .af-wk-section-h {
+  margin: 18px 0 8px 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--af-text-secondary);
+  border-bottom: 1px solid var(--af-border);
+  padding-bottom: 4px;
+}
+
+.af-wk-modal .af-wk-name-preview {
+  color: var(--af-text-secondary);
+  font-size: 12px;
+  margin: 4px 0 16px 0;
+  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.af-wk-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--af-border);
+}
+
+.af-wk-schedule-block {
+  margin-bottom: 12px;
+}
+
+/* ── Run-detail transcript disclosure ── */
+
+.af-run-transcript {
+  margin-top: 12px;
+  border-top: 1px solid var(--af-border);
+  padding-top: 10px;
+}
+
+.af-run-transcript > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--af-text-muted);
+  padding: 4px 8px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-sm);
+  background: var(--af-bg-surface);
+  user-select: none;
+}
+
+.af-run-transcript > summary:hover {
+  color: var(--af-text-primary);
+  background: var(--af-bg-secondary);
+}
+
+.af-run-transcript > summary::-webkit-details-marker { display: none; }
+.af-run-transcript > summary::marker { content: ""; }
+
+.af-run-transcript-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.af-run-transcript-meta {
+  color: var(--af-text-faint);
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.af-run-transcript-body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--af-border);
+  opacity: 0.92;
+}
+
+.af-wk-schedule-block .af-form-hint {
+  font-size: 12px;
+  color: var(--af-text-secondary);
+  margin-bottom: 6px;
 }
