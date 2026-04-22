@@ -4124,6 +4124,17 @@
   color: var(--color-orange, #e8a23a);
 }
 
+/* Transient compact notice in the stats strip. Intentionally muted — it's
+ * informational ("we just summarized to free up context"), not an error. */
+.af-chat-stats-compact {
+  color: var(--af-text-secondary);
+  font-size: 0.85em;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Chat threading ── */
 
 /* Thread badge: mirrors the `.af-chat-tool-summary summary` treatment —
