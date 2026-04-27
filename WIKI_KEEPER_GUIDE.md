@@ -52,6 +52,10 @@ Every inbox source and every claim extracted from a watched file ends up cross-l
 
 Filenames are slug-case (`vendor-x.md`, not `Vendor X.md`). Wikilinks (`[[_topics/vendor-x]]`) are how everything connects.
 
+Each topic page also carries a fenced **`## Summary` block** at the top — a 3–7 bullet synthesis maintained by the `wiki-refresh` skill. As claims accrue, the summary regenerates so query-time reads don't need to scan the full claim history. The block is auto-managed; the rest of the page (claims history, contradictions, your own prose) is preserved as-is.
+
+Dated bullets in `## Claims` carry a **source-type tag** — `[doc]`, `[meeting]`, `[email]`, `[note]`, `[web]`, `[synthesis]`, `[other]` — so you can tell at a glance whether a claim came from a vetted contract or a casual meeting note.
+
 ### `index.md` and `log.md`
 
 The keeper maintains two files at the scope root:
@@ -62,7 +66,17 @@ Both files use fenced `<!-- wiki-keeper:begin --> ... <!-- wiki-keeper:end -->` 
 
 ### Lint (weekly)
 
-On a schedule you choose (Sundays at 9am by default), the keeper runs a weekly lint pass — finds orphan topic pages, stale events, unresolved contradictions, schema violations, missing cross-links. Deterministic fixes are auto-applied; judgment calls are listed in the log for your review. Never destructive.
+On a schedule you choose (Sundays at 9am by default), the keeper runs a weekly lint pass — finds orphan topic pages, stale events, unresolved contradictions, schema violations, missing cross-links, bidirectional cross-link gaps, dedup candidates (similar topic pages with overlapping sources), and stale summaries (auto-chained to `wiki-refresh` for regeneration). Deterministic fixes are auto-applied; judgment calls are listed in the log for your review. Never destructive.
+
+The dashboard's **Wiki Keepers** tab parses the latest lint report and renders Needs review items as actionable cards, so you don't have to scroll through `log.md` to find what wants your attention.
+
+### Q&A compounding
+
+Karpathy's central insight: a wiki should compound from queries, not just from sources. When you ask a Wiki Keeper a substantive question via chat or Slack, it does more than answer — it files the answer back into the wiki as both a synthesis page (`_topics/syntheses/YYYY-MM-DD-<question>.md`) and dated bullets on every cited topic page. Every meaningful Q&A leaves a per-topic trace, so the wiki gets richer the more you use it. (Toggle off via `file_substantive_answers: false` if you'd rather keep Q&A out of the wiki.)
+
+### Failed-source quarantine
+
+If an inbox file fails ingest 3 times in a row (corrupted PDF, missing skill, unparseable encoding), it's moved to `_sources/failed/` with a sidecar `.error.md` instead of being retried forever. The lint pass surfaces the quarantine count weekly so broken sources don't quietly drain your token budget.
 
 ---
 
@@ -295,19 +309,21 @@ A whole-vault keeper:
 your-vault/
 ├── _fleet/agents/wiki-keeper/
 │   ├── agent.md
-│   ├── config.md
+│   ├── config.md             (permission_mode + approval_required + wiki_keeper config)
 │   ├── HEARTBEAT.md
-│   ├── CONTEXT.md
-│   └── permissions.json
+│   ├── CONTEXT.md            (the wiki schema document for this scope)
+│   └── permissions.json      (canonical allow/deny — runtime reads this only)
 ├── _sources/
 │   ├── inbox/
-│   └── archive/YYYY/MM/
+│   ├── archive/YYYY/MM/
+│   └── failed/               (created on demand — sidecar .error.md per file)
 ├── _topics/
 │   ├── <your topic pages>
-│   └── summaries/
+│   ├── summaries/            (one per ingested inbox source)
+│   └── syntheses/            (Q&A compounding output, when filed)
 ├── index.md
 ├── log.md
-└── .wiki-keeper-state.json   (hidden; mtime cache for watched folders)
+└── .wiki-keeper-state.json   (hidden; mtimes + content hashes + failure counts)
 ```
 
 A project-scoped keeper:
