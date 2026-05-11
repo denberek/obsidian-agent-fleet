@@ -4526,3 +4526,211 @@
   color: var(--af-text-secondary);
   margin-bottom: 6px;
 }
+
+/* ─── Chat: conversations side rail ───────────────────────────────────── */
+/* Adjacent to the messages column inside the chat view, this rail lists all
+ * parallel conversations for the currently-selected agent. Styled to match
+ * the plugin-level left sidebar (af-sidebar-*) so it reads as a first-class
+ * part of the plugin, not a bolted-on widget. */
+
+.af-chat-view-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.af-chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.af-chat-convo-panel {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--af-border);
+  background: var(--af-bg-secondary);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Collapsed state — hidden from layout entirely. The toggle button in the
+ * header reveals it again. */
+.af-chat-convo-panel.collapsed {
+  display: none;
+}
+
+.af-chat-convo-header {
+  padding: 12px 14px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--af-text-faint);
+  text-transform: uppercase;
+}
+
+/* "+ New chat" — sits at the top of the rail, styled as a list row (not a
+ * button) so it belongs with the conversation list visually. */
+.af-chat-convo-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 2px 6px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--af-text-secondary);
+  transition: background var(--af-transition), color var(--af-transition);
+  font-size: 12px;
+}
+
+.af-chat-convo-new:hover {
+  background: var(--background-modifier-hover);
+  color: var(--af-accent);
+}
+
+.af-chat-convo-new-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.af-chat-convo-new-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.af-chat-convo-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 12px;
+}
+
+/* Conversation row — two-line layout (name on top, "12 msgs · 2h ago" below)
+ * mirroring the way Slack/ChatGPT list DMs/chats. Hover reveals the trash. */
+.af-chat-convo-item {
+  position: relative;
+  padding: 6px 10px;
+  margin: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--af-transition);
+  /* Reserve a fixed gutter for the trash button so the row doesn't shift
+   * width when it appears on hover. */
+  padding-right: 30px;
+}
+
+.af-chat-convo-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.af-chat-convo-item.active {
+  background: var(--af-accent-bg);
+}
+
+.af-chat-convo-item.active .af-chat-convo-name {
+  color: var(--af-accent);
+  font-weight: 600;
+}
+
+.af-chat-convo-name {
+  font-size: 12px;
+  color: var(--af-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* Inline-rename input — replaces the name span in place. Styled to match
+ * the row's existing typography so the swap is visually quiet. */
+.af-chat-convo-name-input {
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  border: 1px solid var(--af-accent);
+  border-radius: 3px;
+  background: var(--af-card-bg);
+  color: var(--af-text-primary);
+  width: 100%;
+  outline: none;
+}
+
+.af-chat-convo-meta {
+  font-size: 10px;
+  color: var(--af-text-faint);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Trash button — fades in on row hover. `.active` rows show it on focus
+ * too so keyboard users can reach it via Tab. */
+.af-chat-convo-trash {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--af-text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--af-transition), color var(--af-transition), background var(--af-transition);
+}
+
+.af-chat-convo-item:hover .af-chat-convo-trash,
+.af-chat-convo-trash:focus-visible {
+  opacity: 1;
+}
+
+.af-chat-convo-trash:hover {
+  color: var(--af-red);
+  background: var(--af-red-bg, rgba(243, 139, 168, 0.12));
+}
+
+.af-chat-convo-trash svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Collapse toggle in the chat-view header — small icon button, no border,
+ * intentionally lower-emphasis than the agent dropdown next to it. */
+.af-chat-convo-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--af-text-muted);
+  cursor: pointer;
+  transition: background var(--af-transition), color var(--af-transition);
+  flex-shrink: 0;
+}
+
+.af-chat-convo-collapse-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--af-text-primary);
+}
+
+.af-chat-convo-collapse-btn svg {
+  width: 16px;
+  height: 16px;
+}
