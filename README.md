@@ -8,11 +8,13 @@
 
 ## What is Agent Fleet?
 
-Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Agents are powered by **Claude Code CLI** — works with a Claude Max/Pro subscription or Anthropic API key. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
+Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Agents run on the CLI backend of your choice — **Claude Code** (Claude Max/Pro subscription or Anthropic API key) or **OpenAI Codex** — selectable per agent. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
 
 ### Core Capabilities
 
 🤖 **AI Agents** — Create specialized agents with system prompts, skills, permissions, heartbeat schedules, and memory. Each agent is a folder of markdown files you fully own and control.
+
+🔀 **Dual CLI backends** — Run each agent on **Claude Code** or **OpenAI Codex**, set per agent. Models, chat, tasks, heartbeat, channels, and permission rules all work the same on either backend — pick the engine, keep the workflow.
 
 📚 **Wiki Keeper** — Turn any folder in your vault into a self-maintaining wiki in the spirit of Karpathy's "LLM wiki" pattern. Drop sources into an inbox, point at existing note folders as passive watched sources, and a scoped keeper agent ingests them into an interlinked `_topics/` tree with cross-references, citations, and a log. Each topic page carries a refreshable `## Summary` block synthesized from its claims history, so query-time reads stay cheap as the wiki grows. Substantive Q&A answers compound back into the wiki — both as filed synthesis pages and as dated bullets on every cited topic. Weekly lint surfaces orphans, contradictions, dedup candidates, and stale summaries; the dashboard's Wiki Keepers tab renders the review queue. Scales from one whole-vault keeper to many project-scoped instances; any other agent (e.g. a PM agent) can reference a keeper's scope and query or contribute. See the [Wiki Keeper Guide](WIKI_KEEPER_GUIDE.md).
 
@@ -60,12 +62,21 @@ The installer automatically finds your Obsidian vaults and copies the plugin fil
 ### Requirements
 
 - **Obsidian** 1.6.0+ (desktop — macOS, Windows, Linux)
-- **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** — the engine behind all agent execution:
-  ```bash
-  npm install -g @anthropic-ai/claude-code
-  claude  # authenticate on first run
-  ```
-- **Claude subscription** (Max or Pro) or **Anthropic API key** — Claude Code works with your existing subscription, no separate API costs. If you're already paying for Claude, you're ready to go.
+- **At least one CLI backend** — install whichever engine(s) your agents will use:
+  - **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (default):
+    ```bash
+    npm install -g @anthropic-ai/claude-code
+    claude  # authenticate on first run
+    ```
+    Works with a **Claude Max or Pro subscription** or an **Anthropic API key** — no separate API costs if you already subscribe.
+  - **[OpenAI Codex CLI](https://github.com/openai/codex)** (optional, for `codex` agents):
+    ```bash
+    npm install -g @openai/codex
+    codex login  # authenticate on first run
+    ```
+    Works with a **ChatGPT Plus/Pro plan** or an **OpenAI API key**.
+
+  You only need the backend(s) your agents are configured to use — Claude-only users never pay the Codex probe, and vice versa.
 
 ### First Launch
 
@@ -117,11 +128,11 @@ agents/my-agent/
 | **Avatar** | Lucide icon picker (1,400+ icons) or emoji |
 | **System Prompt** | Core instructions that define the agent's behavior |
 | **Model** | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, Bedrock models, or custom |
-| **Adapter** | Claude Code (more adapters coming soon) |
+| **Adapter** | Claude Code or OpenAI Codex — set per agent |
 | **Working Directory** | Where the agent operates (defaults to vault root) |
 | **Timeout** | Max execution time in seconds |
 | **Permission Mode** | bypassPermissions, dontAsk, acceptEdits, or plan |
-| **Allow/Deny Lists** | Fine-grained tool control (e.g., allow `Bash(curl *)`, deny `Bash(rm -rf *)`) |
+| **Allow/Deny Lists** | Fine-grained tool control (e.g., allow `Bash(curl *)`, deny `Bash(rm -rf *)`). Enforced on both backends — Claude Code natively, Codex via execpolicy command rules (see [Backends](#backends)) |
 | **Skills** | Shared skills from the skill library |
 | **MCP Servers** | Which MCP servers the agent can access |
 | **Memory** | Persistent context across sessions via `[REMEMBER]` tags |
@@ -135,6 +146,31 @@ agents/my-agent/
 | `dontAsk` | Only allow-listed commands run |
 | `acceptEdits` | File edits auto-approved, bash blocked unless allowed |
 | `plan` | Read-only — no writes, no commands |
+
+---
+
+### Backends
+
+Each agent runs on one of two CLI backends, selected by the **Adapter** field in the agent editor:
+
+| | **Claude Code** (default) | **OpenAI Codex** |
+|---|---|---|
+| Engine | `@anthropic-ai/claude-code` | `@openai/codex` (`codex exec`) |
+| Auth | Claude Max/Pro subscription or Anthropic API key | ChatGPT Plus/Pro plan or OpenAI API key |
+| Models | `opus` / `sonnet` / `haiku` / `opusplan` aliases, pinned IDs, Bedrock/Vertex/Foundry | Codex slugs (e.g. `gpt-5.5-codex`) + free-text |
+| Permission rules | Native — `.claude/settings.local.json` | execpolicy command rules via per-agent `CODEX_HOME` overlay |
+| File/network sandbox | Permission Mode | Permission Mode (`workspace-write` / `read-only`); `codex exec` forces approval policy `never` |
+| MCP servers | Claude's registry | Codex's `~/.codex/config.toml`, scoped per agent |
+
+Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run logs, model picker — works identically on both. The picker switches its alias list based on the selected adapter; free-text remains the escape hatch for any model ID.
+
+**How Codex permission rules work.** Your `Bash(...)` allow/deny rules are translated into Codex *execpolicy* rules and injected through a per-agent `CODEX_HOME` overlay (the agent's `~/.codex` with auth/config/sessions symlinked through, but its own rules directory). This enforcement is **lossy by design** and degrades safely:
+
+- Only command-prefix patterns translate — `Bash(git push *)` → deny `git push …`. **Tool-name rules** (`Read`/`Write`/`Edit`) and **mid-pattern wildcards** (`Bash(* --force)`) are dropped; file/network access is governed by the **Permission Mode** sandbox instead.
+- There's no closed allow-list — Codex `allow` rules are additive, so "only the allow-list runs" (Claude's `dontAsk`) is **not** reproducible; the sandbox is the real boundary.
+- Requires a Codex build with execpolicy support. If it's missing (or `~/.codex` isn't set up, or symlinks are unavailable), the agent **falls back to sandbox-only enforcement** with a one-time console warning — the run never breaks.
+
+> Codex reports no per-run dollar cost, so `cost_usd` is blank on Codex runs. Compact/rate-limit telemetry is Claude-only.
 
 ---
 
@@ -466,6 +502,9 @@ Everything is searchable, version-controllable, and fully yours.
 
 **Q: Do I need an API key?**
 Not necessarily. Agent Fleet works with your **Claude Max or Pro subscription** via Claude Code CLI. No separate API key or billing. If you prefer, you can also use an Anthropic API key directly.
+
+**Q: Can I use OpenAI Codex instead of Claude?**
+Yes. Set an agent's **Adapter** to `OpenAI Codex` and it runs on the `@openai/codex` CLI (ChatGPT plan or OpenAI API key) instead of Claude Code. You can mix freely — some agents on Claude, others on Codex — in the same fleet. Chat, tasks, heartbeat, channels, and memory all work the same. See [Backends](#backends) for the per-backend differences (notably how command permission rules are enforced and that Codex runs report no dollar cost).
 
 **Q: Does it work without internet?**
 No — agents need the Claude API to run. But all your data (agents, tasks, skills, memory) is local markdown.
