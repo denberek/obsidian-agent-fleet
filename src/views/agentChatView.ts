@@ -1,4 +1,5 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ConfirmModal } from "../modals/confirmModal";
 
 // WorkspaceLeaf.updateHeader() exists at runtime but isn't in Obsidian's
 // published type definitions. Augment the module to suppress TS errors.
@@ -285,8 +286,8 @@ export class AgentChatView extends ItemView {
         if (
           leaf.view !== this &&
           leaf.view instanceof AgentChatView &&
-          (leaf.view as AgentChatView).selectedAgentName === agentName &&
-          (leaf.view as AgentChatView).selectedConversationId === conversationId
+          (leaf.view).selectedAgentName === agentName &&
+          (leaf.view).selectedConversationId === conversationId
         ) {
           void this.plugin.app.workspace.revealLeaf(leaf);
           return;
@@ -327,7 +328,7 @@ export class AgentChatView extends ItemView {
 
     this.agentSelect = this.headerEl.createEl("select", {
       cls: "af-chat-view-agent-select",
-    }) as HTMLSelectElement;
+    });
 
     const newChatBtn = this.headerEl.createEl("button", { cls: "af-btn-sm af-chat-view-new-btn" });
     createIcon(newChatBtn, "plus", "af-btn-icon");
@@ -393,8 +394,8 @@ export class AgentChatView extends ItemView {
     this.textarea = inputRow.createEl("textarea", {
       cls: "af-chat-input",
       attr: { placeholder: "Message the agent\u2026 (Ctrl+Enter to send)", rows: "1" },
-    }) as HTMLTextAreaElement;
-    this.sendBtn = inputRow.createEl("button", { cls: "af-chat-send-btn" }) as HTMLButtonElement;
+    });
+    this.sendBtn = inputRow.createEl("button", { cls: "af-chat-send-btn" });
     createIcon(this.sendBtn, "arrow-up", "af-btn-icon");
 
     // Auto-grow textarea
@@ -655,8 +656,8 @@ export class AgentChatView extends ItemView {
         if (
           leaf.view !== this &&
           leaf.view instanceof AgentChatView &&
-          (leaf.view as AgentChatView).selectedAgentName === agentName &&
-          (leaf.view as AgentChatView).selectedConversationId === resolvedId
+          (leaf.view).selectedAgentName === agentName &&
+          (leaf.view).selectedConversationId === resolvedId
         ) {
           void this.plugin.app.workspace.revealLeaf(leaf);
           return;
@@ -947,8 +948,8 @@ export class AgentChatView extends ItemView {
       if (
         leaf.view !== this &&
         leaf.view instanceof AgentChatView &&
-        (leaf.view as AgentChatView).selectedAgentName === this.selectedAgentName &&
-        (leaf.view as AgentChatView).selectedConversationId === id
+        (leaf.view).selectedAgentName === this.selectedAgentName &&
+        (leaf.view).selectedConversationId === id
       ) {
         void this.plugin.app.workspace.revealLeaf(leaf);
         return;
@@ -961,37 +962,42 @@ export class AgentChatView extends ItemView {
    *  the native `window.confirm` (which works in Electron, unlike prompt).
    *  If the deleted conversation was the active one and was also the only
    *  one, switchToAgent's resolve-or-create logic spins up a fresh one. */
-  private async handleDeleteConversation(meta: ConversationMeta): Promise<void> {
-    if (!this.selectedAgentName) return;
+  private handleDeleteConversation(meta: ConversationMeta): void {
+    const agentName = this.selectedAgentName;
+    if (!agentName) return;
     const agents = this.plugin.runtime.getSnapshot().agents;
-    const agent = agents.find((a) => a.name === this.selectedAgentName);
+    const agent = agents.find((a) => a.name === agentName);
     if (!agent) return;
-    const ok = window.confirm(
-      `Delete conversation "${meta.name}"?\n\nThis removes its message history. The agent and its other conversations are untouched.`,
-    );
-    if (!ok) return;
 
-    const key = sessionKey(this.selectedAgentName, meta.id);
-    // dispose() (not abort()) so any open thread sub-sessions also get
-    // their subprocesses killed. abort() would only stop the parent —
-    // see ChatSession.dispose for the distinction.
-    this.sessions.get(key)?.session.dispose();
-    this.sessions.delete(key);
-    try {
-      await this.plugin.repository.deleteConversation(agent, meta.id);
-    } catch (err) {
-      new Notice(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    await this.refreshConversationsList(agent);
-    // If we just deleted the active conversation, drop into the most-
-    // recent remaining one — or let switchToAgent auto-create a fresh
-    // conversation if the list is now empty (passing undefined triggers
-    // the resolve-or-create path).
-    if (meta.id === this.selectedConversationId) {
-      const fallback = this.conversationsCache[0]?.id;
-      await this.switchToAgent(this.selectedAgentName, fallback);
-    }
+    new ConfirmModal(this.app, {
+      title: `Delete conversation "${meta.name}"?`,
+      body: "This removes its message history. The agent and its other conversations are untouched.",
+      confirmText: "Delete",
+      danger: true,
+      onConfirm: async () => {
+        const key = sessionKey(agentName, meta.id);
+        // dispose() (not abort()) so any open thread sub-sessions also get
+        // their subprocesses killed. abort() would only stop the parent —
+        // see ChatSession.dispose for the distinction.
+        this.sessions.get(key)?.session.dispose();
+        this.sessions.delete(key);
+        try {
+          await this.plugin.repository.deleteConversation(agent, meta.id);
+        } catch (err) {
+          new Notice(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+        await this.refreshConversationsList(agent);
+        // If we just deleted the active conversation, drop into the most-
+        // recent remaining one — or let switchToAgent auto-create a fresh
+        // conversation if the list is now empty (passing undefined triggers
+        // the resolve-or-create path).
+        if (meta.id === this.selectedConversationId) {
+          const fallback = this.conversationsCache[0]?.id;
+          await this.switchToAgent(agentName, fallback);
+        }
+      },
+    }).open();
   }
 
   /** Toggle the collapsed state of the rail. Stamps `userToggledCollapse`
@@ -1077,7 +1083,7 @@ export class AgentChatView extends ItemView {
    */
   private wireBubbleLinks(el: HTMLElement): void {
     el.addEventListener("click", (ev: MouseEvent) => {
-      const anchor = (ev.target as HTMLElement).closest("a") as HTMLAnchorElement | null;
+      const anchor = (ev.target as HTMLElement).closest("a");
       if (!anchor) return;
 
       // Obsidian internal link
@@ -1412,7 +1418,7 @@ export class AgentChatView extends ItemView {
     const input = composer.createEl("textarea", {
       cls: "af-chat-input af-thread-input",
       attr: { placeholder: "Message in thread\u2026 (Ctrl+Enter to send)", rows: "1" },
-    }) as HTMLTextAreaElement;
+    });
 
     // Paste image support
     input.addEventListener("paste", (e: ClipboardEvent) => {
@@ -1452,7 +1458,7 @@ export class AgentChatView extends ItemView {
       }
     });
 
-    const sendBtn = composer.createEl("button", { cls: "af-chat-send-btn" }) as HTMLButtonElement;
+    const sendBtn = composer.createEl("button", { cls: "af-chat-send-btn" });
     createIcon(sendBtn, "arrow-up", "af-btn-icon");
     sendBtn.setCssStyles({ display: "none" });
 
@@ -1499,9 +1505,9 @@ export class AgentChatView extends ItemView {
               assistantBubble.empty();
             }
             accumulated += event.content;
-            let streamText = assistantBubble!.querySelector(".af-chat-stream-text");
+            let streamText = assistantBubble.querySelector(".af-chat-stream-text");
             if (!streamText) {
-              streamText = assistantBubble!.createDiv({ cls: "af-chat-stream-text" });
+              streamText = assistantBubble.createDiv({ cls: "af-chat-stream-text" });
             }
             streamText.setText(accumulated);
           } else if (event.type === "tool_use") {
@@ -1873,9 +1879,9 @@ export class AgentChatView extends ItemView {
           accumulated += event.content;
           // Use a streaming text container instead of setText which destroys
           // sibling elements (including the copy button)
-          let streamText = assistantBubble!.querySelector(".af-chat-stream-text");
+          let streamText = assistantBubble.querySelector(".af-chat-stream-text");
           if (!streamText) {
-            streamText = assistantBubble!.createDiv({ cls: "af-chat-stream-text" });
+            streamText = assistantBubble.createDiv({ cls: "af-chat-stream-text" });
           }
           streamText.setText(accumulated);
         } else if (event.type === "error") {

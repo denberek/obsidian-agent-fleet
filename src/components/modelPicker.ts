@@ -2,7 +2,7 @@ export interface ModelPickerProps {
   /** Current value; empty string = Default/Inherit (no --model passed). */
   value: string;
   /** Called with the new string whenever the user changes the selection. */
-  onChange: (value: string) => void;
+  onChange: (value: string) => void | Promise<void>;
   /**
    * When true, the first option label is "Inherit from agent" (task form).
    * When false, it's "Default (let the CLI pick)" (settings / agent forms).
@@ -118,16 +118,16 @@ export function renderModelPicker(container: HTMLElement, props: ModelPickerProp
     if (select.value === CUSTOM_SENTINEL) {
       customInput.setCssStyles({ display: "" });
       customInput.focus();
-      props.onChange(customInput.value.trim());
+      void props.onChange(customInput.value.trim());
     } else {
       customInput.setCssStyles({ display: "none" });
-      props.onChange(select.value);
+      void props.onChange(select.value);
     }
   });
 
   customInput.addEventListener("input", () => {
     if (select.value === CUSTOM_SENTINEL) {
-      props.onChange(customInput.value.trim());
+      void props.onChange(customInput.value.trim());
     }
   });
 }

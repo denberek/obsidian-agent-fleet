@@ -1,4 +1,5 @@
 import { Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { ConfirmModal } from "./modals/confirmModal";
 import { renderModelPicker } from "./components/modelPicker";
 import { DEFAULT_SETTINGS } from "./constants";
 import type AgentFleetPlugin from "./main";
@@ -437,26 +438,30 @@ export class AgentFleetSettingTab extends PluginSettingTab {
           text: "Delete",
           cls: "af-wk-row-btn af-wk-row-btn-danger",
         });
-        deleteBtn.onclick = async () => {
-          const ok = confirm(
-            `Delete Wiki Keeper "${agent.name}"?\n\n` +
-              `This removes the agent folder at _fleet/agents/${agent.name}/.\n` +
+        deleteBtn.onclick = () => {
+          new ConfirmModal(this.plugin.app, {
+            title: `Delete Wiki Keeper "${agent.name}"?`,
+            body:
+              `This removes the agent folder at _fleet/agents/${agent.name}/.\n\n` +
               `Your scope's inbox, topics, index, and log are NOT deleted.`,
-          );
-          if (!ok) return;
-          try {
-            await deleteWikiKeeperAgent(
-              this.plugin.app,
-              this.plugin.settings.fleetFolder,
-              agent.name,
-            );
-            await this.plugin.refreshFromVault();
-            new Notice(`Wiki Keeper "${agent.name}" deleted.`);
-            this.scheduleRerender();
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            new Notice(`Failed to delete: ${msg}`);
-          }
+            confirmText: "Delete",
+            danger: true,
+            onConfirm: async () => {
+              try {
+                await deleteWikiKeeperAgent(
+                  this.plugin.app,
+                  this.plugin.settings.fleetFolder,
+                  agent.name,
+                );
+                await this.plugin.refreshFromVault();
+                new Notice(`Wiki Keeper "${agent.name}" deleted.`);
+                this.scheduleRerender();
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                new Notice(`Failed to delete: ${msg}`);
+              }
+            },
+          }).open();
         };
       }
     }
@@ -478,13 +483,15 @@ export class AgentFleetSettingTab extends PluginSettingTab {
    *  Wiki Keeper create/edit/delete so the list immediately reflects the
    *  on-disk state without the user having to close and reopen settings. */
   private scheduleRerender(): void {
-    window.setTimeout(async () => {
-      try {
-        await this.plugin.refreshFromVault();
-      } catch {
-        /* non-fatal */
-      }
-      this.display();
+    window.setTimeout(() => {
+      void (async () => {
+        try {
+          await this.plugin.refreshFromVault();
+        } catch {
+          /* non-fatal */
+        }
+        this.display();
+      })();
     }, 600);
   }
 }
@@ -716,7 +723,7 @@ class AddWikiKeeperModal extends Modal {
   }
 
   private renderPreview(): void {
-    let previewEl = this.contentEl.querySelector(".af-wk-name-preview") as HTMLElement | null;
+    let previewEl = this.contentEl.querySelector(".af-wk-name-preview");
     if (!previewEl) {
       previewEl = this.contentEl.createDiv({ cls: "af-wk-name-preview" });
     }

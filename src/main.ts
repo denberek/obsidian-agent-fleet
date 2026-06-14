@@ -283,7 +283,7 @@ export default class AgentFleetPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...(await this.loadData()),
+      ...((await this.loadData()) as Partial<FleetSettings>),
     };
   }
 
@@ -428,7 +428,7 @@ export default class AgentFleetPlugin extends Plugin {
       // On Windows: spawns directly (env is inherited from the system).
       const proc = spawnCli(cliPath, ["--version"]);
       let stderr = "";
-      proc.stderr!.on("data", (chunk) => {
+      proc.stderr!.on("data", (chunk: Buffer | string) => {
         stderr += chunk.toString();
       });
       proc.on("close", (code) => {

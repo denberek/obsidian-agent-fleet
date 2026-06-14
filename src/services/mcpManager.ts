@@ -16,6 +16,16 @@ interface OAuthMetadata {
   code_challenge_methods_supported?: string[];
 }
 
+/** Minimal shape of the JSON-RPC responses we read during an stdio tool probe. */
+interface JsonRpcProbeMessage {
+  id?: number;
+  result?: {
+    instructions?: string;
+    serverInfo?: { description?: string };
+    tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  };
+}
+
 /** OAuth discovery result: auth server metadata + resource-level scopes. */
 interface OAuthDiscoveryResult {
   metadata: OAuthMetadata;
@@ -204,7 +214,7 @@ export class McpManager {
               accessToken,
               refreshToken: (tokenData.refresh_token as string | undefined) ?? data.refreshToken,
               expiresAt: typeof tokenData.expires_in === "number"
-                ? Date.now() + (tokenData.expires_in as number) * 1000
+                ? Date.now() + (tokenData.expires_in) * 1000
                 : undefined,
               tokenEndpoint: data.tokenEndpoint,
               clientId: data.clientId,
@@ -273,7 +283,7 @@ export class McpManager {
         }
         // Resource identifier for RFC 8707
         if (typeof resData.resource === "string") {
-          resource = resData.resource as string;
+          resource = resData.resource;
         }
       }
     } catch { /* continue — try auth server discovery anyway */ }
@@ -548,7 +558,7 @@ export class McpManager {
           const trimmed = line.trim();
           if (!trimmed) continue;
           try {
-            const msg = JSON.parse(trimmed);
+            const msg = JSON.parse(trimmed) as JsonRpcProbeMessage;
             if (msg.id === 1 && msg.result) {
               description = msg.result.instructions ?? msg.result.serverInfo?.description;
               gotInit = true;
@@ -654,7 +664,7 @@ export class McpManager {
       }, sessionId);
 
       const tools: McpTool[] = [];
-      const result = toolsResult as Record<string, unknown> | null;
+      const result = toolsResult;
       const resultObj = result?.result as Record<string, unknown> | undefined;
       const rawTools = (resultObj?.tools as Record<string, unknown>[]) ?? [];
       for (const t of rawTools) {
@@ -767,7 +777,7 @@ export class McpManager {
             for (const line of splitLines(data)) {
               if (line.startsWith("data: ")) {
                 try {
-                  const parsed = JSON.parse(line.slice(6));
+                  const parsed = JSON.parse(line.slice(6)) as Record<string, unknown>;
                   if (respSessionId) parsed._sessionId = respSessionId;
                   resolve(parsed);
                   return;
@@ -777,7 +787,7 @@ export class McpManager {
             resolve(null);
           } else {
             try {
-              const parsed = JSON.parse(data);
+              const parsed = JSON.parse(data) as Record<string, unknown>;
               if (respSessionId) parsed._sessionId = respSessionId;
               resolve(parsed);
             } catch { resolve(null); }

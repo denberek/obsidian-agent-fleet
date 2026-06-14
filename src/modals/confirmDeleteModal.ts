@@ -13,7 +13,7 @@ export class ConfirmDeleteModal extends Modal {
   constructor(
     app: App,
     private readonly info: DeleteAgentInfo,
-    private readonly onConfirm: (deleteTasks: boolean) => void,
+    private readonly onConfirm: (deleteTasks: boolean) => void | Promise<void>,
   ) {
     super(app);
   }
@@ -85,7 +85,7 @@ export class ConfirmDeleteModal extends Modal {
     const deleteIcon = deleteBtn.createSpan({ cls: "af-delete-btn-icon" });
     setIcon(deleteIcon, "trash-2");
     deleteBtn.onclick = () => {
-      this.onConfirm(this.deleteTasks);
+      void this.onConfirm(this.deleteTasks);
       this.close();
     };
   }

@@ -10,18 +10,26 @@ import type {
   PermissionSetupState,
 } from "./types";
 
+/** Minimal shape of a Claude Code `stream-json` event we read fields off. */
+interface ClaudeStreamEvent {
+  type?: string;
+  result?: string;
+  message?: { content?: Array<{ type?: string; text?: string }> };
+}
+
 function extractText(value: unknown): string | undefined {
   if (typeof value === "string") {
     return value;
   }
   if (Array.isArray(value)) {
-    const parts = value
+    const parts = (value as unknown[])
       .map((item) => {
         if (typeof item === "string") {
           return item;
         }
-        if (item && typeof item === "object" && "text" in item && typeof item.text === "string") {
-          return item.text;
+        if (item && typeof item === "object" && "text" in item) {
+          const text = (item as { text?: unknown }).text;
+          if (typeof text === "string") return text;
         }
         return "";
       })
@@ -124,7 +132,7 @@ function extractTokens(value: unknown): number | undefined {
   // Legacy field names (older CLI versions)
   for (const key of ["tokens_used", "total_tokens", "totalTokens"]) {
     if (typeof root[key] === "number") {
-      return root[key] as number;
+      return root[key];
     }
   }
 
@@ -180,7 +188,7 @@ export function extractConcreteModel(value: unknown): string | undefined {
 
   // result event: { modelUsage: { "claude-opus-4-7": {...} } }
   if (root.modelUsage && typeof root.modelUsage === "object") {
-    const keys = Object.keys(root.modelUsage as Record<string, unknown>);
+    const keys = Object.keys(root.modelUsage);
     if (keys.length > 0 && keys[0]) return keys[0];
   }
 
@@ -262,7 +270,7 @@ export const claudeCodeAdapter: CliAdapter = {
         const line = lines[i]?.trim();
         if (!line) continue;
         try {
-          const parsed = JSON.parse(line);
+          const parsed: unknown = JSON.parse(line);
           if (parsed && typeof parsed === "object") {
             rawJson = parsed;
             break;
@@ -285,7 +293,7 @@ export const claudeCodeAdapter: CliAdapter = {
         const l = line.trim();
         if (!l) continue;
         try {
-          const ev = JSON.parse(l);
+          const ev = JSON.parse(l) as ClaudeStreamEvent;
           // Only extract assistant text content, skip system/result/user events
           if (ev.type === "assistant" && ev.message?.content) {
             for (const block of ev.message.content) {
@@ -310,7 +318,7 @@ export const claudeCodeAdapter: CliAdapter = {
         const l = line.trim();
         if (!l) continue;
         try {
-          const ev = JSON.parse(l);
+          const ev: unknown = JSON.parse(l);
           if (!concreteModel) {
             const m = extractConcreteModel(ev);
             if (m) concreteModel = m;

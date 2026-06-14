@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.6 — 2026-06-14
+
+Code-quality cleanup from the community review (all non-blocking). No user-facing behavior changes.
+
+- Typed the CLI/JSON-RPC parsing in the adapters and MCP prober — no more `any`-typed field access.
+- Removed redundant type assertions across the codebase.
+- Replaced the browser `confirm()` dialog with a native Obsidian modal.
+- Fixed a few async callbacks passed where a synchronous one was expected.
+
 ## 0.13.5 — 2026-06-14
 
 More community-review cleanup. No user-facing behavior changes.

@@ -401,14 +401,14 @@ export class SlackAdapter implements ChannelAdapter {
     // chat.postEphemeral through the proven slackApi/requestUrl path.
     if (envelope.type === "slash_commands" && envelope.envelope_id) {
       this.ackEnvelope(envelope.envelope_id);
-      void this.handleSlashCommand(envelope.payload as Record<string, unknown> | undefined);
+      void this.handleSlashCommand(envelope.payload);
       return;
     }
 
     // Interactive payloads — Block Kit button clicks from /agents
     if (envelope.type === "interactive" && envelope.envelope_id) {
       this.ackEnvelope(envelope.envelope_id);
-      void this.handleInteraction(envelope.payload as Record<string, unknown> | undefined);
+      void this.handleInteraction(envelope.payload);
       return;
     }
 

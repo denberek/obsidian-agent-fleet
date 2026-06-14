@@ -2121,7 +2121,7 @@ export class FleetDashboardView extends ItemView {
     const typeSelect = typeRow.createEl("select", { cls: "af-form-select" });
     typeSelect.createEl("option", { text: "slack", attr: { value: "slack" } });
     typeSelect.createEl("option", { text: "telegram", attr: { value: "telegram" } });
-    typeSelect.addEventListener("change", () => { state.type = typeSelect.value as ChannelConfig["type"]; });
+    typeSelect.addEventListener("change", () => { state.type = typeSelect.value; });
 
     // Credential dropdown
     const credRow = detailsSection.createDiv({ cls: "af-form-row" });
@@ -2269,7 +2269,7 @@ export class FleetDashboardView extends ItemView {
       let transport: Record<string, unknown> | undefined;
       if (state.transportJson.trim()) {
         try {
-          const parsed = JSON.parse(state.transportJson);
+          const parsed: unknown = JSON.parse(state.transportJson);
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
             transport = parsed as Record<string, unknown>;
           } else {
@@ -2559,7 +2559,7 @@ export class FleetDashboardView extends ItemView {
       let transport: Record<string, unknown> | undefined;
       if (state.transportJson.trim()) {
         try {
-          const parsed = JSON.parse(state.transportJson);
+          const parsed: unknown = JSON.parse(state.transportJson);
           if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
             transport = parsed as Record<string, unknown>;
           } else {
@@ -3440,7 +3440,7 @@ export class FleetDashboardView extends ItemView {
       "0 * * * *": "every_hour",
       "0 */2 * * *": "every_2h",
     };
-    if (shortcutMap[cron]) return { ...defaults, freq: shortcutMap[cron]! };
+    if (shortcutMap[cron]) return { ...defaults, freq: shortcutMap[cron] };
 
     const parts = cron.trim().split(/\s+/);
     if (parts.length !== 5) return defaults;
@@ -3781,7 +3781,7 @@ export class FleetDashboardView extends ItemView {
         const wrWrap = wrRow.createDiv({ cls: "af-form-field-wrap" });
         for (const wk of wikiKeepers) {
           const label = wrWrap.createEl("label", { cls: "af-form-checkbox-row" });
-          const cb = label.createEl("input", { attr: { type: "checkbox" } }) as HTMLInputElement;
+          const cb = label.createEl("input", { attr: { type: "checkbox" } });
           label.createSpan({ text: ` ${wk.name}`, cls: "af-form-checkbox-label" });
           cb.addEventListener("change", () => {
             if (cb.checked) {
@@ -4436,7 +4436,7 @@ export class FleetDashboardView extends ItemView {
         const wrWrap = wrRow.createDiv({ cls: "af-form-field-wrap" });
         for (const wk of wikiKeepers) {
           const label = wrWrap.createEl("label", { cls: "af-form-checkbox-row" });
-          const cb = label.createEl("input", { attr: { type: "checkbox" } }) as HTMLInputElement;
+          const cb = label.createEl("input", { attr: { type: "checkbox" } });
           if (state.wikiReferences.includes(wk.name)) cb.checked = true;
           label.createSpan({ text: ` ${wk.name}`, cls: "af-form-checkbox-label" });
           cb.addEventListener("change", () => {
@@ -5050,7 +5050,7 @@ export class FleetDashboardView extends ItemView {
       schedule: task.schedule ?? "0 9 * * *",
       runAt: task.runAt ?? "",
       scheduleEnabled: hasSchedule,
-      scheduleMode: (task.type === "once" ? "once" : "recurring") as "recurring" | "once",
+      scheduleMode: (task.type === "once" ? "once" : "recurring"),
       enabled: task.enabled,
       catchUp: task.catchUp,
       effort: task.effort ?? "",
@@ -5172,7 +5172,7 @@ export class FleetDashboardView extends ItemView {
     });
 
     editModeSelect.addEventListener("change", () => {
-      state.scheduleMode = editModeSelect.value as "recurring" | "once";
+      state.scheduleMode = editModeSelect.value;
       editCronHost.setCssStyles({ display: state.scheduleMode === "recurring" ? "" : "none" });
       editOnceHost.setCssStyles({ display: state.scheduleMode === "once" ? "" : "none" });
       if (state.scheduleEnabled) state.type = state.scheduleMode === "once" ? "once" : "recurring";
@@ -6157,7 +6157,7 @@ function cronToHuman(cron: string): string {
     "0 */6 * * *": "Every 6 hours",
     "0 */12 * * *": "Every 12 hours",
   };
-  if (cronMap[cron]) return cronMap[cron]!;
+  if (cronMap[cron]) return cronMap[cron];
   // Parse daily/weekly patterns: "M H * * *" or "M H * * 1-5"
   const parts = cron.trim().split(/\s+/);
   if (parts.length === 5) {

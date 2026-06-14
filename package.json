@@ -1,6 +1,6 @@
 {
   "name": "obsidian-agent-fleet",
-  "version": "0.13.5",
+  "version": "0.13.6",
   "description": "Obsidian plugin for file-backed AI agents, task scheduling, channels (Slack), heartbeat, and interactive chat.",
   "license": "MIT",
   "main": "plugin/main.js",

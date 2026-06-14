@@ -40,7 +40,7 @@ export class ChannelCredentialStore {
           // Remove the _ref helper before using
           const clean = { ...entry };
           delete (clean as Record<string, unknown>)._ref;
-          this.credentials.set(originalRef, clean as ChannelCredentialEntry);
+          this.credentials.set(originalRef, clean);
         }
       }
     }
