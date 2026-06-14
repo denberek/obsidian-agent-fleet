@@ -4566,12 +4566,13 @@
 }
 
 .af-chat-convo-header {
-  padding: 12px 14px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
-  color: var(--af-text-faint);
-  text-transform: uppercase;
+  /* Left edge (margin 6 + padding 10 = 16px) lines up with the rows below. */
+  padding: 10px 10px 4px;
+  margin: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--af-text-secondary);
 }
 
 /* "+ New chat" — sits at the top of the rail, styled as a list row (not a
@@ -4709,28 +4710,26 @@
 
 /* Collapse toggle in the chat-view header — small icon button, no border,
  * intentionally lower-emphasis than the agent dropdown next to it. */
+/* Styling comes from Obsidian's native `clickable-icon` (transparent at rest,
+ * native hover). Match Obsidian's `.sidebar-toggle-button` icon sizing exactly:
+ * the large icon size (18px) + its stroke width (1.75px) — a plain clickable-icon
+ * would otherwise inherit the smaller default and render ~2px short. */
 .af-chat-convo-collapse-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--af-text-muted);
-  cursor: pointer;
-  transition: background var(--af-transition), color var(--af-transition);
   flex-shrink: 0;
+  --icon-size: var(--icon-l);
+  --icon-stroke: var(--icon-l-stroke-width);
 }
 
-.af-chat-convo-collapse-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--af-text-primary);
+/* Obsidian sidebar-toggle reproduction: the inner bar is a filled rounded rect
+ * anchored at the left whose width animates between Obsidian's two states —
+ * wide pill when the panel is open (default), thin line when collapsed. */
+.af-convo-toggle-bar {
+  width: 24%;
+  fill: currentColor;
+  stroke: none;
+  transition: width 120ms ease-in-out;
 }
 
-.af-chat-convo-collapse-btn svg {
-  width: 16px;
-  height: 16px;
+.af-chat-convo-collapse-btn.is-collapsed .af-convo-toggle-bar {
+  width: 8.33%;
 }

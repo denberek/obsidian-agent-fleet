@@ -32,7 +32,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 🔌 **MCP Integration** — Add, remove, authenticate, and inspect MCP servers from the dashboard. One-click OAuth 2.1 with automatic CLI token injection — agents can use authenticated servers immediately.
 
-🧠 **Agent Memory** — Agents persist context across sessions using `[REMEMBER]` tags stored as markdown.
+🧠 **Agent Memory** — A two-tier, self-curating memory (curated working set + append-only ground truth) that agents write via a `remember` tool or `[REMEMBER]` tags, on both Claude and Codex. An optional nightly **reflection** consolidates it and can propose new skills from recurring patterns (approval-gated).
 
 📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, streaming output from active agents, and focused run-detail panels that lead with the final result and hide the full reasoning transcript behind a toggle.
 
@@ -135,7 +135,7 @@ agents/my-agent/
 | **Allow/Deny Lists** | Fine-grained tool control (e.g., allow `Bash(curl *)`, deny `Bash(rm -rf *)`). Enforced on both backends — Claude Code natively, Codex via execpolicy command rules (see [Backends](#backends)) |
 | **Skills** | Shared skills from the skill library |
 | **MCP Servers** | Which MCP servers the agent can access |
-| **Memory** | Persistent context across sessions via `[REMEMBER]` tags |
+| **Memory** | Two-tier self-curating memory: `remember` tool / `[REMEMBER]` tags → working set + raw archive, with optional nightly reflection |
 | **Heartbeat** | Autonomous periodic run with schedule and instruction |
 
 **Permission Modes:**
@@ -407,12 +407,20 @@ The main overview with:
 
 ### Agent Memory
 
-Agents persist context across sessions:
+A two-tier, self-curating memory that works on **task, heartbeat, and chat** runs and on **both Claude Code and Codex** backends. Per agent, under `_fleet/memory/<agent>/`:
 
-1. Agent includes `[REMEMBER]important context[/REMEMBER]` in its output
-2. Extracted and appended to `_fleet/memory/<agent-name>.md`
-3. Injected into the agent's prompt on every future run
-4. Memory is agent-scoped — shared across all conversations including Slack channels
+- **`working.md`** — curated, **token-budgeted** memory (`memory_token_budget`, default 1500) injected into every run, organized into Preferences (pinned) / Procedures / Observations / Recent.
+- **`raw/<date>.md`** — append-only ground-truth log of everything captured (never injected), so summaries can always be re-derived.
+
+**How an agent records something** (two channels, same sink):
+1. The **`remember` tool** — `remember(fact, pin?, section?)`, auto-enabled for memory agents (preferred, structured).
+2. The **`[REMEMBER] … [/REMEMBER]`** text tag as a fallback (`[REMEMBER:pin]` for standing preferences).
+
+Captures land in `working.md` immediately, so the next run/turn sees them. Memory is agent-scoped (shared across all conversations, including channels).
+
+**Reflection ("dreaming")** — enable `reflection_enabled` and a nightly run (`reflection_schedule`, default `0 3 * * *`) consolidates memory from the raw log: dedups, resolves contradictions, summarizes from ground truth to fit the budget, and keeps pinned preferences. With `reflection_propose_skills`, recurring friction becomes an approval-gated **skill proposal** in the Inbox. A failed reflection never wipes memory. Trigger manually with **Reflect now** on the agent.
+
+> Legacy single-file memory (`_fleet/memory/<agent>.md`) is migrated automatically. `memory_max_entries` is superseded by `memory_token_budget`.
 
 ---
 
