@@ -26,7 +26,6 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { McpServer, McpTransport } from "../types";
-import type { AdapterId } from "../adapters/types";
 import { normalizeAdapter } from "../adapters";
 import { REMEMBER_MCP_SERVER_SOURCE, REMEMBER_SERVER_NAME } from "./rememberMcpServer";
 

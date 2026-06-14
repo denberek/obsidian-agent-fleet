@@ -103,24 +103,24 @@ export function renderModelPicker(container: HTMLElement, props: ModelPickerProp
   if (mode === "inherit") {
     select.value = "";
     customInput.value = "";
-    customInput.style.display = "none";
+    customInput.setCssStyles({ display: "none" });
   } else if (mode === "alias") {
     select.value = props.value.trim();
     customInput.value = "";
-    customInput.style.display = "none";
+    customInput.setCssStyles({ display: "none" });
   } else {
     select.value = CUSTOM_SENTINEL;
     customInput.value = props.value.trim();
-    customInput.style.display = "";
+    customInput.setCssStyles({ display: "" });
   }
 
   select.addEventListener("change", () => {
     if (select.value === CUSTOM_SENTINEL) {
-      customInput.style.display = "";
+      customInput.setCssStyles({ display: "" });
       customInput.focus();
       props.onChange(customInput.value.trim());
     } else {
-      customInput.style.display = "none";
+      customInput.setCssStyles({ display: "none" });
       props.onChange(select.value);
     }
   });

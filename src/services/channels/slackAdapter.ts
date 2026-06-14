@@ -109,7 +109,7 @@ export class SlackAdapter implements ChannelAdapter {
   private status: ChannelStatus = "stopped";
   private stopping = false;
   private backoffMs = 1000;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: number | null = null;
 
   private readonly inboundHandlers = new Set<InboundHandler>();
   private readonly statusHandlers = new Set<StatusHandler>();
@@ -153,7 +153,7 @@ export class SlackAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
@@ -341,7 +341,7 @@ export class SlackAdapter implements ChannelAdapter {
 
       // Connection timeout — if we don't get a `hello` within 30s, tear down
       // and retry. Prevents hanging indefinitely on DNS/network issues.
-      const connectTimeout = setTimeout(() => {
+      const connectTimeout = window.setTimeout(() => {
         if (this.status === "connecting" || this.status === "reconnecting") {
           console.warn(`Agent Fleet: Slack WebSocket connect timeout on ${this.config.name}`);
           try { ws.close(); } catch { /* best-effort */ }
@@ -349,10 +349,10 @@ export class SlackAdapter implements ChannelAdapter {
       }, 30_000);
 
       // Clear the timeout once we're connected (hello sets status to "connected")
-      ws.on("close", () => clearTimeout(connectTimeout)); // also clear on close to avoid leak
+      ws.on("close", () => window.clearTimeout(connectTimeout)); // also clear on close to avoid leak
       const statusUnsub = this.onStatusChange((status) => {
         if (status === "connected") {
-          clearTimeout(connectTimeout);
+          window.clearTimeout(connectTimeout);
           statusUnsub();
         }
       });
@@ -653,7 +653,7 @@ export class SlackAdapter implements ChannelAdapter {
     console.warn(
       `Agent Fleet: Slack channel ${this.config.name} scheduling reconnect in ${delay}ms`,
     );
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       if (this.stopping) return;
       void this.connect();
@@ -706,7 +706,7 @@ export class SlackAdapter implements ChannelAdapter {
       // Honor Retry-After, then retry once. requestUrl normalizes header names
       // to lowercase keys in res.headers.
       const retryAfter = Number(res.headers["retry-after"] ?? "1");
-      await new Promise((r) => setTimeout(r, Math.max(1000, retryAfter * 1000)));
+      await new Promise((r) => window.setTimeout(r, Math.max(1000, retryAfter * 1000)));
       return this.slackApi<T>(method, body, options);
     }
 
@@ -733,7 +733,7 @@ export class SlackAdapter implements ChannelAdapter {
         await fn();
       } finally {
         // Small inter-message gap to stay under the per-channel cap.
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => window.setTimeout(r, 1000));
       }
     });
     // Swallow errors in the chain so a single failure doesn't poison the queue.

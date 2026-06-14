@@ -283,12 +283,12 @@ function runExecpolicyCheck(cliPath: string, rulesPath: string, argv: string[]):
     };
     try {
       const proc = spawnCli(cliPath, ["execpolicy", "check", "--rules", rulesPath, ...argv]);
-      const timer = setTimeout(() => {
+      const timer = window.setTimeout(() => {
         try { proc.kill(); } catch { /* ignore */ }
         done(null);
       }, 8000);
-      proc.on("error", () => { clearTimeout(timer); done(null); });
-      proc.on("close", (code) => { clearTimeout(timer); done(code); });
+      proc.on("error", () => { window.clearTimeout(timer); done(null); });
+      proc.on("close", (code) => { window.clearTimeout(timer); done(code); });
     } catch {
       done(null);
     }

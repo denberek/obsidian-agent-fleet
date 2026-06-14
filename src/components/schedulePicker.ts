@@ -140,8 +140,8 @@ export function renderSchedulePicker(
     const freq = freqSelect.value;
     const needsTime = freq === "daily" || freq === "weekly";
     const needsDay = freq === "weekly";
-    timeRow.style.display = needsTime ? "" : "none";
-    dayRow.style.display = needsDay ? "" : "none";
+    timeRow.setCssStyles({ display: needsTime ? "" : "none" });
+    dayRow.setCssStyles({ display: needsDay ? "" : "none" });
   };
 
   const buildCron = () => {

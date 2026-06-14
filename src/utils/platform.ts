@@ -110,7 +110,7 @@ export function openBrowser(url: string): void {
   // Use Electron's shell.openExternal — handles URL encoding correctly on all
   // platforms without cmd.exe & parsing issues on Windows.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- electron is resolved from the runtime at call time; a static import would be bundled and break this Node-only fallback
     const electron = require("electron") as { shell: { openExternal: (url: string) => Promise<void> } };
     void electron.shell.openExternal(url);
   } catch {

@@ -61,7 +61,7 @@ The installer automatically finds your Obsidian vaults and copies the plugin fil
 
 ### Requirements
 
-- **Obsidian** 1.6.0+ (desktop — macOS, Windows, Linux)
+- **Obsidian** 1.11.4+ (desktop — macOS, Windows, Linux)
 - **At least one CLI backend** — install whichever engine(s) your agents will use:
   - **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (default):
     ```bash
@@ -478,7 +478,7 @@ Click any run in the dashboard to see full details in a slideover panel.
 
 All secrets — MCP OAuth/bearer tokens and channel credentials (Slack/Telegram) — are stored in your OS keychain via Obsidian's SecretStorage API, never in the vault or in your native `~/.claude.json` / `~/.codex/config.toml`. Existing plaintext credentials are migrated from `data.json` to the keychain automatically on first load and the plaintext copies are cleared.
 
-Requires Obsidian 1.11.4+ for keychain support. On older versions, credentials remain in `data.json` with a console warning.
+Keychain storage uses Obsidian's SecretStorage API (Obsidian 1.11.4+, the minimum supported version).
 
 ### Channel Settings
 

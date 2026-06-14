@@ -1,6 +1,5 @@
 import { normalizePath, TFile, type Vault } from "obsidian";
 import type {
-  AgentConfig,
   ChannelConfig,
   ChannelCredentialEntry,
   ChannelStatus,
@@ -133,7 +132,7 @@ export class ChannelManager {
    */
   private readonly threadBindings = new Map<string, string>();
 
-  private hibernationInterval: ReturnType<typeof setInterval> | null = null;
+  private hibernationInterval: number | null = null;
   private started = false;
 
   constructor(private readonly deps: ChannelManagerDeps) {
@@ -159,7 +158,7 @@ export class ChannelManager {
     }
 
     // Idle hibernation tick — once per minute is plenty.
-    this.hibernationInterval = setInterval(() => {
+    this.hibernationInterval = window.setInterval(() => {
       void this.runHibernationSweep();
     }, 60_000);
   }
@@ -169,7 +168,7 @@ export class ChannelManager {
     this.started = false;
 
     if (this.hibernationInterval) {
-      clearInterval(this.hibernationInterval);
+      window.clearInterval(this.hibernationInterval);
       this.hibernationInterval = null;
     }
 

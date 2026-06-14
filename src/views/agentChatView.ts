@@ -84,7 +84,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  *  DOM API (createElementNS) rather than an HTML string, per Obsidian's plugin
  *  guidelines. */
 function buildConvoToggleIcon(parent: HTMLElement): void {
-  const svg = document.createElementNS(SVG_NS, "svg");
+  const svg = activeDocument.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "svg-icon af-convo-toggle-icon");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("fill", "none");
@@ -93,12 +93,12 @@ function buildConvoToggleIcon(parent: HTMLElement): void {
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
 
-  const panel = document.createElementNS(SVG_NS, "rect");
+  const panel = activeDocument.createElementNS(SVG_NS, "rect");
   for (const [k, v] of Object.entries({ x: "1", y: "2", width: "22", height: "20", rx: "4" })) {
     panel.setAttribute(k, v);
   }
 
-  const bar = document.createElementNS(SVG_NS, "rect");
+  const bar = activeDocument.createElementNS(SVG_NS, "rect");
   bar.setAttribute("class", "af-convo-toggle-bar");
   for (const [k, v] of Object.entries({ x: "4", y: "5", width: "2", height: "14", rx: "2", fill: "currentColor" })) {
     bar.setAttribute(k, v);
@@ -288,7 +288,7 @@ export class AgentChatView extends ItemView {
           (leaf.view as AgentChatView).selectedAgentName === agentName &&
           (leaf.view as AgentChatView).selectedConversationId === conversationId
         ) {
-          this.plugin.app.workspace.revealLeaf(leaf);
+          void this.plugin.app.workspace.revealLeaf(leaf);
           return;
         }
       }
@@ -374,7 +374,7 @@ export class AgentChatView extends ItemView {
 
     // Attachment pills (hidden when empty)
     this.pillsRow = inputArea.createDiv({ cls: "af-chat-pills-row" });
-    this.pillsRow.style.display = "none";
+    this.pillsRow.setCssStyles({ display: "none" });
 
     const inputRow = inputArea.createDiv({ cls: "af-chat-input-row" });
 
@@ -398,13 +398,13 @@ export class AgentChatView extends ItemView {
     createIcon(this.sendBtn, "arrow-up", "af-btn-icon");
 
     // Auto-grow textarea
-    this.sendBtn.style.display = "none";
+    this.sendBtn.setCssStyles({ display: "none" });
     const autoResize = () => {
-      this.textarea.style.height = "auto";
+      this.textarea.setCssStyles({ height: "auto" });
       const height = Math.min(this.textarea.scrollHeight, 160);
-      this.textarea.style.height = `${height}px`;
-      this.textarea.style.overflowY = this.textarea.scrollHeight > 160 ? "auto" : "hidden";
-      this.sendBtn.style.display = this.textarea.value.trim() ? "flex" : "none";
+      this.textarea.setCssStyles({ height: `${height}px` });
+      this.textarea.setCssStyles({ overflowY: this.textarea.scrollHeight > 160 ? "auto" : "hidden" });
+      this.sendBtn.setCssStyles({ display: this.textarea.value.trim() ? "flex" : "none" });
     };
     this.textarea.addEventListener("input", autoResize);
     this.textarea.addEventListener("focus", () => {
@@ -658,7 +658,7 @@ export class AgentChatView extends ItemView {
           (leaf.view as AgentChatView).selectedAgentName === agentName &&
           (leaf.view as AgentChatView).selectedConversationId === resolvedId
         ) {
-          this.plugin.app.workspace.revealLeaf(leaf);
+          void this.plugin.app.workspace.revealLeaf(leaf);
           return;
         }
       }
@@ -841,7 +841,7 @@ export class AgentChatView extends ItemView {
    *  from Finder/VS Code/Obsidian's own file explorer. */
   private beginInlineRename(nameEl: HTMLElement, meta: ConversationMeta): void {
     const originalName = meta.name;
-    const input = document.createElement("input");
+    const input = activeDocument.createElement("input");
     input.type = "text";
     input.value = originalName;
     input.className = "af-chat-convo-name-input";
@@ -853,7 +853,7 @@ export class AgentChatView extends ItemView {
     const cleanup = (newName: string | null): HTMLElement => {
       // Replace the input with a fresh name span — using `replaceWith` here
       // would lose our reference; create + swap.
-      const fresh = document.createElement("div");
+      const fresh = activeDocument.createElement("div");
       fresh.className = "af-chat-convo-name";
       fresh.textContent = newName ?? originalName;
       fresh.title = newName ?? originalName;
@@ -950,7 +950,7 @@ export class AgentChatView extends ItemView {
         (leaf.view as AgentChatView).selectedAgentName === this.selectedAgentName &&
         (leaf.view as AgentChatView).selectedConversationId === id
       ) {
-        this.plugin.app.workspace.revealLeaf(leaf);
+        void this.plugin.app.workspace.revealLeaf(leaf);
         return;
       }
     }
@@ -1024,7 +1024,7 @@ export class AgentChatView extends ItemView {
     const detachedBtn = copyBtn?.parentNode?.removeChild(copyBtn) ?? null;
     el.empty();
     el.addClass("af-compact-md");
-    void MarkdownRenderer.render(this.app, text, el, "", this.plugin).then(() => {
+    void MarkdownRenderer.render(this.app, text, el, "", this).then(() => {
       if (detachedBtn) el.appendChild(detachedBtn);
 
       // Wire clicks on wikilinks + external links. MarkdownRenderer produces
@@ -1042,7 +1042,7 @@ export class AgentChatView extends ItemView {
         // Add our own
         const code = pre.querySelector("code");
         if (!code) return;
-        const btn = document.createElement("button");
+        const btn = activeDocument.createElement("button");
         btn.className = "af-code-copy-btn";
         btn.setAttribute("aria-label", "Copy code");
         setIcon(btn, "copy");
@@ -1051,13 +1051,13 @@ export class AgentChatView extends ItemView {
           void navigator.clipboard.writeText(code.textContent ?? "").then(() => {
             btn.addClass("copied");
             setIcon(btn, "check");
-            setTimeout(() => {
+            window.setTimeout(() => {
               btn.removeClass("copied");
               setIcon(btn, "copy");
             }, 1500);
           });
         };
-        pre.style.position = "relative";
+        pre.setCssStyles({ position: "relative" });
         pre.appendChild(btn);
       });
     });
@@ -1127,7 +1127,7 @@ export class AgentChatView extends ItemView {
       void navigator.clipboard.writeText(getText()).then(() => {
         btn.addClass("copied");
         setIcon(btn, "check");
-        setTimeout(() => {
+        window.setTimeout(() => {
           btn.removeClass("copied");
           setIcon(btn, "copy");
         }, 1500);
@@ -1180,7 +1180,7 @@ export class AgentChatView extends ItemView {
     if (next && next.classList.contains("af-chat-affordances")) {
       return next as HTMLElement;
     }
-    const row = document.createElement("div");
+    const row = activeDocument.createElement("div");
     row.className = "af-chat-affordances";
     parent.insertBefore(row, bubble.nextSibling);
     return row;
@@ -1202,7 +1202,7 @@ export class AgentChatView extends ItemView {
     // Avoid double-attaching.
     if (row.querySelector(".af-thread-badge")) return;
 
-    const badge = document.createElement("div");
+    const badge = activeDocument.createElement("div");
     badge.className = "af-thread-badge";
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
@@ -1212,9 +1212,9 @@ export class AgentChatView extends ItemView {
 
     // Thread UI container goes AFTER the affordances row so it opens below
     // both the thread badge and the tool-calls button.
-    const container = document.createElement("div");
+    const container = activeDocument.createElement("div");
     container.className = "af-thread-container";
-    container.style.display = "none";
+    container.setCssStyles({ display: "none" });
     parent.insertBefore(container, row.nextSibling);
 
     const updateBadgeLabel = () => {
@@ -1234,7 +1234,7 @@ export class AgentChatView extends ItemView {
       const expanded = this.threadExpanded.get(anchorId) === true;
       if (expanded) {
         // Collapse
-        container.style.display = "none";
+        container.setCssStyles({ display: "none" });
         this.threadExpanded.set(anchorId, false);
         badge.removeClass("expanded");
         // Return stats to parent when collapsing.
@@ -1243,7 +1243,7 @@ export class AgentChatView extends ItemView {
       }
       // Expand — open thread, render on first expand
       this.threadExpanded.set(anchorId, true);
-      container.style.display = "";
+      container.setCssStyles({ display: "" });
       badge.addClass("expanded");
       if (!rendered) {
         try {
@@ -1327,15 +1327,15 @@ export class AgentChatView extends ItemView {
     const threadImages: Array<{ name: string; path: string }> = [];
     const composerWrap = wrap.createDiv({ cls: "af-thread-composer-wrap" });
     const pillsRow = composerWrap.createDiv({ cls: "af-chat-pills-row af-thread-pills-row" });
-    pillsRow.style.display = "none";
+    pillsRow.setCssStyles({ display: "none" });
 
     const renderThreadPills = () => {
       pillsRow.empty();
       if (threadFiles.length === 0 && threadImages.length === 0) {
-        pillsRow.style.display = "none";
+        pillsRow.setCssStyles({ display: "none" });
         return;
       }
-      pillsRow.style.display = "flex";
+      pillsRow.setCssStyles({ display: "flex" });
       for (const file of threadFiles) {
         const pill = pillsRow.createDiv({ cls: "af-chat-pill" });
         const iconEl = pill.createSpan({ cls: "af-chat-pill-icon" });
@@ -1454,12 +1454,12 @@ export class AgentChatView extends ItemView {
 
     const sendBtn = composer.createEl("button", { cls: "af-chat-send-btn" }) as HTMLButtonElement;
     createIcon(sendBtn, "arrow-up", "af-btn-icon");
-    sendBtn.style.display = "none";
+    sendBtn.setCssStyles({ display: "none" });
 
     const autoResize = () => {
-      input.style.height = "auto";
-      input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
-      sendBtn.style.display = input.value.trim() ? "flex" : "none";
+      input.setCssStyles({ height: "auto" });
+      input.setCssStyles({ height: `${Math.min(input.scrollHeight, 120)}px` });
+      sendBtn.setCssStyles({ display: input.value.trim() ? "flex" : "none" });
     };
     input.addEventListener("input", autoResize);
     input.addEventListener("focus", () => this.setStatsSource(thread));
@@ -1762,11 +1762,11 @@ export class AgentChatView extends ItemView {
 
     const totalCount = this.attachedFiles.length + this.attachedImages.length;
     if (totalCount === 0) {
-      this.pillsRow.style.display = "none";
+      this.pillsRow.setCssStyles({ display: "none" });
       return;
     }
 
-    this.pillsRow.style.display = "flex";
+    this.pillsRow.setCssStyles({ display: "flex" });
 
     for (const file of this.attachedFiles) {
       const pill = this.pillsRow.createDiv({ cls: "af-chat-pill" });
@@ -1819,8 +1819,8 @@ export class AgentChatView extends ItemView {
 
     // Clear input and attachments, reset textarea height
     this.textarea.value = "";
-    this.textarea.style.height = "auto";
-    this.sendBtn.style.display = "none";
+    this.textarea.setCssStyles({ height: "auto" });
+    this.sendBtn.setCssStyles({ display: "none" });
     this.attachedFiles = [];
     this.attachedImages = [];
     this.renderPills();

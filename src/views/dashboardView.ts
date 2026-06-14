@@ -2,7 +2,7 @@ import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } fro
 import { IconPickerModal } from "../modals/iconPickerModal";
 import { VIEW_TYPE_DASHBOARD } from "../constants";
 import type AgentFleetPlugin from "../main";
-import type { AgentConfig, AgentHealth, ApprovalRecord, ChannelConfig, McpServer, McpTool, RunLogData, SkillConfig, TaskConfig } from "../types";
+import type { AgentConfig, AgentHealth, ChannelConfig, McpServer, McpTool, RunLogData, SkillConfig, TaskConfig } from "../types";
 import { truncate, slugify, parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "../utils/markdown";
 import { splitLines } from "../utils/platform";
 import { createIcon } from "../utils/icons";
@@ -402,7 +402,7 @@ export class FleetDashboardView extends ItemView {
       this.handleSearch(searchInput.value, searchWrap);
     });
     searchInput.addEventListener("blur", () => {
-      setTimeout(() => searchWrap.querySelector(".af-search-results")?.remove(), 200);
+      window.setTimeout(() => searchWrap.querySelector(".af-search-results")?.remove(), 200);
     });
 
     // Status pills
@@ -1565,7 +1565,7 @@ export class FleetDashboardView extends ItemView {
 
     const elapsed = (Date.now() - startTime) / 1000;
     const pct = Math.min(95, (elapsed / timeout) * 100); // Cap at 95% until actually done
-    bar.style.width = `${pct}%`;
+    bar.setCssStyles({ width: `${pct}%` });
 
     const footer = card.createDiv({ cls: "af-kanban-card-footer" });
     const scheduleEl = footer.createSpan({ cls: "af-kanban-card-schedule" });
@@ -1584,16 +1584,16 @@ export class FleetDashboardView extends ItemView {
     };
 
     // Live update every second
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       const now = (Date.now() - startTime) / 1000;
       const newPct = Math.min(95, (now / timeout) * 100);
-      bar.style.width = `${newPct}%`;
+      bar.setCssStyles({ width: `${newPct}%` });
       const nowSec = Math.round(now);
       scheduleEl.textContent = "";
       setIcon(scheduleEl, "loader-2");
       scheduleEl.appendText(` ${nowSec}s / ${timeout}s`);
     }, 1000);
-    this.streamingUnsubscribes.push(() => clearInterval(interval));
+    this.streamingUnsubscribes.push(() => window.clearInterval(interval));
   }
 
   private renderKanbanCompletedCard(container: HTMLElement, run: RunLogData): void {
@@ -1711,7 +1711,7 @@ export class FleetDashboardView extends ItemView {
     });
     row.createEl("td", { cls: "af-mono", text: run.model });
 
-    row.style.cursor = "pointer";
+    row.setCssStyles({ cursor: "pointer" });
     row.onclick = () => this.openSlideover(run);
   }
 
@@ -1836,9 +1836,9 @@ export class FleetDashboardView extends ItemView {
     }
 
     const list = page.createDiv({ cls: "af-wk-list" });
-    list.style.display = "flex";
-    list.style.flexDirection = "column";
-    list.style.gap = "16px";
+    list.setCssStyles({ display: "flex" });
+    list.setCssStyles({ flexDirection: "column" });
+    list.setCssStyles({ gap: "16px" });
 
     for (const keeper of keepers) {
       await this.renderWikiKeeperCard(list, keeper);
@@ -1851,17 +1851,17 @@ export class FleetDashboardView extends ItemView {
   ): Promise<void> {
     const wk = agent.wikiKeeper;
     const card = container.createDiv({ cls: "af-card" });
-    card.style.padding = "16px";
-    card.style.border = "1px solid var(--background-modifier-border)";
-    card.style.borderRadius = "8px";
+    card.setCssStyles({ padding: "16px" });
+    card.setCssStyles({ border: "1px solid var(--background-modifier-border)" });
+    card.setCssStyles({ borderRadius: "8px" });
 
     const header = card.createDiv();
-    header.style.display = "flex";
-    header.style.alignItems = "center";
-    header.style.gap = "12px";
-    header.style.marginBottom = "12px";
+    header.setCssStyles({ display: "flex" });
+    header.setCssStyles({ alignItems: "center" });
+    header.setCssStyles({ gap: "12px" });
+    header.setCssStyles({ marginBottom: "12px" });
     const titleWrap = header.createDiv();
-    titleWrap.style.flex = "1";
+    titleWrap.setCssStyles({ flex: "1" });
     titleWrap.createEl("strong", { text: agent.name });
     const scopeLabel = wk.scopeRoot || "(whole vault)";
     titleWrap.createEl("div", {
@@ -1904,10 +1904,10 @@ export class FleetDashboardView extends ItemView {
 
     // Latest lint header
     const reportHeader = card.createDiv();
-    reportHeader.style.display = "flex";
-    reportHeader.style.alignItems = "baseline";
-    reportHeader.style.gap = "12px";
-    reportHeader.style.marginBottom = "8px";
+    reportHeader.setCssStyles({ display: "flex" });
+    reportHeader.setCssStyles({ alignItems: "baseline" });
+    reportHeader.setCssStyles({ gap: "12px" });
+    reportHeader.setCssStyles({ marginBottom: "8px" });
     reportHeader.createEl("strong", { text: `Lint ${report.date}` });
     reportHeader.createSpan({
       cls: "af-form-hint",
@@ -1919,7 +1919,7 @@ export class FleetDashboardView extends ItemView {
       const sumDetails = card.createEl("details");
       sumDetails.createEl("summary", { text: "Summary" });
       const sumList = sumDetails.createEl("ul");
-      sumList.style.marginTop = "4px";
+      sumList.setCssStyles({ marginTop: "4px" });
       for (const item of report.summary) {
         sumList.createEl("li", { text: item });
       }
@@ -1929,7 +1929,7 @@ export class FleetDashboardView extends ItemView {
       const autoDetails = card.createEl("details");
       autoDetails.createEl("summary", { text: `Auto-applied (${report.autoApplied.length})` });
       const autoList = autoDetails.createEl("ul");
-      autoList.style.marginTop = "4px";
+      autoList.setCssStyles({ marginTop: "4px" });
       for (const item of report.autoApplied) {
         autoList.createEl("li", { text: item });
       }
@@ -1941,7 +1941,7 @@ export class FleetDashboardView extends ItemView {
         text: `Refresh chained (${report.refreshChained.length})`,
       });
       const refList = refDetails.createEl("ul");
-      refList.style.marginTop = "4px";
+      refList.setCssStyles({ marginTop: "4px" });
       for (const item of report.refreshChained) {
         refList.createEl("li", { text: item });
       }
@@ -1949,7 +1949,7 @@ export class FleetDashboardView extends ItemView {
 
     // Needs review queue — the actionable bit
     const reviewWrap = card.createDiv();
-    reviewWrap.style.marginTop = "12px";
+    reviewWrap.setCssStyles({ marginTop: "12px" });
     reviewWrap.createEl("strong", { text: `Needs review (${report.needsReview.length})` });
 
     if (report.needsReview.length === 0) {
@@ -1961,23 +1961,23 @@ export class FleetDashboardView extends ItemView {
     }
 
     const reviewList = reviewWrap.createDiv();
-    reviewList.style.display = "flex";
-    reviewList.style.flexDirection = "column";
-    reviewList.style.gap = "6px";
-    reviewList.style.marginTop = "8px";
+    reviewList.setCssStyles({ display: "flex" });
+    reviewList.setCssStyles({ flexDirection: "column" });
+    reviewList.setCssStyles({ gap: "6px" });
+    reviewList.setCssStyles({ marginTop: "8px" });
 
     for (const item of report.needsReview) {
       const row = reviewList.createDiv();
-      row.style.display = "flex";
-      row.style.alignItems = "flex-start";
-      row.style.gap = "8px";
-      row.style.padding = "8px 10px";
-      row.style.background = "var(--background-secondary)";
-      row.style.borderRadius = "4px";
-      row.style.fontSize = "13px";
+      row.setCssStyles({ display: "flex" });
+      row.setCssStyles({ alignItems: "flex-start" });
+      row.setCssStyles({ gap: "8px" });
+      row.setCssStyles({ padding: "8px 10px" });
+      row.setCssStyles({ background: "var(--background-secondary)" });
+      row.setCssStyles({ borderRadius: "4px" });
+      row.setCssStyles({ fontSize: "13px" });
 
       const text = row.createDiv();
-      text.style.flex = "1";
+      text.setCssStyles({ flex: "1" });
       text.setText(item);
 
       const dismissBtn = row.createEl("button", { cls: "af-btn-sm", text: "Dismiss" });
@@ -1999,7 +1999,7 @@ export class FleetDashboardView extends ItemView {
     const cardCls = channel.enabled && status !== "disabled" ? "af-agent-card" : "af-agent-card disabled";
 
     const card = container.createDiv({ cls: cardCls });
-    card.style.cursor = "default"; // No card-level click — channels have no detail page
+    card.setCssStyles({ cursor: "default" }); // No card-level click — channels have no detail page
 
     // Header — avatar (icon + status color) + name/agent + type pill
     const header = card.createDiv({ cls: "af-agent-card-header" });
@@ -2023,7 +2023,7 @@ export class FleetDashboardView extends ItemView {
       for (const name of channel.allowedAgents) {
         const tag = agentsRow.createSpan({ cls: "af-skill-tag", text: name });
         if (name === channel.defaultAgent) {
-          tag.style.fontWeight = "700";
+          tag.setCssStyles({ fontWeight: "700" });
         }
       }
     }
@@ -2384,7 +2384,7 @@ export class FleetDashboardView extends ItemView {
       cls: "af-form-input",
       attr: { type: "text", value: channel.name, disabled: "true" },
     });
-    nameInput.style.opacity = "0.6";
+    nameInput.setCssStyles({ opacity: "0.6" });
 
     // Type dropdown — only Slack is supported in v1; others shown as disabled
     const typeRow = detailsSection.createDiv({ cls: "af-form-row" });
@@ -2541,7 +2541,7 @@ export class FleetDashboardView extends ItemView {
     deleteBtn.onclick = async () => {
       await this.plugin.repository.deleteChannel(channel.name);
       new Notice(`Channel "${channel.name}" deleted.`);
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => window.setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("channels");
     };
@@ -2959,7 +2959,7 @@ export class FleetDashboardView extends ItemView {
       const outputSection = body.createDiv({ cls: "af-slideover-section" });
       outputSection.createDiv({ cls: "af-slideover-section-title", text: "OUTPUT" });
       const resultBlock = outputSection.createDiv({ cls: "af-output-block af-compact-md" });
-      void MarkdownRenderer.render(this.app, cap(run.finalResult!), resultBlock, "", this.plugin);
+      void MarkdownRenderer.render(this.app, cap(run.finalResult!), resultBlock, "", this);
 
       if (transcriptDiffersFromResult) {
         const details = outputSection.createEl("details", { cls: "af-run-transcript" });
@@ -2969,7 +2969,7 @@ export class FleetDashboardView extends ItemView {
         const meta = summary.createSpan({ cls: "af-run-transcript-meta" });
         meta.setText(`${(outputForTranscript.length / 1024).toFixed(1)} KB`);
         const transcriptBlock = details.createDiv({ cls: "af-output-block af-compact-md af-run-transcript-body" });
-        void MarkdownRenderer.render(this.app, cap(outputForTranscript), transcriptBlock, "", this.plugin);
+        void MarkdownRenderer.render(this.app, cap(outputForTranscript), transcriptBlock, "", this);
       }
     } else if (outputForTranscript) {
       // Legacy runs without a captured finalResult: fall back to rendering
@@ -2978,7 +2978,7 @@ export class FleetDashboardView extends ItemView {
       const outputSection = body.createDiv({ cls: "af-slideover-section" });
       outputSection.createDiv({ cls: "af-slideover-section-title", text: "OUTPUT" });
       const outputBlock = outputSection.createDiv({ cls: "af-output-block af-compact-md" });
-      void MarkdownRenderer.render(this.app, cap(outputForTranscript), outputBlock, "", this.plugin);
+      void MarkdownRenderer.render(this.app, cap(outputForTranscript), outputBlock, "", this);
     }
 
     // Tools used
@@ -3285,9 +3285,9 @@ export class FleetDashboardView extends ItemView {
       const needsTime = ["daily", "weekdays", "weekly", "monthly"].includes(freq);
       const needsDay = freq === "weekly";
       const needsDom = freq === "monthly";
-      timeRow.style.display = needsTime ? "" : "none";
-      dayRow.style.display = needsDay ? "" : "none";
-      domRow.style.display = needsDom ? "" : "none";
+      timeRow.setCssStyles({ display: needsTime ? "" : "none" });
+      dayRow.setCssStyles({ display: needsDay ? "" : "none" });
+      domRow.setCssStyles({ display: needsDom ? "" : "none" });
     };
 
     // Build cron from selections
@@ -3397,7 +3397,7 @@ export class FleetDashboardView extends ItemView {
     }
 
     const showHide = () => {
-      timeRow.style.display = freqSelect.value === "daily" ? "" : "none";
+      timeRow.setCssStyles({ display: freqSelect.value === "daily" ? "" : "none" });
     };
 
     const buildCron = () => {
@@ -3808,12 +3808,12 @@ export class FleetDashboardView extends ItemView {
       hbEnabledRow.createDiv({ cls: "af-form-label", text: "Enabled" });
       const hbEnabledToggle = hbEnabledRow.createDiv({ cls: "af-agent-card-toggle" });
       const hbBody = heartbeatSection.createDiv();
-      hbBody.style.display = "none";
+      hbBody.setCssStyles({ display: "none" });
       hbEnabledToggle.onclick = () => {
         const isOn = hbEnabledToggle.hasClass("on");
         hbEnabledToggle.toggleClass("on", !isOn);
         state.heartbeatEnabled = !isOn;
-        hbBody.style.display = !isOn ? "" : "none";
+        hbBody.setCssStyles({ display: !isOn ? "" : "none" });
       };
 
       this.renderHeartbeatSchedule(hbBody, state);
@@ -3842,8 +3842,8 @@ export class FleetDashboardView extends ItemView {
       hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; });
 
       const hbInstructionLabel = hbBody.createDiv({ cls: "af-form-label" });
-      hbInstructionLabel.style.width = "auto";
-      hbInstructionLabel.style.marginTop = "12px";
+      hbInstructionLabel.setCssStyles({ width: "auto" });
+      hbInstructionLabel.setCssStyles({ marginTop: "12px" });
       hbInstructionLabel.setText("Instruction");
       this.addTooltip(hbInstructionLabel, "What the agent does on each heartbeat. Also used by the \"Run Now\" button.");
       const hbTextarea = hbBody.createEl("textarea", {
@@ -4259,7 +4259,7 @@ export class FleetDashboardView extends ItemView {
       cls: "af-form-input",
       attr: { type: "text", value: agent.name, disabled: "true" },
     });
-    nameInput.style.opacity = "0.6";
+    nameInput.setCssStyles({ opacity: "0.6" });
 
     this.createFormField(identitySection, "Description", "Monitors deployments and reports status", "", (v) => { state.description = v; }, agent.description ?? "");
 
@@ -4464,12 +4464,12 @@ export class FleetDashboardView extends ItemView {
       hbEnabledRow.createDiv({ cls: "af-form-label", text: "Enabled" });
       const hbEnabledToggle = hbEnabledRow.createDiv({ cls: `af-agent-card-toggle${state.heartbeatEnabled ? " on" : ""}` });
       const hbBody = heartbeatSection.createDiv();
-      hbBody.style.display = state.heartbeatEnabled ? "" : "none";
+      hbBody.setCssStyles({ display: state.heartbeatEnabled ? "" : "none" });
       hbEnabledToggle.onclick = () => {
         const isOn = hbEnabledToggle.hasClass("on");
         hbEnabledToggle.toggleClass("on", !isOn);
         state.heartbeatEnabled = !isOn;
-        hbBody.style.display = !isOn ? "" : "none";
+        hbBody.setCssStyles({ display: !isOn ? "" : "none" });
       };
 
       this.renderHeartbeatSchedule(hbBody, state);
@@ -4499,8 +4499,8 @@ export class FleetDashboardView extends ItemView {
       hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; });
 
       const hbInstructionLabel = hbBody.createDiv({ cls: "af-form-label" });
-      hbInstructionLabel.style.width = "auto";
-      hbInstructionLabel.style.marginTop = "12px";
+      hbInstructionLabel.setCssStyles({ width: "auto" });
+      hbInstructionLabel.setCssStyles({ marginTop: "12px" });
       hbInstructionLabel.setText("Instruction");
       this.addTooltip(hbInstructionLabel, "What the agent does on each heartbeat. Also used by the \"Run Now\" button.");
       const hbTextarea = hbBody.createEl("textarea", {
@@ -4818,13 +4818,13 @@ export class FleetDashboardView extends ItemView {
     scheduleToggleRow.createDiv({ cls: "af-form-label", text: "Enable schedule" });
     const scheduleToggle = scheduleToggleRow.createDiv({ cls: "af-agent-card-toggle" });
     const scheduleBody = scheduleSection.createDiv({ cls: "af-schedule-body" });
-    scheduleBody.style.display = "none";
+    scheduleBody.setCssStyles({ display: "none" });
 
     scheduleToggle.onclick = () => {
       const isOn = scheduleToggle.hasClass("on");
       scheduleToggle.toggleClass("on", !isOn);
       state.scheduleEnabled = !isOn;
-      scheduleBody.style.display = !isOn ? "" : "none";
+      scheduleBody.setCssStyles({ display: !isOn ? "" : "none" });
       if (!isOn) {
         state.type = state.scheduleMode === "once" ? "once" : "recurring";
       } else {
@@ -4841,7 +4841,7 @@ export class FleetDashboardView extends ItemView {
     }
     const cronHost = scheduleBody.createDiv();
     const onceHost = scheduleBody.createDiv();
-    onceHost.style.display = "none";
+    onceHost.setCssStyles({ display: "none" });
     this.renderInlineSchedule(cronHost, state);
 
     const onceRow = onceHost.createDiv({ cls: "af-form-row" });
@@ -4858,8 +4858,8 @@ export class FleetDashboardView extends ItemView {
 
     modeSelect.addEventListener("change", () => {
       state.scheduleMode = modeSelect.value as "recurring" | "once";
-      cronHost.style.display = state.scheduleMode === "recurring" ? "" : "none";
-      onceHost.style.display = state.scheduleMode === "once" ? "" : "none";
+      cronHost.setCssStyles({ display: state.scheduleMode === "recurring" ? "" : "none" });
+      onceHost.setCssStyles({ display: state.scheduleMode === "once" ? "" : "none" });
       if (state.scheduleEnabled) state.type = state.scheduleMode === "once" ? "once" : "recurring";
     });
 
@@ -5076,7 +5076,7 @@ export class FleetDashboardView extends ItemView {
       cls: "af-form-input",
       attr: { type: "text", value: task.taskId, disabled: "true" },
     });
-    nameInput.style.opacity = "0.6";
+    nameInput.setCssStyles({ opacity: "0.6" });
 
     // Agent dropdown
     const agentRow = detailsSection.createDiv({ cls: "af-form-row" });
@@ -5130,13 +5130,13 @@ export class FleetDashboardView extends ItemView {
     scheduleToggleRow.createDiv({ cls: "af-form-label", text: "Enable schedule" });
     const scheduleToggle = scheduleToggleRow.createDiv({ cls: `af-agent-card-toggle${hasSchedule ? " on" : ""}` });
     const scheduleBody = scheduleSection.createDiv({ cls: "af-schedule-body" });
-    scheduleBody.style.display = hasSchedule ? "" : "none";
+    scheduleBody.setCssStyles({ display: hasSchedule ? "" : "none" });
 
     scheduleToggle.onclick = () => {
       const isOn = scheduleToggle.hasClass("on");
       scheduleToggle.toggleClass("on", !isOn);
       state.scheduleEnabled = !isOn;
-      scheduleBody.style.display = !isOn ? "" : "none";
+      scheduleBody.setCssStyles({ display: !isOn ? "" : "none" });
       if (!isOn) {
         state.type = state.scheduleMode === "once" ? "once" : "recurring";
       } else {
@@ -5154,8 +5154,8 @@ export class FleetDashboardView extends ItemView {
     }
     const editCronHost = scheduleBody.createDiv();
     const editOnceHost = scheduleBody.createDiv();
-    editCronHost.style.display = state.scheduleMode === "recurring" ? "" : "none";
-    editOnceHost.style.display = state.scheduleMode === "once" ? "" : "none";
+    editCronHost.setCssStyles({ display: state.scheduleMode === "recurring" ? "" : "none" });
+    editOnceHost.setCssStyles({ display: state.scheduleMode === "once" ? "" : "none" });
     this.renderInlineSchedule(editCronHost, state);
 
     const editOnceRow = editOnceHost.createDiv({ cls: "af-form-row" });
@@ -5174,8 +5174,8 @@ export class FleetDashboardView extends ItemView {
 
     editModeSelect.addEventListener("change", () => {
       state.scheduleMode = editModeSelect.value as "recurring" | "once";
-      editCronHost.style.display = state.scheduleMode === "recurring" ? "" : "none";
-      editOnceHost.style.display = state.scheduleMode === "once" ? "" : "none";
+      editCronHost.setCssStyles({ display: state.scheduleMode === "recurring" ? "" : "none" });
+      editOnceHost.setCssStyles({ display: state.scheduleMode === "once" ? "" : "none" });
       if (state.scheduleEnabled) state.type = state.scheduleMode === "once" ? "once" : "recurring";
     });
 
@@ -5258,7 +5258,7 @@ export class FleetDashboardView extends ItemView {
     deleteBtn.onclick = async () => {
       await this.plugin.repository.deleteTask(task.taskId);
       new Notice(`Task "${task.taskId}" deleted.`);
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => window.setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("kanban");
     };
@@ -5360,7 +5360,7 @@ export class FleetDashboardView extends ItemView {
       cls: "af-form-input",
       attr: { type: "text", value: skill.name, disabled: "true" },
     });
-    nameInput.style.opacity = "0.6";
+    nameInput.setCssStyles({ opacity: "0.6" });
 
     this.createFormField(identitySection, "Description", "Manage tasks and projects via CLI", "", (v) => { state.description = v; }, skill.description ?? "");
     this.createFormField(identitySection, "Tags", "productivity, tasks", "Comma-separated", (v) => { state.tags = v; }, skill.tags.join(", "));
@@ -5431,7 +5431,7 @@ export class FleetDashboardView extends ItemView {
       await this.plugin.repository.deleteSkill(skill.name);
       new Notice(`Skill "${skill.name}" deleted.`);
       // Small delay for Obsidian vault cache to process the trash
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => window.setTimeout(r, 200));
       await this.plugin.refreshFromVault();
       this.navigate("skills");
     };
@@ -5967,7 +5967,7 @@ export class FleetDashboardView extends ItemView {
     bearerInput.addEventListener("input", () => { state.bearerToken = bearerInput.value; });
 
     const updateAuthVisibility = () => {
-      bearerRow.style.display = state.auth === "bearer" ? "" : "none";
+      bearerRow.setCssStyles({ display: state.auth === "bearer" ? "" : "none" });
     };
     authSelect.addEventListener("change", () => {
       state.auth = authSelect.value as "none" | "bearer" | "oauth";
@@ -5977,8 +5977,8 @@ export class FleetDashboardView extends ItemView {
 
     // Toggle section visibility based on transport
     const updateTransportVisibility = () => {
-      stdioSection.style.display = state.transport === "stdio" ? "" : "none";
-      httpSection.style.display = state.transport !== "stdio" ? "" : "none";
+      stdioSection.setCssStyles({ display: state.transport === "stdio" ? "" : "none" });
+      httpSection.setCssStyles({ display: state.transport !== "stdio" ? "" : "none" });
     };
     transportSelect.addEventListener("change", () => {
       state.transport = transportSelect.value as "stdio" | "http" | "sse";

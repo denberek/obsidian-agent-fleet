@@ -249,7 +249,7 @@ export class ChatSession {
   // killed so isStreaming never gets permanently stuck at true. Configured
   // via FleetSettings.chatWatchdogMinutes (default 10).
   private static readonly WATCHDOG_FALLBACK_MINUTES = 10;
-  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdogTimer: number | null = null;
   private getWatchdogMs(): number {
     const minutes = this.settings.chatWatchdogMinutes;
     const safe = typeof minutes === "number" && minutes > 0 ? minutes : ChatSession.WATCHDOG_FALLBACK_MINUTES;
@@ -258,7 +258,7 @@ export class ChatSession {
   private armWatchdog(): void {
     this.clearWatchdog();
     const watchdogMs = this.getWatchdogMs();
-    this.watchdogTimer = setTimeout(() => {
+    this.watchdogTimer = window.setTimeout(() => {
       this.watchdogTimer = null;
       if (!this.isStreaming) return;
       // Surface a timeout error and force-clean state.
@@ -274,7 +274,7 @@ export class ChatSession {
   }
   private clearWatchdog(): void {
     if (this.watchdogTimer) {
-      clearTimeout(this.watchdogTimer);
+      window.clearTimeout(this.watchdogTimer);
       this.watchdogTimer = null;
     }
   }

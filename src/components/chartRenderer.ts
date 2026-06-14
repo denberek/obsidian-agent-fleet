@@ -6,7 +6,7 @@ export interface BarChartDay {
 }
 
 function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string> = {}): SVGElementTagNameMap[K] {
-  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  const el = activeDocument.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) {
     el.setAttribute(k, v);
   }

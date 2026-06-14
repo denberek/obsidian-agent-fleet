@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.3 — 2026-06-14
+
+Clears the blocking errors from the Obsidian Community Plugins automated review. No user-facing behavior changes.
+
+- **No inline styles** — every `el.style.x = …` assignment is now `el.setCssStyles({ … })` (Obsidian guideline).
+- **`minAppVersion` → 1.11.4** — the plugin uses the SecretStorage API and the current `revealLeaf` signature; the declared minimum now matches.
+- **No plugin-as-component** — `MarkdownRenderer.render` now receives the view (a short-lived component) instead of the plugin instance, avoiding a lifecycle leak.
+- **Popout-window compatibility** — timers use `window.setTimeout`/`clearTimeout`/`setInterval`/`clearInterval` and DOM access uses `activeDocument`.
+- Minor: described eslint-disable directive, dropped unused imports, settings warning now uses `vault.configDir` instead of a hardcoded `.obsidian`.
+
 ## 0.13.2 — 2026-06-14
 
 Community-directory submission fixes (from the automated review).

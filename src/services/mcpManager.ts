@@ -384,7 +384,7 @@ export class McpManager {
         "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
         + "<h2 style='color:#22c55e'>Authenticated!</h2>"
         + "<p>You can close this tab and return to Obsidian.</p>"
-        + "<script>setTimeout(()=>window.close(),2000)</script>"
+        + "<script>window.setTimeout(()=>window.close(),2000)</script>"
         + "</body></html>",
       );
       onResult?.(code, state);
@@ -406,12 +406,12 @@ export class McpManager {
       port,
       waitForCode: (expectedState: string, timeoutMs: number) =>
         new Promise<string>((resolve, reject) => {
-          const timer = setTimeout(() => {
+          const timer = window.setTimeout(() => {
             reject(new Error("Authentication timed out — complete authorization in your browser and try again."));
           }, timeoutMs);
 
           onResult = (code: string, state: string) => {
-            clearTimeout(timer);
+            window.clearTimeout(timer);
             if (state !== expectedState) {
               reject(new Error("OAuth state mismatch — possible CSRF attack"));
             } else {
@@ -419,7 +419,7 @@ export class McpManager {
             }
           };
           onError = (err: Error) => {
-            clearTimeout(timer);
+            window.clearTimeout(timer);
             reject(err);
           };
         }),
@@ -502,8 +502,8 @@ export class McpManager {
       });
 
       req.on("error", reject);
-      const timer = setTimeout(() => { req.destroy(); reject(new Error("OAuth request timed out")); }, 15000);
-      req.on("close", () => clearTimeout(timer));
+      const timer = window.setTimeout(() => { req.destroy(); reject(new Error("OAuth request timed out")); }, 15000);
+      req.on("close", () => window.clearTimeout(timer));
       if (body) req.write(body);
       req.end();
     });
@@ -537,7 +537,7 @@ export class McpManager {
         resolve({ description, tools });
       };
 
-      const timer = setTimeout(finish, 10000);
+      const timer = window.setTimeout(finish, 10000);
 
       proc.stdout!.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
@@ -560,7 +560,7 @@ export class McpManager {
                   JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n",
                 );
               } catch {
-                clearTimeout(timer);
+                window.clearTimeout(timer);
                 finish();
                 return;
               }
@@ -577,14 +577,14 @@ export class McpManager {
           } catch { /* skip */ }
 
           if (gotInit && gotTools) {
-            clearTimeout(timer);
+            window.clearTimeout(timer);
             finish();
           }
         }
       });
 
-      proc.on("error", () => { clearTimeout(timer); finish(); });
-      proc.on("close", () => { clearTimeout(timer); finish(); });
+      proc.on("error", () => { window.clearTimeout(timer); finish(); });
+      proc.on("close", () => { window.clearTimeout(timer); finish(); });
 
       try {
         proc.stdin!.write(
@@ -600,7 +600,7 @@ export class McpManager {
           }) + "\n",
         );
       } catch {
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         finish();
       }
     });
@@ -786,8 +786,8 @@ export class McpManager {
       });
 
       req.on("error", reject);
-      const timer = setTimeout(() => { req.destroy(); resolve(null); }, 15000);
-      req.on("close", () => clearTimeout(timer));
+      const timer = window.setTimeout(() => { req.destroy(); resolve(null); }, 15000);
+      req.on("close", () => window.clearTimeout(timer));
       req.write(bodyStr);
       req.end();
     });

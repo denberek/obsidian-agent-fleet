@@ -143,7 +143,7 @@ export class CreateAgentModal extends Modal {
       .setDesc("Emoji for this agent")
       .addText((text: TextComponent) => {
         text.setPlaceholder("\ud83d\udee1\ufe0f");
-        text.inputEl.style.width = "60px";
+        text.inputEl.setCssStyles({ width: "60px" });
         text.onChange((value) => {
           this.avatar = value;
         });
@@ -242,7 +242,7 @@ export class CreateAgentModal extends Modal {
         text.setPlaceholder("300");
         text.setValue(String(this.timeout));
         text.inputEl.type = "number";
-        text.inputEl.style.width = "80px";
+        text.inputEl.setCssStyles({ width: "80px" });
         text.onChange((value) => {
           const num = parseInt(value, 10);
           if (!isNaN(num) && num > 0) this.timeout = num;

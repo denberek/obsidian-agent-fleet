@@ -180,7 +180,7 @@ export class ExecutionManager {
         let stderr = "";
         let timedOut = false;
 
-        const timer = setTimeout(() => {
+        const timer = window.setTimeout(() => {
           timedOut = true;
           proc.kill();
         }, agent.timeout * 1000);
@@ -202,12 +202,12 @@ export class ExecutionManager {
         });
 
         proc.on("error", (error) => {
-          clearTimeout(timer);
+          window.clearTimeout(timer);
           reject(error);
         });
 
         proc.on("close", (exitCode) => {
-          clearTimeout(timer);
+          window.clearTimeout(timer);
           this.runningProcesses.delete(agent.name);
 
           const parsed = adapter.parseExecOutput(stdout, stderr, useStreaming);

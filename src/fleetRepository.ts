@@ -1,5 +1,5 @@
 import { join } from "path";
-import { FileSystemAdapter, TAbstractFile, TFile, TFolder, Vault, normalizePath } from "obsidian";
+import { FileSystemAdapter, TFile, TFolder, Vault, normalizePath } from "obsidian";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_MEMORY_TOKEN_BUDGET,

@@ -182,16 +182,17 @@ export class AgentFleetSettingTab extends PluginSettingTab {
     // SECURITY WARNING — credentials live in plugin data.json, inside the
     // vault's .obsidian folder. Users who sync .obsidian sync credentials too.
     const warning = containerEl.createDiv({ cls: "af-settings-warning" });
-    warning.style.padding = "12px";
-    warning.style.margin = "8px 0 16px 0";
-    warning.style.border = "1px solid var(--background-modifier-border)";
-    warning.style.borderRadius = "6px";
-    warning.style.background = "var(--background-secondary)";
+    warning.setCssStyles({ padding: "12px" });
+    warning.setCssStyles({ margin: "8px 0 16px 0" });
+    warning.setCssStyles({ border: "1px solid var(--background-modifier-border)" });
+    warning.setCssStyles({ borderRadius: "6px" });
+    warning.setCssStyles({ background: "var(--background-secondary)" });
     warning.createEl("strong", { text: "Credential storage: " });
+    const configDir = this.plugin.app.vault.configDir;
     warning.createSpan({
       text:
-        "Channel credentials are stored in this plugin's data.json inside your vault's .obsidian folder. " +
-        "If you sync your .obsidian folder across devices, credentials will sync with it. " +
+        `Channel credentials are stored in this plugin's data.json inside your vault's ${configDir} folder. ` +
+        `If you sync your ${configDir} folder across devices, credentials will sync with it. ` +
         "Do not commit this file to a public git repository.",
     });
 
@@ -258,10 +259,10 @@ export class AgentFleetSettingTab extends PluginSettingTab {
 
     // Add new credential
     const addForm = containerEl.createDiv({ cls: "af-channel-credential-add" });
-    addForm.style.marginTop = "12px";
-    addForm.style.padding = "12px";
-    addForm.style.border = "1px dashed var(--background-modifier-border)";
-    addForm.style.borderRadius = "6px";
+    addForm.setCssStyles({ marginTop: "12px" });
+    addForm.setCssStyles({ padding: "12px" });
+    addForm.setCssStyles({ border: "1px dashed var(--background-modifier-border)" });
+    addForm.setCssStyles({ borderRadius: "6px" });
     addForm.createEl("strong", { text: "Add a channel credential" });
 
     const state: { ref: string; type: string; botToken: string; appToken: string } = {
@@ -289,8 +290,8 @@ export class AgentFleetSettingTab extends PluginSettingTab {
           .setValue("slack")
           .onChange((value) => {
             state.type = value;
-            slackFields.style.display = value === "slack" ? "" : "none";
-            telegramFields.style.display = value === "telegram" ? "" : "none";
+            slackFields.setCssStyles({ display: value === "slack" ? "" : "none" });
+            telegramFields.setCssStyles({ display: value === "telegram" ? "" : "none" });
           }),
       );
 
@@ -317,7 +318,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
 
     // Telegram-specific fields
     const telegramFields = addForm.createDiv();
-    telegramFields.style.display = "none";
+    telegramFields.setCssStyles({ display: "none" });
     new Setting(telegramFields)
       .setName("Bot token")
       .setDesc("From @BotFather on Telegram.")
@@ -357,28 +358,29 @@ export class AgentFleetSettingTab extends PluginSettingTab {
   private renderCredentialList(container: HTMLElement): void {
     const credentials = this.plugin.channelCredentials.list();
     if (credentials.length === 0) {
-      container.createDiv({
-        text: "No channel credentials configured yet.",
-        cls: "af-muted",
-      }).style.color = "var(--text-muted)";
+      container
+        .createDiv({ text: "No channel credentials configured yet.", cls: "af-muted" })
+        .setCssStyles({ color: "var(--text-muted)" });
       return;
     }
     for (const { ref, entry } of credentials) {
       const row = container.createDiv({ cls: "af-channel-credential-row" });
-      row.style.display = "flex";
-      row.style.justifyContent = "space-between";
-      row.style.alignItems = "center";
-      row.style.padding = "8px 12px";
-      row.style.border = "1px solid var(--background-modifier-border)";
-      row.style.borderRadius = "6px";
-      row.style.marginBottom = "6px";
+      row.setCssStyles({ display: "flex" });
+      row.setCssStyles({ justifyContent: "space-between" });
+      row.setCssStyles({ alignItems: "center" });
+      row.setCssStyles({ padding: "8px 12px" });
+      row.setCssStyles({ border: "1px solid var(--background-modifier-border)" });
+      row.setCssStyles({ borderRadius: "6px" });
+      row.setCssStyles({ marginBottom: "6px" });
 
       const info = row.createDiv();
       info.createEl("strong", { text: ref });
-      info.createEl("span", {
-        text: `  ·  ${entry.type}  ·  ${maskToken(tokenOf(entry))}`,
-        cls: "af-muted",
-      }).style.color = "var(--text-muted)";
+      info
+        .createEl("span", {
+          text: `  ·  ${entry.type}  ·  ${maskToken(tokenOf(entry))}`,
+          cls: "af-muted",
+        })
+        .setCssStyles({ color: "var(--text-muted)" });
 
       const button = row.createEl("button", { text: "Remove" });
       button.onclick = () => {
@@ -402,8 +404,8 @@ export class AgentFleetSettingTab extends PluginSettingTab {
         "topics + heartbeat. All fields on the Add form are optional — click " +
         "Create with everything blank to get a whole-vault keeper with defaults.",
     });
-    hint.style.color = "var(--af-text-secondary)";
-    hint.style.fontSize = "12px";
+    hint.setCssStyles({ color: "var(--af-text-secondary)" });
+    hint.setCssStyles({ fontSize: "12px" });
 
     const snapshot = this.plugin.runtime.getSnapshot();
     const instances = snapshot.agents.filter((a): a is AgentConfig & { wikiKeeper: NonNullable<AgentConfig["wikiKeeper"]> } =>

@@ -11,7 +11,6 @@ import {
 import { DEFAULT_SETTINGS, VIEW_TYPE_AGENTS, VIEW_TYPE_CHAT, VIEW_TYPE_DASHBOARD } from "./constants";
 import { FleetRepository } from "./fleetRepository";
 import { ConfirmDeleteModal } from "./modals/confirmDeleteModal";
-import { CreateAgentModal } from "./modals/createAgentModal";
 import { AgentFleetSettingTab } from "./settingsTab";
 import { FleetRuntime } from "./services/fleetRuntime";
 import { McpAuthManager } from "./services/mcpAuth";
@@ -24,7 +23,7 @@ import { TelegramAdapter } from "./services/channels/telegramAdapter";
 import type { ChannelAdapter } from "./services/channels/adapter";
 import type { ChannelConfig, ChannelCredentialEntry, FleetSettings } from "./types";
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
-import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, isValidCliPath, isAbsolutePath } from "./utils/platform";
+import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, isAbsolutePath } from "./utils/platform";
 import { normalizeAdapter } from "./adapters";
 import { cleanupCodexOverlays, resetCodexPermissionCaches } from "./adapters/codexPermissions";
 import { SidebarView } from "./views/sidebarView";
@@ -53,9 +52,9 @@ export default class AgentFleetPlugin extends Plugin {
 
   private statusBarEl?: HTMLElement;
   private subscribedViews = new Set<{ render: () => Promise<void> }>();
-  private vaultChangeTimer?: ReturnType<typeof setTimeout>;
+  private vaultChangeTimer?: number;
   private suppressVaultEvents = false;
-  private suppressTimer?: ReturnType<typeof setTimeout>;
+  private suppressTimer?: number;
   private runtimeUnsubscribe?: () => void;
 
   async onload(): Promise<void> {
@@ -96,7 +95,7 @@ export default class AgentFleetPlugin extends Plugin {
     this.addRibbonIcon("message-circle", "Agent Chat", () => {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
       if (existing.length > 0) {
-        this.app.workspace.revealLeaf(existing[0]!);
+        void this.app.workspace.revealLeaf(existing[0]!);
       } else {
         void this.openChatView();
       }
@@ -260,11 +259,11 @@ export default class AgentFleetPlugin extends Plugin {
     this.runtimeUnsubscribe?.();
     this.runtimeUnsubscribe = undefined;
     if (this.vaultChangeTimer) {
-      clearTimeout(this.vaultChangeTimer);
+      window.clearTimeout(this.vaultChangeTimer);
       this.vaultChangeTimer = undefined;
     }
     if (this.suppressTimer) {
-      clearTimeout(this.suppressTimer);
+      window.clearTimeout(this.suppressTimer);
       this.suppressTimer = undefined;
     }
     // Note: per Obsidian's plugin guidelines we do NOT detach our leaves here —
@@ -331,7 +330,7 @@ export default class AgentFleetPlugin extends Plugin {
   async activateDashboardView(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DASHBOARD);
     if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]!);
+      void this.app.workspace.revealLeaf(existing[0]!);
       return;
     }
     const leaf = this.app.workspace.getLeaf(true);
@@ -353,7 +352,7 @@ export default class AgentFleetPlugin extends Plugin {
   async activateAgentsView(): Promise<void> {
     const leaf = this.getLeafForView(VIEW_TYPE_AGENTS, "left");
     await leaf.setViewState({ type: VIEW_TYPE_AGENTS, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
   }
 
   async openChatView(agentName?: string): Promise<void> {
@@ -362,14 +361,14 @@ export default class AgentFleetPlugin extends Plugin {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
       for (const leaf of existing) {
         if (leaf.view instanceof AgentChatView && leaf.view.selectedAgentName === agentName) {
-          this.app.workspace.revealLeaf(leaf);
+          void this.app.workspace.revealLeaf(leaf);
           return;
         }
       }
     }
     const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true, state: agentName ? { agentName } : {} });
-    this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
     if (agentName && leaf.view instanceof AgentChatView) {
       leaf.view.selectAgent(agentName);
     }
@@ -386,8 +385,8 @@ export default class AgentFleetPlugin extends Plugin {
       void this.channelManager?.reconcile(this.runtime.getSnapshot());
     } finally {
       // Delay re-enabling to let vault events from our own writes settle
-      if (this.suppressTimer) clearTimeout(this.suppressTimer);
-      this.suppressTimer = setTimeout(() => {
+      if (this.suppressTimer) window.clearTimeout(this.suppressTimer);
+      this.suppressTimer = window.setTimeout(() => {
         this.suppressTimer = undefined;
         this.suppressVaultEvents = false;
       }, 500);
@@ -511,7 +510,7 @@ export default class AgentFleetPlugin extends Plugin {
       },
       async (deleteTasks: boolean) => {
         const result = await this.repository.deleteAgent(agentName, deleteTasks);
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((r) => window.setTimeout(r, 200));
         await this.refreshFromVault();
         new Notice(`Deleted agent "${agentName}" (${result.trashedFiles.length} files moved to trash)`);
 
@@ -556,7 +555,7 @@ export default class AgentFleetPlugin extends Plugin {
       callback: () => {
         const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
         if (existing.length > 0) {
-          this.app.workspace.revealLeaf(existing[0]!);
+          void this.app.workspace.revealLeaf(existing[0]!);
         } else {
           void this.openChatView();
         }
@@ -622,8 +621,8 @@ export default class AgentFleetPlugin extends Plugin {
 
   private debouncedVaultRefresh(): void {
     if (this.suppressVaultEvents) return;
-    if (this.vaultChangeTimer) clearTimeout(this.vaultChangeTimer);
-    this.vaultChangeTimer = setTimeout(() => {
+    if (this.vaultChangeTimer) window.clearTimeout(this.vaultChangeTimer);
+    this.vaultChangeTimer = window.setTimeout(() => {
       if (!this.suppressVaultEvents) {
         void this.refreshFromVault();
       }

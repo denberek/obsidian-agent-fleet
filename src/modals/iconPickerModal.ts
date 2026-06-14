@@ -43,7 +43,7 @@ export class IconPickerModal extends Modal {
     });
 
     // Focus after a tick so the modal doesn't steal events
-    setTimeout(() => searchInput.focus(), 0);
+    window.setTimeout(() => searchInput.focus(), 0);
   }
 
   private renderGrid(): void {

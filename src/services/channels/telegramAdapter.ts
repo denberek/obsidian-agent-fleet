@@ -38,9 +38,9 @@ export class TelegramAdapter implements ChannelAdapter {
   private status: ChannelStatus = "stopped";
   private stopping = false;
   private pollOffset = 0;
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollTimer: number | null = null;
   private backoffMs = 1000;
-  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private typingIntervals = new Map<string, number>();
 
   /** AbortController for the current long-poll request — lets stop() cancel a 30s wait. */
   private pollAbort: AbortController | null = null;
@@ -98,14 +98,14 @@ export class TelegramAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
+      window.clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
     // Abort any in-flight long-poll request so stop() doesn't wait 30s.
     this.pollAbort?.abort();
     this.pollAbort = null;
     for (const [, interval] of this.typingIntervals) {
-      clearInterval(interval);
+      window.clearInterval(interval);
     }
     this.typingIntervals.clear();
     this.setStatus("stopped");
@@ -145,21 +145,21 @@ export class TelegramAdapter implements ChannelAdapter {
     if (on) {
       // Clear any existing interval first to prevent double-create leak
       const existing = this.typingIntervals.get(conversationId);
-      if (existing) clearInterval(existing);
+      if (existing) window.clearInterval(existing);
       // Send immediately (awaited) and refresh every 4.5s (Telegram typing expires after 5s)
       try {
         await this.tgApi("sendChatAction", params);
       } catch (err) {
         console.warn("Agent Fleet: Telegram sendChatAction failed", err);
       }
-      const interval = setInterval(() => {
+      const interval = window.setInterval(() => {
         void this.tgApi("sendChatAction", params).catch(() => { /* best-effort */ });
       }, 4500);
       this.typingIntervals.set(conversationId, interval);
     } else {
       const interval = this.typingIntervals.get(conversationId);
       if (interval) {
-        clearInterval(interval);
+        window.clearInterval(interval);
         this.typingIntervals.delete(conversationId);
       }
     }
@@ -266,13 +266,13 @@ export class TelegramAdapter implements ChannelAdapter {
           this.setStatus(msg.includes("401") || msg.includes("Unauthorized") ? "needs-auth" : "error");
         }
         // Backoff
-        await new Promise((r) => setTimeout(r, this.backoffMs));
+        await new Promise((r) => window.setTimeout(r, this.backoffMs));
         this.backoffMs = Math.min(30_000, this.backoffMs * 2);
       }
 
       // Schedule next poll
       if (!this.stopping) {
-        this.pollTimer = setTimeout(() => this.poll(), 100);
+        this.pollTimer = window.setTimeout(() => this.poll(), 100);
       }
     })();
   }
@@ -504,7 +504,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const retryAfter = (res.json as Record<string, unknown>)?.parameters as
         { retry_after?: number } | undefined;
       const wait = retryAfter?.retry_after ?? 1;
-      await new Promise((r) => setTimeout(r, wait * 1000));
+      await new Promise((r) => window.setTimeout(r, wait * 1000));
       return this.tgApi<T>(method, params);
     }
 
