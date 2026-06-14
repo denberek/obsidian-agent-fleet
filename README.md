@@ -1,6 +1,6 @@
 # Agent Fleet for Obsidian
 
-**Turn Obsidian into an AI-powered command center. Create autonomous agents, schedule tasks, chat in real-time, connect via Slack, and hook into any MCP service — all from your vault.**
+**Turn Obsidian into an AI-powered command center. Create autonomous agents on Claude Code or OpenAI Codex, schedule tasks, chat in real-time, connect via Slack or Telegram, and hook into any MCP service — all from your vault.**
 
 ![Agent Fleet Dashboard](screenshot.png)
 
@@ -18,7 +18,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 📚 **Wiki Keeper** — Turn any folder in your vault into a self-maintaining wiki in the spirit of Karpathy's "LLM wiki" pattern. Drop sources into an inbox, point at existing note folders as passive watched sources, and a scoped keeper agent ingests them into an interlinked `_topics/` tree with cross-references, citations, and a log. Each topic page carries a refreshable `## Summary` block synthesized from its claims history, so query-time reads stay cheap as the wiki grows. Substantive Q&A answers compound back into the wiki — both as filed synthesis pages and as dated bullets on every cited topic. Weekly lint surfaces orphans, contradictions, dedup candidates, and stale summaries; the dashboard's Wiki Keepers tab renders the review queue. Scales from one whole-vault keeper to many project-scoped instances; any other agent (e.g. a PM agent) can reference a keeper's scope and query or contribute. See the [Wiki Keeper Guide](WIKI_KEEPER_GUIDE.md).
 
-💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works. **Inline threads** under any assistant reply let you tangent without polluting the main thread — each thread has its own Claude session, its own context, its own stats.
+💬 **Interactive Chat** — Dock a chat panel anywhere in Obsidian. Switch between agents. Attach documents and images. Send follow-up messages while the agent works. **Inline threads** under any assistant reply let you tangent without polluting the main thread — each thread has its own backend session, its own context, its own stats.
 
 📊 **Live chat stats** — Compact terminal-style strip under the composer shows the model and a context-usage bar so you always know where you stand on context.
 
@@ -86,9 +86,10 @@ On first launch, Agent Fleet creates a `_fleet/` folder in your vault:
 _fleet/
 ├── agents/
 │   └── fleet-orchestrator/    ← default agent (manages the fleet)
-├── skills/                    ← 18 built-in skills
+├── skills/                    ← 22 built-in skills
 ├── tasks/
 ├── channels/
+├── mcp/                        ← registered MCP servers (one file each)
 ├── runs/
 └── memory/
 ```
@@ -127,7 +128,7 @@ agents/my-agent/
 | **Name & Description** | Identity shown in the dashboard |
 | **Avatar** | Lucide icon picker (1,400+ icons) or emoji |
 | **System Prompt** | Core instructions that define the agent's behavior |
-| **Model** | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, Bedrock models, or custom |
+| **Model** | Backend-aware picker — Claude aliases (`opus`/`sonnet`/`haiku`/`opusplan`), pinned IDs, Bedrock/Vertex/Foundry, or Codex slugs; free-text for anything else |
 | **Adapter** | Claude Code or OpenAI Codex — set per agent |
 | **Working Directory** | Where the agent operates (defaults to vault root) |
 | **Timeout** | Max execution time in seconds |
@@ -203,7 +204,7 @@ If everything is healthy, respond with a one-line "all clear".
 
 ### Slack Channels
 
-Chat with your agents from Slack — every message flows through the same Claude CLI session pipeline, with full tool use, session persistence, and agent memory.
+Chat with your agents from Slack — every message flows through the same chat-session pipeline as the in-app panel (Claude Code or Codex), with full tool use, session persistence, and agent memory.
 
 > **📖 [Step-by-step Slack setup guide →](SLACK_SETUP.md)** — complete walkthrough from creating the Slack app to sending your first message.
 
@@ -236,7 +237,7 @@ channel_context: |
 - **Socket Mode** — outbound WebSocket, works behind NAT/firewalls, no public URL needed
 - **Slack Assistants API** — native "is thinking..." indicator, threaded conversations, thread titles
 - **Multi-agent routing** — type `@agent-name: message` to switch agents mid-thread. Each agent gets its own isolated session. `/agents` slash command lists available agents.
-- **Session persistence** — conversations survive Obsidian restarts via `claude --resume`
+- **Session persistence** — conversations survive Obsidian restarts via the backend's resume (Claude `--resume` / Codex `exec resume`)
 - **Idle hibernation** — subprocess eviction after configurable idle time, transparent resume on next message
 - **Allowlist** — only approved Slack users (by user ID) can reach the bot
 - **Rate limiting** — per-conversation sliding window to prevent budget burn
@@ -264,7 +265,7 @@ Chat with your agents from Telegram — simpler setup than Slack, no @mention re
 - **Agent name prefix** — replies show `[agent-name]` when multiple agents are configured
 - **Group chat support** — add the bot to groups (disable privacy mode via BotFather for full access)
 - **Forum topics** — enable Threaded Mode in BotFather for topic-based conversations
-- **Session persistence** — conversations survive Obsidian restarts via `claude --resume`
+- **Session persistence** — conversations survive Obsidian restarts via the backend's resume (Claude `--resume` / Codex `exec resume`)
 - **4096-char message splitting** — long replies automatically chunked at paragraph boundaries
 
 ---
@@ -275,10 +276,10 @@ The chat panel is a first-class Obsidian view — dock it in the sidebar, center
 
 **Features:**
 - **Agent Switcher** — dropdown to switch between agents instantly. Each agent has its own conversation.
-- **Session Persistence** — conversations survive Obsidian restarts via Claude CLI `--resume`
+- **Session Persistence** — conversations survive Obsidian restarts via the backend's resume (Claude `--resume` / Codex `exec resume`)
 - **Bidirectional Streaming** — send follow-up messages while the agent is working. Steer it mid-task.
 - **Document Attachment** — click + to attach the active document. Agent gets the full content; you see a compact pill.
-- **Image Paste & Drop** — paste from clipboard or drag images into chat. Saved to vault, passed to Claude.
+- **Image Paste & Drop** — paste from clipboard or drag images into chat. Saved to vault, passed to the agent.
 - **Stop Button** — + button becomes ■ while agent works. Click to abort.
 - **Streaming Markdown** — responses render in real-time with syntax highlighting
 - **Code Block Copy** — hover any code block for a copy button
@@ -352,14 +353,14 @@ skills/my-skill/
 └── examples.md       ← Few-shot examples
 ```
 
-**18 Built-in Skills:**
+**22 Built-in Skills:**
 
 | Skill | Description |
 |-------|-------------|
 | `agent-fleet-system` | Full knowledge of the Agent Fleet plugin |
 | `algorithmic-art` | Generative art with p5.js |
 | `canvas-design` | Visual art, posters, static designs as PNG/PDF |
-| `claude-api` | Build apps with Claude API and Anthropic SDKs |
+| `claude-api` | Build apps with the Claude API and Anthropic SDKs |
 | `doc-coauthoring` | Structured co-authoring workflow for documentation |
 | `docx` | Create, read, edit Word (.docx) files |
 | `frontend-design` | Production-grade web UIs and components |
@@ -370,8 +371,14 @@ skills/my-skill/
 | `skill-creator` | Create, evaluate, and optimize skills |
 | `slack-gif-creator` | Animated GIFs optimized for Slack |
 | `taste-skill` | Senior UI/UX engineering for frontend design |
-| `frontend-slides` | HTML presentation creation |
-| And more... | |
+| `theme-factory` | Apply visual themes (colors, fonts) to slides, docs, HTML |
+| `web-artifacts-builder` | Multi-component HTML artifacts with React, Tailwind, shadcn/ui |
+| `webapp-testing` | Test local web apps with Playwright — UI checks, screenshots |
+| `xlsx` | Create, read, edit spreadsheets (.xlsx, .csv, .tsv) |
+| `wiki-ingest` | Ingest sources into a scoped Wiki Keeper wiki |
+| `wiki-query` | Answer a question strictly from wiki content |
+| `wiki-refresh` | Regenerate topic-page `## Summary` blocks from claim history |
+| `wiki-lint` | Weekly Wiki Keeper health check (orphans, stale pages, missing links) |
 
 ---
 
@@ -431,7 +438,7 @@ completed: 2026-04-03T09:02:30
 duration_seconds: 150
 tokens_used: 4500
 cost_usd: 0.07
-model: claude-opus-4-6
+model: claude-opus-4-8
 tags: [heartbeat]
 ---
 
@@ -456,17 +463,20 @@ Click any run in the dashboard to see full details in a slideover panel.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Fleet Folder | `_fleet` | Root folder for all fleet data |
-| Claude CLI Path | `claude` | Path to Claude Code CLI |
+| Claude CLI Path | `claude` | Path to the Claude Code CLI |
+| Codex CLI Path | `codex` | Path to the OpenAI Codex CLI (used by `codex` agents) |
 | Default Model | `default` | Default model for new agents. Pick Default / Alias (opus/sonnet/haiku/opusplan) / Custom (manual ID for Bedrock/Vertex/etc.) |
 | AWS Region | `us-east-1` | For AWS Bedrock model support |
 | Max Concurrent Runs | `2` | Parallel task execution limit |
 | Run Log Retention | `30` days | Auto-cleanup old logs |
 | Catch Up Missed Tasks | `true` | Run overdue tasks on startup |
 | Notification Level | `all` | `all`, `failures-only`, `none` |
+| Status Bar | `true` | Show the fleet status indicator in Obsidian's status bar |
+| Chat Watchdog Timeout | `10` min | Kill a chat turn after this much silence from the CLI |
 
 ### Security
 
-All secrets — MCP OAuth tokens, API keys, and channel credentials (Slack/Telegram) — are stored in your OS keychain via Obsidian's SecretStorage API. On first load after updating to v0.6.0, existing plaintext credentials are automatically migrated from `data.json` to the keychain and the plaintext copies are cleared.
+All secrets — MCP OAuth/bearer tokens and channel credentials (Slack/Telegram) — are stored in your OS keychain via Obsidian's SecretStorage API, never in the vault or in your native `~/.claude.json` / `~/.codex/config.toml`. Existing plaintext credentials are migrated from `data.json` to the keychain automatically on first load and the plaintext copies are cleared.
 
 Requires Obsidian 1.11.4+ for keychain support. On older versions, credentials remain in `data.json` with a console warning.
 
@@ -474,7 +484,7 @@ Requires Obsidian 1.11.4+ for keychain support. On older versions, credentials r
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Max Concurrent Sessions | `5` | Live claude subprocesses across all channels |
+| Max Concurrent Sessions | `5` | Live agent chat sessions across all channels |
 | Idle Timeout | `15` min | Hibernate sessions after inactivity |
 | Rate Limit | `20` msgs / `5` min | Per-conversation sliding window |
 
@@ -487,10 +497,11 @@ _fleet/
 ├── agents/           Agent folders (agent.md, config.md, HEARTBEAT.md, etc.)
 ├── skills/           Shared skill folders (skill.md, tools.md, etc.)
 ├── tasks/            Task files with frontmatter
-├── channels/         Channel bindings (Slack, etc.)
+├── channels/         Channel bindings (Slack, Telegram)
+├── mcp/              Registered MCP servers (one markdown file each)
 ├── runs/             Execution logs by date
 │   └── YYYY-MM-DD/
-├── memory/           Agent memory files
+├── memory/           Per-agent memory (working.md + raw/ archive)
 └── chat-images/      Images pasted into chat
 ```
 
@@ -507,10 +518,10 @@ Not necessarily. Agent Fleet works with your **Claude Max or Pro subscription** 
 Yes. Set an agent's **Adapter** to `OpenAI Codex` and it runs on the `@openai/codex` CLI (ChatGPT plan or OpenAI API key) instead of Claude Code. You can mix freely — some agents on Claude, others on Codex — in the same fleet. Chat, tasks, heartbeat, channels, and memory all work the same. See [Backends](#backends) for the per-backend differences (notably how command permission rules are enforced and that Codex runs report no dollar cost).
 
 **Q: Does it work without internet?**
-No — agents need the Claude API to run. But all your data (agents, tasks, skills, memory) is local markdown.
+No — agents need their CLI backend (Claude Code or OpenAI Codex) to reach its API. But all your data (agents, tasks, skills, memory) is local markdown.
 
 **Q: Can I use different models per agent or per task?**
-Yes. Each agent has its own model setting, and you can override it per task (e.g. keep the agent on Opus but run a simple nightly summary task on Haiku to cut cost). Supports Anthropic direct, AWS Bedrock, Google Vertex, Foundry, and Mantle. Aliases `opus` / `sonnet` / `haiku` / `opusplan` work on every backend — pick those unless you need a pinned version. Resolution order: task → agent → settings → Claude CLI default.
+Yes. Each agent has its own model setting, and you can override it per task (e.g. keep the agent on Opus but run a simple nightly summary task on Haiku to cut cost). Supports Anthropic direct, AWS Bedrock, Google Vertex, Foundry, and Mantle. Claude aliases `opus` / `sonnet` / `haiku` / `opusplan` cover the Claude backend; Codex agents use Codex slugs (a Claude-shaped default is ignored on Codex and vice-versa). Resolution order: task → agent → settings → the backend's own CLI default.
 
 **Q: What happens if I delete the plugin?**
 Your `_fleet/` folder stays. All agents, tasks, skills, run logs, and memory are plain markdown files in your vault.
@@ -519,7 +530,7 @@ Your `_fleet/` folder stays. All agents, tasks, skills, run logs, and memory are
 Yes, up to `maxConcurrentRuns` (default 2). Additional tasks queue until a slot opens.
 
 **Q: Does the chat remember previous conversations?**
-Yes. Each agent has persistent chat sessions that survive Obsidian restarts via Claude CLI `--resume`.
+Yes. Each agent has persistent chat sessions that survive Obsidian restarts via the backend's session resume (Claude `--resume` / Codex `exec resume`).
 
 **Q: Does the Slack bot work when Obsidian is closed?**
 No. The bot runs inside Obsidian via Socket Mode — when Obsidian is closed, the bot goes offline. Slack buffers messages briefly during short disconnects.
