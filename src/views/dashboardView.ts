@@ -850,7 +850,6 @@ export class FleetDashboardView extends ItemView {
   ): void {
     const state = this.plugin.runtime.getAgentState(agent.name);
     const agentRuns = this.plugin.runtime.getRecentRuns().filter((r) => r.agent === agent.name);
-    const agentTasks = snapshot.tasks.filter((t) => t.agent === agent.name);
 
     const card = container.createDiv({ cls: `af-agent-card${agent.enabled ? "" : " disabled"}` });
 
@@ -2087,7 +2086,7 @@ export class FleetDashboardView extends ItemView {
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Channel" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Connect an external chat transport to an agent" });
-    header.createDiv({ cls: "af-detail-header-actions" });
+    const headerActions = header.createDiv({ cls: "af-detail-header-actions" });
 
     // Form state
     const state = {
@@ -2349,7 +2348,7 @@ export class FleetDashboardView extends ItemView {
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Channel: ${channel.name}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: `Status: ${status}` });
-    header.createDiv({ cls: "af-detail-header-actions" });
+    const headerActions = header.createDiv({ cls: "af-detail-header-actions" });
 
     // Form state pre-filled
     const state = {
@@ -4735,7 +4734,7 @@ export class FleetDashboardView extends ItemView {
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Create New Task" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Configure a new task for your fleet" });
 
-    header.createDiv({ cls: "af-detail-header-actions" });
+    const headerActions = header.createDiv({ cls: "af-detail-header-actions" });
 
     // Form state
     const state = {
@@ -5039,7 +5038,7 @@ export class FleetDashboardView extends ItemView {
     headerInfo.createDiv({ cls: "af-detail-header-name", text: `Edit Task: ${task.taskId}` });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Modify task configuration" });
 
-    header.createDiv({ cls: "af-detail-header-actions" });
+    const headerActions = header.createDiv({ cls: "af-detail-header-actions" });
 
     const hasSchedule = !!(task.schedule || task.runAt);
 
@@ -5860,7 +5859,7 @@ export class FleetDashboardView extends ItemView {
     const headerInfo = headerLeft.createDiv();
     headerInfo.createDiv({ cls: "af-detail-header-name", text: "Add MCP Server" });
     headerInfo.createDiv({ cls: "af-detail-header-desc", text: "Register a new MCP server for agents to use" });
-    header.createDiv({ cls: "af-detail-header-actions" });
+    const headerActions = header.createDiv({ cls: "af-detail-header-actions" });
 
     // Form state
     const state: {

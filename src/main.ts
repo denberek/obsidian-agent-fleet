@@ -60,7 +60,7 @@ export default class AgentFleetPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.settings.claudeCliPath = await this.resolveClaudeCliPath(this.settings.claudeCliPath);
-    this.repository = new FleetRepository(this.app.vault, this.settings);
+    this.repository = new FleetRepository(this.app, this.settings);
     this.repository.setChannelCredentialGetter(() => this.channelCredentials.toRecord());
     this.runtime = new FleetRuntime(this.repository, this.settings, this.mcpAuth);
 
@@ -301,7 +301,7 @@ export default class AgentFleetPlugin extends Plugin {
       // task crons run alongside the new one's, producing duplicate runs and
       // making schedule edits appear not to take effect until full reload.
       this.runtime.shutdown();
-      this.repository = new FleetRepository(this.app.vault, this.settings);
+      this.repository = new FleetRepository(this.app, this.settings);
       this.repository.setChannelCredentialGetter(() => this.channelCredentials.toRecord());
       this.runtime = new FleetRuntime(this.repository, this.settings, this.mcpAuth);
       await this.repository.ensureFleetStructure();

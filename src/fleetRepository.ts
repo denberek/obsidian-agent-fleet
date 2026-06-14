@@ -1,5 +1,5 @@
 import { join } from "path";
-import { FileSystemAdapter, TFile, TFolder, Vault, normalizePath } from "obsidian";
+import { App, FileSystemAdapter, TFile, TFolder, Vault, normalizePath } from "obsidian";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_MEMORY_TOKEN_BUDGET,
@@ -145,7 +145,10 @@ export class FleetRepository {
    *  reflection path and the lock-held capture path can't double-seed raw. */
   private migratingMemory = new Set<string>();
 
-  constructor(private readonly vault: Vault, private readonly settings: FleetSettings) {}
+  private readonly vault: Vault;
+  constructor(private readonly app: App, private readonly settings: FleetSettings) {
+    this.vault = app.vault;
+  }
 
   /** Inject a live credential getter so validation reads from the credential store
    *  instead of the (possibly empty post-migration) settings.channelCredentials. */
@@ -1182,19 +1185,19 @@ export class FleetRepository {
     const path = this.getConversationPath(agent, conversationId);
     const file = this.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) {
-      await this.vault.delete(file);
+      await this.app.fileManager.trashFile(file);
     }
 
     const threadsDir = path.replace(/\.json$/, ".threads");
     const threadsFolder = this.vault.getAbstractFileByPath(threadsDir);
     if (threadsFolder instanceof TFolder) {
-      await this.vault.delete(threadsFolder, true);
+      await this.app.fileManager.trashFile(threadsFolder);
     }
 
     const dir = this.getConversationsDir(agent);
     const folder = this.vault.getAbstractFileByPath(dir);
     if (folder instanceof TFolder && folder.children.length === 0) {
-      await this.vault.delete(folder, true);
+      await this.app.fileManager.trashFile(folder);
     }
   }
 
@@ -1706,7 +1709,7 @@ export class FleetRepository {
           }
         } else if (permFile instanceof TFile) {
           // Remove permissions.json if both lists are empty
-          await this.vault.trash(permFile, true);
+          await this.app.fileManager.trashFile(permFile);
         }
       }
     } else {
@@ -1757,7 +1760,7 @@ export class FleetRepository {
             await this.vault.create(sidecarPath, content);
           }
         } else if (sidecarFile instanceof TFile) {
-          await this.vault.trash(sidecarFile, true);
+          await this.app.fileManager.trashFile(sidecarFile);
         }
       }
     }
@@ -1882,7 +1885,7 @@ export class FleetRepository {
       const folderPath = normalizePath(skill.filePath.replace(/\/skill\.md$/, ""));
       const folder = this.vault.getAbstractFileByPath(folderPath);
       if (folder instanceof TFolder) {
-        await this.vault.trash(folder, true);
+        await this.app.fileManager.trashFile(folder);
       }
     } else {
       await this.trashFile(skill.filePath);
@@ -1944,7 +1947,7 @@ export class FleetRepository {
     );
     const folder = this.vault.getAbstractFileByPath(sessionsFolder);
     if (folder instanceof TFolder) {
-      await this.vault.trash(folder, true);
+      await this.app.fileManager.trashFile(folder);
     }
   }
 
@@ -2072,7 +2075,7 @@ export class FleetRepository {
         for (const f of files) {
           trashedFiles.push(f.path);
         }
-        await this.vault.trash(folder, true);
+        await this.app.fileManager.trashFile(folder);
       }
     } else {
       // Trash the single agent definition file
@@ -2089,7 +2092,7 @@ export class FleetRepository {
     const memoryDir = this.getMemoryDir(agentName);
     const memoryFolder = this.vault.getAbstractFileByPath(memoryDir);
     if (memoryFolder instanceof TFolder) {
-      await this.vault.trash(memoryFolder, true);
+      await this.app.fileManager.trashFile(memoryFolder);
       trashedFiles.push(memoryDir);
     }
 
@@ -2108,7 +2111,7 @@ export class FleetRepository {
   async trashFile(path: string): Promise<void> {
     const file = this.vault.getAbstractFileByPath(path);
     if (file) {
-      await this.vault.trash(file, true);
+      await this.app.fileManager.trashFile(file);
     }
   }
 

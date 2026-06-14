@@ -497,7 +497,6 @@ export class SlackAdapter implements ChannelAdapter {
     const actions = payload.actions as Array<Record<string, unknown>> | undefined;
     const user = payload.user as Record<string, unknown> | undefined;
     const channel = payload.channel as Record<string, unknown> | undefined;
-    const message = payload.message as Record<string, unknown> | undefined;
     if (!actions?.length || !user || !channel) return;
 
     const action = actions[0];

@@ -446,7 +446,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
           if (!ok) return;
           try {
             await deleteWikiKeeperAgent(
-              this.plugin.app.vault,
+              this.plugin.app,
               this.plugin.settings.fleetFolder,
               agent.name,
             );

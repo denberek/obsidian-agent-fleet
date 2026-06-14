@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.4 — 2026-06-14
+
+Further community-review cleanup (all non-blocking warnings). No user-facing behavior changes.
+
+- **Deletions respect your trash preference** — file/folder removals now go through `FileManager.trashFile` instead of `Vault.delete`/`Vault.trash`, so they honor your "move to system trash vs. permanently delete" setting.
+- Replaced the `builtin-modules` build dependency with Node's built-in `module.builtinModules`.
+- Removed a few unused local variables.
+
 ## 0.13.3 — 2026-06-14
 
 Clears the blocking errors from the Obsidian Community Plugins automated review. No user-facing behavior changes.

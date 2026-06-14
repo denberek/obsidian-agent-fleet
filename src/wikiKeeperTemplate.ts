@@ -1,4 +1,4 @@
-import { normalizePath, TFile, TFolder, type Vault } from "obsidian";
+import { type App, normalizePath, TFile, TFolder, type Vault } from "obsidian";
 import { parseMarkdownWithFrontmatter, slugify, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
 
 /** User-supplied inputs when creating a Wiki Keeper instance. */
@@ -585,22 +585,24 @@ export async function updateWikiKeeperAgent(
 /** Delete a Wiki Keeper agent folder. Leaves the scope's own content
  *  (inbox, topics, index, log) untouched — that's the user's wiki, not ours. */
 export async function deleteWikiKeeperAgent(
-  vault: Vault,
+  app: App,
   fleetFolder: string,
   agentName: string,
 ): Promise<void> {
+  const vault = app.vault;
   const folderPath = normalizePath(`${fleetFolder}/agents/${agentName}`);
   const folder = vault.getAbstractFileByPath(folderPath);
   if (!folder) return;
   if (!(folder instanceof TFolder)) {
     throw new Error(`Expected folder at ${folderPath}`);
   }
-  await vault.adapter.rmdir(folderPath, true);
+  // Trash (don't hard-delete) so it respects the user's deletion preference.
+  await app.fileManager.trashFile(folder);
 
-  // Also delete the sibling lint task file, if present.
+  // Also trash the sibling lint task file, if present.
   const taskPath = lintTaskPath(fleetFolder, agentName);
   const taskFile = vault.getAbstractFileByPath(taskPath);
   if (taskFile instanceof TFile) {
-    await vault.delete(taskFile);
+    await app.fileManager.trashFile(taskFile);
   }
 }

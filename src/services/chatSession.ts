@@ -568,10 +568,9 @@ export class ChatSession {
   /** Clear persisted state — for "New Chat" */
   async clearPersistedState(): Promise<void> {
     const path = this.getChatFilePath();
-    const file = this.vault.getAbstractFileByPath(path);
-    if (file instanceof TFile) {
-      await this.vault.delete(file);
-    }
+    // Route through the repository so deletion respects the user's trash
+    // preference (FileManager.trashFile).
+    await this.repository.trashFile(path);
     this.messages = [];
     this.claudeSessionId = null;
     this.basePromptSent = false;

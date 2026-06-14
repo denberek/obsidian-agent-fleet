@@ -1,5 +1,9 @@
 import esbuild from "esbuild";
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
+
+// Node built-ins (plus their `node:` aliases) are external — the plugin runs in
+// Electron's Node context and must not bundle them.
+const builtins = [...builtinModules, ...builtinModules.map((m) => `node:${m}`)];
 
 const prod = process.argv.includes("production");
 
