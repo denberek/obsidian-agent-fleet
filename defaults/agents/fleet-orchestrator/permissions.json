@@ -1,0 +1,9 @@
+{
+  "allow": [],
+  "deny": [
+    "Bash(git push *)",
+    "Bash(rm -rf *)",
+    "Bash(sudo *)",
+    "Bash(chmod *)"
+  ]
+}

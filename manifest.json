@@ -1,9 +1,9 @@
 {
     "id": "agent-fleet",
     "name": "Agent Fleet",
-    "version": "0.13.1",
+    "version": "0.13.2",
     "minAppVersion": "1.6.0",
-    "description": "File-backed AI agents, task scheduling, and inbox monitoring inside Obsidian.",
+    "description": "File-backed AI agents with task scheduling, channels, memory, and MCP — running on Claude Code or OpenAI Codex, all as plain markdown.",
     "author": "Denis Berekchiyan",
     "authorUrl": "https://github.com/denberek",
     "isDesktopOnly": true

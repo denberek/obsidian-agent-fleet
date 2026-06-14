@@ -1,0 +1,41 @@
+{
+  "name": "obsidian-agent-fleet",
+  "version": "0.13.2",
+  "description": "Obsidian plugin for file-backed AI agents, task scheduling, channels (Slack), heartbeat, and interactive chat.",
+  "license": "MIT",
+  "main": "plugin/main.js",
+  "bin": {
+    "agent-fleet": "bin/cli.js"
+  },
+  "files": [
+    "bin/cli.js",
+    "plugin/main.js",
+    "plugin/manifest.json",
+    "plugin/styles.css",
+    "README.md",
+    "SLACK_SETUP.md",
+    "LICENSE",
+    "screenshot.png"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node bin/cli.js install --auto || true"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.25.9",
+    "obsidian": "^1.8.10",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "croner": "^8.1.2",
+    "ws": "^8.20.0"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules
+main.js
+plugin/
+*.tgz
+.DS_Store
+.claude/
