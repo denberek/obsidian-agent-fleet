@@ -30,7 +30,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 🎛️ **Model picker** — Choose between aliases (`opus` / `sonnet` / `haiku` / `opusplan` — backend-agnostic), pinned IDs, or Bedrock/Vertex/Foundry formats. One place to configure: settings default, per-agent, or per-task override. Runs log both the requested alias and the concrete resolved model.
 
-🔌 **MCP Integration** — Add, remove, authenticate, and inspect MCP servers from the dashboard. One-click OAuth 2.1 with automatic CLI token injection — agents can use authenticated servers immediately.
+🔌 **MCP Integration** — Register an MCP server **once** and it's available to **any** agent on **either** adapter (Claude Code or Codex). Servers live in a fleet-owned registry (`_fleet/mcp/`) and are projected into each run; your native `~/.claude.json` and `~/.codex/config.toml` are never modified. One-click OAuth 2.1 (or a static bearer token), stored in your OS keychain and projected to both backends.
 
 🧠 **Agent Memory** — A two-tier, self-curating memory (curated working set + append-only ground truth) that agents write via a `remember` tool or `[REMEMBER]` tags, on both Claude and Codex. An optional nightly **reflection** consolidates it and can propose new skills from recurring patterns (approval-gated).
 
@@ -160,7 +160,7 @@ Each agent runs on one of two CLI backends, selected by the **Adapter** field in
 | Models | `opus` / `sonnet` / `haiku` / `opusplan` aliases, pinned IDs, Bedrock/Vertex/Foundry | Codex slugs (e.g. `gpt-5.5-codex`) + free-text |
 | Permission rules | Native — `.claude/settings.local.json` | execpolicy command rules via per-agent `CODEX_HOME` overlay |
 | File/network sandbox | Permission Mode | Permission Mode (`workspace-write` / `read-only`); `codex exec` forces approval policy `never` |
-| MCP servers | Claude's registry | Codex's `~/.codex/config.toml`, scoped per agent |
+| MCP servers | Fleet registry (`_fleet/mcp/`), projected via `--mcp-config` | Fleet registry (`_fleet/mcp/`), projected via `-c mcp_servers.*` |
 
 Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run logs, model picker — works identically on both. The picker switches its alias list based on the selected adapter; free-text remains the escape hatch for any model ID.
 
@@ -311,40 +311,32 @@ A kanban view for managing agent tasks with five columns:
 
 ### MCP Servers
 
-Add, remove, authenticate, and manage MCP servers directly from the dashboard — no terminal needed.
+Register an MCP server **once** and it works for **any** agent on **either** adapter (Claude Code or Codex). Servers are a fleet-owned registry — one markdown file per server under `_fleet/mcp/<name>.md` — and are *projected* into each run at spawn time (Claude via `--mcp-config`, Codex via `-c mcp_servers.*`). Your native `~/.claude.json` and `~/.codex/config.toml` are **read-only**; Agent Fleet never modifies them.
+
+**One-time import.** On first load, your existing Claude and Codex MCP servers are imported into the registry (a server configured in both becomes one entry, marked `imported`), and any bearer tokens found are moved into your OS keychain. Idempotent.
 
 **Add Server UI:**
 - Click **"Add Server"** on the MCP page to open the form
 - **stdio** — command, arguments, environment variables
-- **HTTP / SSE** — URL, API key (stored securely), custom headers
-- Scope selection (user or local) — defaults to "user" so servers are visible across projects
-- Servers appear immediately after adding, with tools auto-discovered
+- **HTTP / SSE** — URL, custom headers, and authentication: none, a static **bearer token** (stored in the keychain), or **OAuth** (authenticate after saving)
+- Servers are written to `_fleet/mcp/`; secrets never touch the vault
 
-**Remove Server:**
-- Open any server's detail slideover → click **"Remove Server"**
-- Cleans up CLI registration and stored secrets in one step
-
-**Discovery:**
-- **stdio servers** — spawned and probed directly via JSON-RPC (~1-2s)
-- **HTTP/SSE servers** — probed with OAuth tokens for full tool schemas
-- **Plugin metadata** — descriptions from Claude's plugin directory
+**Server Management:**
+- Enable/disable toggle per server (writes the registry file's frontmatter)
+- Per-server **"Probe tools"** action — stdio servers are spawned and probed via JSON-RPC; HTTP/SSE servers are probed with the stored token
+- Detail slideover with transport, auth state, and the discovered tool list
+- **Remove Server** trashes the registry file and clears any stored token
+- Grant servers to specific agents in the agent editor — leave an agent's list empty to grant every enabled server
 
 **OAuth 2.1 Authentication:**
 
-One-click browser-based auth with unified CLI token injection:
-1. Click "Authenticate" on any server card
-2. Plugin discovers OAuth endpoints automatically
-3. Registers via Dynamic Client Registration
-4. Opens browser for approval (PKCE flow)
-5. Tokens stored securely in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-6. Token automatically injected into Claude CLI config — agents can use the server immediately without separate CLI authentication
-7. Background token refresh — expiring tokens are refreshed and re-injected automatically
-
-**Server Management:**
-- Enable/disable toggle per server (writes to Claude's settings)
-- Server cards show status, tool count, type, description
-- Detail slideover with full tool list, descriptions, input schemas, parameters
-- Assign MCP servers to specific agents in the agent editor
+One-click browser-based auth, projected to both backends:
+1. Click "Authenticate" on any HTTP/SSE server card
+2. Plugin discovers OAuth endpoints automatically and registers via Dynamic Client Registration (PKCE flow)
+3. Opens browser for approval
+4. Tokens stored securely in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+5. The token is projected into each run — to Claude as an `Authorization` header, to Codex via `bearer_token_env_var` (passed through the spawn environment, never written to argv or any config file)
+6. Background token refresh — expiring tokens are refreshed automatically, and the next run picks up the fresh token
 
 ---
 
