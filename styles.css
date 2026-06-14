@@ -2623,7 +2623,6 @@
   font-size: 11px;
   font-weight: 400;
   color: var(--af-text-secondary);
-  white-space: nowrap;
   min-width: 220px;
   max-width: 400px;
   white-space: normal;
@@ -4057,7 +4056,7 @@
 }
 
 .af-mp-custom-input {
-  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
 }
 
@@ -4070,7 +4069,7 @@
    * the model name breathes rather than hugging the textarea edge. */
   padding: 6px 12px 0 calc(18px + 8px + 10px);
   min-height: 12px;
-  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 10px;
   line-height: 1;
   color: var(--af-text-faint);
@@ -4389,7 +4388,7 @@
 .af-wk-scope {
   font-size: 11px;
   color: var(--af-text-secondary);
-  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace);
 }
 
 .af-wk-empty {
@@ -4456,7 +4455,7 @@
   color: var(--af-text-secondary);
   font-size: 12px;
   margin: 4px 0 16px 0;
-  font-family: var(--font-monospace, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace);
 }
 
 .af-wk-modal-footer {

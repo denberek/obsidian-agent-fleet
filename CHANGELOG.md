@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.5 — 2026-06-14
+
+More community-review cleanup. No user-facing behavior changes.
+
+- **Signed releases** — releases are now built and published by a GitHub Actions workflow that generates artifact attestations (build provenance) for `main.js`/`manifest.json`/`styles.css`, so anyone can cryptographically verify they were built from this repo.
+- **Security** — bumped `ws` to 8.21.0 (clears advisory GHSA-58qx-3vcg-4xpx).
+- **CSS** — dropped the unsupported `ui-monospace` font keyword and a duplicate `white-space` declaration.
+- Removed unnecessary escape characters in bundled skill examples.
+
 ## 0.13.4 — 2026-06-14
 
 Further community-review cleanup (all non-blocking warnings). No user-facing behavior changes.

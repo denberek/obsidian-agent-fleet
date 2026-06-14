@@ -1,0 +1,50 @@
+name: Release Obsidian plugin
+
+# Triggered by pushing a semver tag (NO `v` prefix — the tag must equal the
+# manifest.json version, e.g. `0.13.5`). The job builds the plugin from source,
+# generates artifact attestations (build provenance) for the release assets, and
+# publishes the GitHub release with main.js / manifest.json / styles.css attached.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write       # create the release
+  id-token: write       # required by attest-build-provenance
+  attestations: write   # write the attestations
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Attest build provenance for release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes "See CHANGELOG.md for release notes." \
+            --latest \
+            main.js manifest.json styles.css
