@@ -362,7 +362,7 @@ export class AgentChatView extends ItemView {
       // resolved (in switchToAgent), so we don't pre-check here.
       this.selectedConversationId = "";
       this.textarea.disabled = false;
-      this.textarea.placeholder = "Message the agent\u2026 (Ctrl+Enter to send)";
+      this.textarea.placeholder = "Message the agent\u2026 (Shift+Enter for newline)";
       void this.switchToAgent(val);
     };
 
@@ -393,7 +393,7 @@ export class AgentChatView extends ItemView {
 
     this.textarea = inputRow.createEl("textarea", {
       cls: "af-chat-input",
-      attr: { placeholder: "Message the agent\u2026 (Ctrl+Enter to send)", rows: "1" },
+      attr: { placeholder: "Message the agent\u2026 (Shift+Enter for newline)", rows: "1" },
     });
     this.sendBtn = inputRow.createEl("button", { cls: "af-chat-send-btn" });
     createIcon(this.sendBtn, "arrow-up", "af-btn-icon");
@@ -415,7 +415,10 @@ export class AgentChatView extends ItemView {
 
     this.sendBtn.onclick = () => void this.handleSend();
     this.textarea.onkeydown = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      // Enter sends; Shift+Enter inserts a newline (common chat convention).
+      // Skip while an IME composition is active so Enter confirms the candidate
+      // rather than sending a half-composed message.
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         void this.handleSend();
       }
@@ -582,7 +585,7 @@ export class AgentChatView extends ItemView {
     }
 
     this.leaf.updateHeader();
-    this.textarea.placeholder = "Message the agent\u2026 (Ctrl+Enter to send)";
+    this.textarea.placeholder = "Message the agent\u2026 (Shift+Enter for newline)";
 
     // Load the session if not already displayed. Check for actual chat bubbles
     // (not just the empty state divs) to decide whether switchToAgent is needed.
@@ -690,6 +693,7 @@ export class AgentChatView extends ItemView {
         this.app.vault,
         { inAppConversationId: resolvedId, mcpAuth: this.plugin.mcpAuth },
       );
+      session.setUsageRecorder((r) => this.plugin.runtime.recordUsage(r));
       managed = { session };
       this.sessions.set(key, managed);
       await session.loadPersistedState();
@@ -1417,7 +1421,7 @@ export class AgentChatView extends ItemView {
 
     const input = composer.createEl("textarea", {
       cls: "af-chat-input af-thread-input",
-      attr: { placeholder: "Message in thread\u2026 (Ctrl+Enter to send)", rows: "1" },
+      attr: { placeholder: "Message in thread\u2026 (Shift+Enter for newline)", rows: "1" },
     });
 
     // Paste image support
@@ -1532,7 +1536,8 @@ export class AgentChatView extends ItemView {
 
     sendBtn.onclick = () => void submit();
     input.onkeydown = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      // Enter sends; Shift+Enter inserts a newline.
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         void submit();
       }

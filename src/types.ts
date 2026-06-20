@@ -44,7 +44,7 @@ export interface FleetSettings {
   mcpImported?: boolean;
 }
 
-export type ChannelType = "slack" | "telegram";
+export type ChannelType = "slack" | "telegram" | "discord";
 
 export type ChannelStatus =
   | "connected"
@@ -57,7 +57,8 @@ export type ChannelStatus =
 
 export type ChannelCredentialEntry =
   | { type: "slack"; botToken: string; appToken: string }
-  | { type: "telegram"; botToken: string };
+  | { type: "telegram"; botToken: string }
+  | { type: "discord"; botToken: string };
 
 export interface ChannelConfig {
   filePath: string;
@@ -80,6 +81,29 @@ export interface ChannelConfig {
 export interface ValidationIssue {
   path: string;
   message: string;
+}
+
+/**
+ * One token-consuming event recorded to the usage ledger
+ * (`_fleet/usage/YYYY-MM-DD.jsonl`). Chat and channel turns append these so their
+ * token/cost are counted in the dashboard totals (runs/heartbeats/reflections
+ * already carry tokens+cost in their run logs). `costUsd` is the CLI-reported
+ * dollar cost when available; when absent it's estimated from tokens at read time.
+ */
+export interface UsageRecord {
+  /** ISO-8601 timestamp of the turn. */
+  ts: string;
+  agent: string;
+  /** Origin of the usage — only chat/channel are ledgered; runs live in run logs. */
+  source: "chat" | "channel";
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  totalTokens: number;
+  /** CLI-reported cost for this turn; undefined → estimate from tokens. */
+  costUsd?: number;
 }
 
 export interface SkillConfig {
@@ -178,6 +202,10 @@ export interface AgentConfig {
   heartbeatNotify: boolean;
   /** Channel name to post heartbeat results to (e.g. "my-slack"). Empty = no channel post. */
   heartbeatChannel: string;
+  /** Specific channel/conversation id to post heartbeat results to within
+   *  heartbeatChannel (e.g. a Discord channel id). Empty = broadcast as a DM to
+   *  the channel's first allowed user. Mirrors a task's channelTarget. */
+  heartbeatChannelTarget: string;
   /** Wiki Keeper scope config. Present only on agents that manage a wiki
    *  scope. See WIKI_KEEPER_DESIGN.md. */
   wikiKeeper?: WikiKeeperConfig;
@@ -206,6 +234,16 @@ export interface TaskConfig {
   effort?: string;
   /** Optional per-task model override. Empty/absent = inherit from agent. */
   model?: string;
+  /** Channel name to post this task's output to (e.g. "my-discord"). Empty/absent
+   *  = no channel post (run log only). Mirrors an agent's heartbeatChannel but is
+   *  per-task, so scheduled tasks — not just the heartbeat — can deliver to a
+   *  channel. */
+  channel?: string;
+  /** Optional transport-native destination id within `channel` (Discord/Slack
+   *  channel id, Telegram chat id). When set, the task posts directly to that
+   *  channel/conversation; when empty, delivery falls back to the channel's
+   *  broadcast (DM to the first allowed user). Ignored unless `channel` is set. */
+  channelTarget?: string;
   tags: string[];
   body: string;
 }

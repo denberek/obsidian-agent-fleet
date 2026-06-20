@@ -27,7 +27,7 @@ export const DEFAULT_SETTINGS: FleetSettings = {
   defaultFileHashes: {},
 };
 
-export const FLEET_SUBFOLDERS = ["agents", "skills", "tasks", "runs", "memory", "channels", "mcp"] as const;
+export const FLEET_SUBFOLDERS = ["agents", "skills", "tasks", "runs", "memory", "channels", "mcp", "usage"] as const;
 
 // ─── Memory v2 defaults (see MEMORY_EVOLUTION_DESIGN.md) ───
 /** Steady-state token budget for an agent's injected working memory. */

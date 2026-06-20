@@ -2,7 +2,7 @@ import { type ChildProcess } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { normalizePath, TFile } from "obsidian";
 import type { Vault } from "obsidian";
-import type { AgentConfig, ChatMessage, FleetSettings } from "../types";
+import type { AgentConfig, ChatMessage, FleetSettings, UsageRecord } from "../types";
 import type { FleetRepository } from "../fleetRepository";
 import { slugify } from "../utils/markdown";
 import { resolveModel, shouldPassModelFlag } from "./../utils/modelResolution";
@@ -320,6 +320,14 @@ export class ChatSession {
 
   // Stats (derived from stream-json events)
   private stats: ChatSessionStats = { costTotalUsd: 0, turnCount: 0 };
+  /** Sink for per-turn token/cost records (the usage ledger). Set by the plugin. */
+  private usageRecorder?: (record: UsageRecord) => void;
+
+  /** Wire the per-turn usage ledger sink. Called once after construction by the
+   *  plugin for both chat-panel and channel sessions. */
+  setUsageRecorder(fn: (record: UsageRecord) => void): void {
+    this.usageRecorder = fn;
+  }
   private statsListeners = new Set<(s: ChatSessionStats) => void>();
 
   /** Subscribe to stats changes. Fires once immediately with current state. */
@@ -1008,6 +1016,9 @@ export class ChatSession {
       }
       this.stats.turnCount += 1;
       dirty = true;
+      // Ledger this turn's tokens + cost so chat/channel usage counts toward the
+      // dashboard totals (runs are counted separately via their run logs).
+      this.recordTurnUsage(event as unknown as Record<string, unknown>, costDelta);
     }
 
     // After digesting a result event, evaluate the auto-compact threshold.
@@ -1019,6 +1030,33 @@ export class ChatSession {
     }
 
     if (dirty) this.emitStats();
+  }
+
+  /** Emit one usage-ledger record for the just-completed turn. Token breakdown
+   *  comes from the result event's aggregate `usage`; cost is the CLI's per-turn
+   *  `total_cost_usd` when present (else estimated from tokens at read time). */
+  private recordTurnUsage(event: Record<string, unknown>, costUsd: number): void {
+    if (!this.usageRecorder) return;
+    const usage = event.usage as Record<string, unknown> | undefined;
+    const num = (v: unknown) => (typeof v === "number" ? v : 0);
+    const inputTokens = num(usage?.input_tokens);
+    const outputTokens = num(usage?.output_tokens);
+    const cacheReadTokens = num(usage?.cache_read_input_tokens);
+    const cacheCreateTokens = num(usage?.cache_creation_input_tokens);
+    const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens;
+    if (totalTokens === 0 && costUsd === 0) return;
+    this.usageRecorder({
+      ts: new Date().toISOString(),
+      agent: this.agent.name,
+      source: this.channelName ? "channel" : "chat",
+      model: this.stats.concreteModel ?? this.agent.model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreateTokens,
+      totalTokens,
+      ...(costUsd > 0 ? { costUsd } : {}),
+    });
   }
 
   /** If the agent has autoCompactThreshold set and the latest turn's

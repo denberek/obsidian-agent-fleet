@@ -35,6 +35,7 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     heartbeatBody: "",
     heartbeatNotify: false,
     heartbeatChannel: "",
+    heartbeatChannelTarget: "",
     ...overrides,
   };
 }

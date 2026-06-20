@@ -5,6 +5,7 @@ import type {
   ChannelStatus,
   FleetSettings,
   FleetSnapshot,
+  UsageRecord,
 } from "../types";
 import type { FleetRepository } from "../fleetRepository";
 import type { McpAuthManager } from "./mcpAuth";
@@ -43,6 +44,9 @@ export interface ChannelManagerDeps {
   getMcpAuth?: () => McpAuthManager;
   /** Factory that produces the transport-specific adapter. */
   adapterFactory: ChannelAdapterFactory;
+  /** Sink for per-turn token/cost usage from channel sessions (the usage ledger).
+   *  Late-bound to the current runtime so it survives runtime rebuilds. */
+  recordUsage?: (record: UsageRecord) => void;
   /** Injectable clock, primarily for tests. */
   now?: () => number;
 }
@@ -629,6 +633,9 @@ export class ChannelManager {
         mcpAuth: this.deps.getMcpAuth?.(),
       },
     );
+    if (this.deps.recordUsage) {
+      session.setUsageRecorder(this.deps.recordUsage);
+    }
 
     try {
       await session.loadPersistedState();
@@ -784,6 +791,24 @@ export class ChannelManager {
       return;
     }
     await adapter.broadcast(text);
+  }
+
+  /**
+   * Post a message to an explicit destination id within a channel (a Discord/Slack
+   * channel id or Telegram chat id) — used for per-task delivery to a specific
+   * channel rather than the broadcast DM.
+   */
+  async postToChannelTarget(channelName: string, target: string, text: string): Promise<void> {
+    const adapter = this.adapters.get(channelName);
+    if (!adapter) {
+      console.warn(`Agent Fleet: postToChannelTarget — no adapter for channel ${channelName}`);
+      return;
+    }
+    if (!adapter.sendToTarget) {
+      console.warn(`Agent Fleet: postToChannelTarget — adapter ${channelName} does not support sendToTarget`);
+      return;
+    }
+    await adapter.sendToTarget(target, text);
   }
 
   // ═══════════════════════════════════════════════════════

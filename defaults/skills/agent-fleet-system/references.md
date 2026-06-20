@@ -73,7 +73,7 @@ These are inherited by all agent processes. Never store tokens in vault files.
 | Defined in | HEARTBEAT.md in agent folder | _fleet/tasks/<name>.md |
 | Prompt source | Heartbeat body | Task body |
 | "Run Now" button | Uses heartbeat instruction | Uses task prompt |
-| Delivery | Optional Slack channel post | Run log only |
+| Delivery | Run log + optional channel post (`channel` in HEARTBEAT.md) | Run log + optional channel post (`channel` in task frontmatter) |
 | Scope | One per agent | Many per agent |
 | Best for | Autonomous periodic monitoring | Specific scheduled work items |
 

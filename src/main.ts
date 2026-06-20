@@ -20,6 +20,7 @@ import { SecretStore } from "./services/secretStore";
 import { parseClaudeMcpServers, parseCodexMcpServers, mergeImports } from "./services/mcpImport";
 import { SlackAdapter } from "./services/channels/slackAdapter";
 import { TelegramAdapter } from "./services/channels/telegramAdapter";
+import { DiscordAdapter } from "./services/channels/discordAdapter";
 import type { ChannelAdapter } from "./services/channels/adapter";
 import type { ChannelConfig, ChannelCredentialEntry, FleetSettings } from "./types";
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
@@ -154,12 +155,16 @@ export default class AgentFleetPlugin extends Plugin {
       getSettings: () => this.settings,
       getChannelCredentials: () => this.channelCredentials.toRecord(),
       getMcpAuth: () => this.mcpAuth,
+      recordUsage: (record) => this.runtime.recordUsage(record),
       adapterFactory: (config: ChannelConfig, credential: ChannelCredentialEntry): ChannelAdapter => {
         if (config.type === "slack") {
           return new SlackAdapter(config, credential);
         }
         if (config.type === "telegram") {
           return new TelegramAdapter(config, credential);
+        }
+        if (config.type === "discord") {
+          return new DiscordAdapter(config, credential);
         }
         throw new Error(`Channel type \`${config.type}\` is not yet supported in this version.`);
       },
@@ -171,16 +176,19 @@ export default class AgentFleetPlugin extends Plugin {
       new Notice("Agent Fleet: channel manager failed to start — check console.");
     }
 
-    // Wire heartbeat results to Slack channels. When an agent's heartbeat
-    // completes and its heartbeatChannel is set, the runtime calls this handler
-    // which posts the output via the channel's broadcast method (opens a DM with
-    // the first allowed user and posts there).
-    this.runtime.onHeartbeatResult((agentName, channelName, output) => {
-      void this.channelManager?.broadcastToChannel(
-        channelName,
-        `*Heartbeat — ${agentName}*\n\n${output}`,
-      ).catch((err: unknown) => {
-        console.warn(`Agent Fleet: heartbeat channel post failed for ${agentName}`, err);
+    // Wire run results to channels. Fires when an agent's heartbeat completes
+    // (using heartbeatChannel) or when a scheduled/manual task sets a `channel`
+    // field. `source` is "heartbeat" or the task id, used only to label the post.
+    // When `target` is set the post goes to that specific channel id; otherwise it
+    // broadcasts (opens a DM with the first allowed user and posts there).
+    this.runtime.onChannelResult((agentName, channelName, output, source, target) => {
+      const label = source === "heartbeat" ? `Heartbeat — ${agentName}` : `${agentName} — ${source}`;
+      const text = `*${label}*\n\n${output}`;
+      const delivery = target
+        ? this.channelManager?.postToChannelTarget(channelName, target, text)
+        : this.channelManager?.broadcastToChannel(channelName, text);
+      void delivery?.catch((err: unknown) => {
+        console.warn(`Agent Fleet: channel post failed for ${agentName}`, err);
       });
     });
 
@@ -630,16 +638,20 @@ export default class AgentFleetPlugin extends Plugin {
   }
 
   private registerVaultHandlers(): void {
+    // The usage ledger (`_fleet/usage/`) is appended on every chat/channel turn
+    // and holds no parsed entities — skip it so the hot path never triggers a
+    // full fleet reparse.
+    const isLedgerPath = (p: string) => p.startsWith(`${this.settings.fleetFolder}/usage/`);
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
+        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`) && !isLedgerPath(file.path)) {
           this.debouncedVaultRefresh();
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`)) {
+        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`) && !isLedgerPath(file.path)) {
           this.debouncedVaultRefresh();
         }
       }),

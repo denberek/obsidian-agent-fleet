@@ -24,6 +24,7 @@ import type {
   SkillCandidate,
   SkillProposal,
   TaskConfig,
+  UsageRecord,
 } from "../types";
 
 export class FleetRuntime {
@@ -47,6 +48,9 @@ export class FleetRuntime {
    *  for days that actually had activity. */
   private chartRuns: RunLogData[] = [];
   private static readonly CHART_WINDOW_DAYS = 14;
+  /** Chat/channel usage records over the chart window. Feeds the comprehensive
+   *  token/cost totals (runs are counted from run logs). */
+  private recentUsage: UsageRecord[] = [];
   private statusChangeListeners = new Set<() => void>();
   private runOutputListeners = new Map<string, Set<(chunk: string) => void>>();
   private runOutputBuffers = new Map<string, string>();
@@ -64,8 +68,11 @@ export class FleetRuntime {
   private heartbeatRegisteredAt = 0;
   /** Tracks agents with a heartbeat currently in-flight (prevents duplicate runs). */
   private heartbeatsInFlight = new Set<string>();
-  /** Callback for heartbeat result delivery (e.g. Slack posting). Set by main.ts. */
-  private heartbeatResultHandler?: (agentName: string, channel: string, output: string) => void;
+  /** Callback for run-result channel delivery (e.g. Slack/Discord posting). Set by
+   *  main.ts. `source` is "heartbeat" for heartbeat runs or the task id otherwise,
+   *  so the handler can label the post. `target` is an optional transport-native
+   *  destination id (post to a specific channel) — empty means broadcast/DM. */
+  private channelResultHandler?: (agentName: string, channel: string, output: string, source: string, target: string) => void;
   /** Single choke point for memory writes (per-agent locked). */
   private readonly memoryWriter: MemoryWriter;
 
@@ -105,11 +112,13 @@ export class FleetRuntime {
   }
 
   /**
-   * Register a callback that receives heartbeat results for delivery to external
-   * channels (e.g. Slack). Called from main.ts after the ChannelManager is ready.
+   * Register a callback that receives run results for delivery to external
+   * channels (e.g. Slack, Discord). Fires for heartbeat runs (using the agent's
+   * heartbeatChannel) and for any scheduled/manual task that sets a `channel`
+   * field. Called from main.ts after the ChannelManager is ready.
    */
-  onHeartbeatResult(handler: (agentName: string, channel: string, output: string) => void): void {
-    this.heartbeatResultHandler = handler;
+  onChannelResult(handler: (agentName: string, channel: string, output: string, source: string, target: string) => void): void {
+    this.channelResultHandler = handler;
   }
 
   async refreshFromVault(): Promise<void> {
@@ -139,6 +148,22 @@ export class FleetRuntime {
     const since = new Date();
     since.setDate(since.getDate() - (FleetRuntime.CHART_WINDOW_DAYS - 1));
     this.chartRuns = await this.repository.listRunsSince(since);
+    this.recentUsage = await this.repository.readUsageSince(since);
+  }
+
+  /** Chat/channel usage records over the chart window (for token/cost totals). */
+  getUsageRecords(): UsageRecord[] {
+    return this.recentUsage;
+  }
+
+  /** Append a chat/channel turn's usage to the ledger and reflect it live in the
+   *  cached totals. Fire-and-forget from ChatSession via the plugin. */
+  recordUsage(record: UsageRecord): void {
+    this.recentUsage.push(record);
+    void this.repository.appendUsage(record).catch((err) => {
+      console.warn("Agent Fleet: failed to append usage record", err);
+    });
+    this.emitStatusChange();
   }
 
   getAgentState(agentName: string): AgentRuntimeState {
@@ -523,7 +548,18 @@ export class FleetRuntime {
       return { ok: false, message: "A reflection is already in progress." };
     }
     this.reflectionsInFlight.add(agentName);
-    const nowIso = new Date().toISOString();
+    const started = new Date().toISOString();
+    const nowIso = started;
+    const reflectionTaskId = `reflection-${Date.now()}`;
+    // Surface the reflection as a running agent (overview "Active Agents" card +
+    // sidebar status) with live output, exactly like a task/heartbeat run.
+    this.runtimeState.set(agentName, {
+      status: "running",
+      currentTaskId: reflectionTaskId,
+      runStarted: started,
+    });
+    this.runOutputBuffers.set(agentName, "");
+    this.emitStatusChange();
     try {
       // Guarantee the legacy→v2 migration (and its raw-archive seeding) has run
       // before we read/consolidate, so a first reflection can't lose pre-v2
@@ -541,7 +577,7 @@ export class FleetRuntime {
 
       const task: TaskConfig = {
         filePath: "",
-        taskId: `reflection-${Date.now()}`,
+        taskId: reflectionTaskId,
         agent: agent.name,
         type: "immediate",
         priority: "low",
@@ -556,9 +592,17 @@ export class FleetRuntime {
 
       // Gate the spawn through the reflection semaphore, and suppress memory
       // capture for the reflection run itself (it consolidates memory; it must
-      // not emit new captures or carry the capture instruction).
+      // not emit new captures or carry the capture instruction). Stream output so
+      // the overview shows live progress.
       const result = await this.withReflectionSlot(() =>
-        this.executor.execute(agent, task, prompt, undefined, { suppressMemoryCapture: true }),
+        this.executor.execute(agent, task, prompt, (chunk) => {
+          const current = this.runOutputBuffers.get(agentName) ?? "";
+          this.runOutputBuffers.set(agentName, current + chunk);
+          const listeners = this.runOutputListeners.get(agentName);
+          if (listeners) {
+            for (const listener of listeners) listener(chunk);
+          }
+        }, { suppressMemoryCapture: true }),
       );
       const parsed = parseReflectionOutput(result.outputText);
 
@@ -572,20 +616,79 @@ export class FleetRuntime {
         await this.generateProposals(agent, merged, nowIso);
       }
 
+      const message = applied
+        ? "Reflection complete — working memory consolidated."
+        : "Reflection produced no memory block; working memory left unchanged.";
+
+      // Record the reflection as a run so it shows in Recent Activity / run
+      // history with its full output — the user can confirm it ran and see what
+      // it consolidated. A clean CLI exit is "success" even if nothing changed;
+      // `finalResult` carries the consolidation outcome.
+      const runStatus: RunStatus =
+        result.exitCode === 0 || result.exitCode === null ? "success" : "failure";
+      const run: RunLogData = {
+        runId: result.runId,
+        agent: agent.name,
+        task: reflectionTaskId,
+        status: runStatus,
+        started,
+        completed: new Date().toISOString(),
+        durationSeconds: result.durationSeconds,
+        tokensUsed: result.tokensUsed,
+        costUsd: result.costUsd,
+        model: result.resolvedModel || agent.reflection.model || agent.model,
+        modelSource: result.modelSource,
+        concreteModel: result.concreteModel,
+        exitCode: result.exitCode,
+        tags: Array.from(new Set([...agent.tags, "reflection"])),
+        prompt: result.prompt,
+        output: result.outputText,
+        toolsUsed: result.toolsUsed.map((tool) => `${tool.tool}${tool.command ? `: ${tool.command}` : ""}`),
+        finalResult: message,
+        stderr: result.stderr,
+      };
+      const runPath = await this.repository.writeRunLog(run);
       await this.refreshRunCaches();
-      this.emitStatusChange();
-      return applied
-        ? { ok: true, message: "Reflection complete — working memory consolidated." }
-        : {
-            ok: false,
-            message: "Reflection produced no memory block; working memory left unchanged.",
-          };
+      this.runtimeState.set(agentName, {
+        status: runStatus === "success" ? "idle" : "error",
+        currentRunId: result.runId,
+        lastRun: { ...run, filePath: runPath },
+      });
+      return { ok: applied, message };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.warn(`Agent Fleet: reflection failed for "${agentName}":`, error);
+      // Record the failure as a run too, so it's visible in activity.
+      const run: RunLogData = {
+        runId: randomUUID(),
+        agent: agentName,
+        task: reflectionTaskId,
+        status: "failure",
+        started,
+        completed: new Date().toISOString(),
+        durationSeconds: Math.round((Date.now() - new Date(started).getTime()) / 1000),
+        model: agent.reflection.model || agent.model,
+        exitCode: 1,
+        tags: Array.from(new Set([...agent.tags, "reflection"])),
+        prompt: "",
+        output: `Reflection failed: ${msg}`,
+        toolsUsed: [],
+      };
+      let lastRun: RunLogData = run;
+      try {
+        const runPath = await this.repository.writeRunLog(run);
+        await this.refreshRunCaches();
+        lastRun = { ...run, filePath: runPath };
+      } catch (writeErr) {
+        console.warn(`Agent Fleet: failed to write reflection run log for "${agentName}"`, writeErr);
+      }
+      this.runtimeState.set(agentName, { status: "error", lastRun });
       return { ok: false, message: `Reflection failed: ${msg}` };
     } finally {
       this.reflectionsInFlight.delete(agentName);
+      this.runOutputBuffers.delete(agentName);
+      this.runOutputListeners.delete(agentName);
+      this.emitStatusChange();
     }
   }
 
@@ -693,13 +796,29 @@ export class FleetRuntime {
         }
       }
 
-      // Post heartbeat results to Slack channel if configured
+      // Post run results to a channel if configured. Heartbeat runs use the
+      // agent's heartbeatChannel; regular scheduled/manual tasks use their own
+      // `channel` field. This lets any task — not just the heartbeat — deliver
+      // its output to Slack/Discord/Telegram.
       const isHeartbeatRun = task.tags.includes("heartbeat");
-      if (isHeartbeatRun && !wasAborted && agent.heartbeatChannel && run.output.trim()) {
+      const deliveryChannel = isHeartbeatRun ? agent.heartbeatChannel : (task.channel ?? "");
+      // Both heartbeats and tasks may post to a specific channel id via their
+      // target field (HEARTBEAT.md `channel_target` / task `channel_target`);
+      // an empty target falls back to broadcast (DM to the first allowed user).
+      const deliveryTarget = isHeartbeatRun
+        ? (agent.heartbeatChannelTarget ?? "")
+        : (task.channelTarget ?? "");
+      if (deliveryChannel && !wasAborted && run.output.trim()) {
         try {
-          this.heartbeatResultHandler?.(agent.name, agent.heartbeatChannel, run.output);
+          this.channelResultHandler?.(
+            agent.name,
+            deliveryChannel,
+            run.output,
+            isHeartbeatRun ? "heartbeat" : task.taskId,
+            deliveryTarget,
+          );
         } catch (err) {
-          console.warn(`Agent Fleet: heartbeat channel delivery failed for ${agent.name}`, err);
+          console.warn(`Agent Fleet: channel delivery failed for ${agent.name}`, err);
         }
       }
 

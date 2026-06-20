@@ -545,7 +545,7 @@ These are inherited by all agent processes. Never store tokens in vault files.
 | Defined in | HEARTBEAT.md in agent folder | _fleet/tasks/<name>.md |
 | Prompt source | Heartbeat body | Task body |
 | "Run Now" button | Uses heartbeat instruction | Uses task prompt |
-| Delivery | Optional Slack channel post | Run log only |
+| Delivery | Run log + optional channel post (\`channel\` in HEARTBEAT.md) | Run log + optional channel post (\`channel\` in task frontmatter) |
 | Scope | One per agent | Many per agent |
 | Best for | Autonomous periodic monitoring | Specific scheduled work items |
 
@@ -756,6 +756,9 @@ enabled: true
 schedule: "0 */6 * * *"      # Cron expression — every 6 hours
 notify: true                  # Show Obsidian notice on completion
 channel: my-slack             # Post results to this channel (optional)
+channel_target: ""            # Specific channel/conversation id within \`channel\` to post to
+                              # (e.g. a Discord channel id). Empty = broadcast as a DM to the
+                              # channel's first allowed user. Quote numeric ids to preserve precision.
 ---
 
 Check the following endpoints for availability and response time:
@@ -771,6 +774,8 @@ a one-line "all clear". Use [REMEMBER] to track trends across heartbeats.
 - \`schedule\` — cron expression (same format as tasks)
 - \`notify\` — show Obsidian notice when heartbeat completes (default true)
 - \`channel\` — name of a configured channel to post results to (optional)
+- \`channel_target\` — specific channel/conversation id within \`channel\` to post to (optional;
+  empty broadcasts a DM to the channel's first allowed user). Mirrors a task's \`channel_target\`.
 
 ## Creating a Channel
 
@@ -845,6 +850,12 @@ model: ""                     # Override agent model for this task only.
                               # Use aliases like "haiku" for cheap/simple tasks,
                               # or leave empty to inherit agent's model.
                               # Resolution order: task.model → agent.model → settings.defaultModel.
+channel: ""                   # Post this task's output to a channel (e.g. "my-discord").
+                              # Empty = run log only. Lets scheduled tasks deliver to chat,
+                              # not just the heartbeat.
+channel_target: ""            # Optional destination id within \`channel\`: a Discord/Slack
+                              # channel id or Telegram chat id. Set = post directly to that
+                              # channel; empty = DM the channel's first allowed user.
 tags:
   - monitoring
 ---
@@ -852,6 +863,23 @@ tags:
 Task prompt goes here. This is what the agent should do each run.
 Be specific and clear about expected output.
 \`\`\`
+
+**Channel delivery (\`channel\` + \`channel_target\`).** Any task can post its output to a
+configured channel by setting \`channel:\` to a channel name. Previously only an agent's
+heartbeat could post to a channel; now every scheduled/manual task can too. The output
+is the task run's **full** output text, prefixed with \`*<agent> — <task_id>*\`.
+
+Two delivery modes:
+- **\`channel_target\` empty** → broadcast (a DM to the channel's first allowed user) —
+  same path the heartbeat uses.
+- **\`channel_target\` set** → post directly to that specific channel/conversation. The
+  target is a transport-native id: a Discord/Slack channel id or a Telegram chat id.
+  (Discord: enable Developer Mode → right-click the channel → Copy Channel ID. The bot
+  must have permission to post there.)
+
+Keep the task prompt's output concise/skimmable if it's going to chat. Heartbeats still
+use \`channel\` in HEARTBEAT.md (broadcast only); tasks use \`channel\`/\`channel_target\` in
+their own frontmatter.
 
 ### Task Types
 - **recurring** — runs on a cron schedule. Requires \`schedule\` field.
@@ -1787,7 +1815,7 @@ For smooth animation:
 \`\`\`javascript
 // Color utilities
 function hexToRgb(hex) {
-    const result = /^#?([a-f\\d]{2})([a-f\\d]{2})([a-f\\d]{2})$/i.exec(hex);
+    const result = /^#?([a-f\\d]{2})([a-f\\d]{2})([a-f\\d]{2})\$/i.exec(hex);
     return result ? {
         r: parseInt(result[1], 16),
         g: parseInt(result[2], 16),
@@ -2876,7 +2904,7 @@ Top-level fields (\`id\`, \`display_name\`, \`max_input_tokens\`, \`max_tokens\`
 
 \`\`\`bash
 curl https://api.anthropic.com/v1/models/claude-opus-4-6 \\
-  -H "x-api-key: $ANTHROPIC_API_KEY" \\
+  -H "x-api-key: \$ANTHROPIC_API_KEY" \\
   -H "anthropic-version: 2023-06-01"
 \`\`\`
 
@@ -3090,7 +3118,7 @@ The response \`usage\` object reports cache activity:
 
 If \`cache_read_input_tokens\` is zero across repeated requests with identical prefixes, a silent invalidator is at work — diff the rendered prompt bytes between two requests to find it.
 
-Language-specific access: \`response.usage.cache_read_input_tokens\` (Python/TS/Ruby), \`$message->usage->cacheReadInputTokens\` (PHP), \`resp.Usage.CacheReadInputTokens\` (Go/C#), \`.usage().cacheReadInputTokens()\` (Java).
+Language-specific access: \`response.usage.cache_read_input_tokens\` (Python/TS/Ruby), \`\$message->usage->cacheReadInputTokens\` (PHP), \`resp.Usage.CacheReadInputTokens\` (Go/C#), \`.usage().cacheReadInputTokens()\` (Java).
 
 ---
 
@@ -3204,7 +3232,7 @@ The code execution tool lets Claude run code in a secure, sandboxed container. U
 - No internet access (fully sandboxed)
 - Python 3.11 with data science libraries pre-installed
 - Containers persist for 30 days and can be reused across requests
-- Free when used with web search/web fetch tools; otherwise $0.05/hour after 1,550 free hours/month per organization
+- Free when used with web search/web fetch tools; otherwise \$0.05/hour after 1,550 free hours/month per organization
 
 ### Tool Definition
 
@@ -3363,7 +3391,7 @@ Two features are available:
 **Supported:**
 
 - Basic types: object, array, string, integer, number, boolean, null
-- \`enum\`, \`const\`, \`anyOf\`, \`allOf\`, \`$ref\`/\`$def\`
+- \`enum\`, \`const\`, \`anyOf\`, \`allOf\`, \`\$ref\`/\`\$def\`
 - String formats: \`date-time\`, \`time\`, \`date\`, \`duration\`, \`email\`, \`hostname\`, \`uri\`, \`ipv4\`, \`ipv6\`, \`uuid\`
 - \`additionalProperties: false\` (required for all objects)
 
@@ -3544,11 +3572,11 @@ Everything goes through \`POST /v1/messages\`. Tools and output constraints are 
 
 ## Current Models (cached: 2026-02-17)
 
-| Model             | Model ID            | Context        | Input $/1M | Output $/1M |
+| Model             | Model ID            | Context        | Input \$/1M | Output \$/1M |
 | ----------------- | ------------------- | -------------- | ---------- | ----------- |
-| Claude Opus 4.6   | \`claude-opus-4-6\`   | 200K (1M beta) | $5.00      | $25.00      |
-| Claude Sonnet 4.6 | \`claude-sonnet-4-6\` | 200K (1M beta) | $3.00      | $15.00      |
-| Claude Haiku 4.5  | \`claude-haiku-4-5\`  | 200K           | $1.00      | $5.00       |
+| Claude Opus 4.6   | \`claude-opus-4-6\`   | 200K (1M beta) | \$5.00      | \$25.00      |
+| Claude Sonnet 4.6 | \`claude-sonnet-4-6\` | 200K (1M beta) | \$3.00      | \$15.00      |
+| Claude Haiku 4.5  | \`claude-haiku-4-5\`  | 200K           | \$1.00      | \$5.00       |
 
 **ALWAYS use \`claude-opus-4-6\` unless the user explicitly names a different model.** This is non-negotiable. Do not use \`claude-sonnet-4-6\`, \`claude-sonnet-4-5\`, or any other model unless the user literally says "use sonnet" or "use haiku". Never downgrade for cost — that's the user's decision, not yours.
 
@@ -5701,7 +5729,7 @@ server.registerResource(
     mimeType: "text/plain"
   },
   async (uri: string) => {
-    const match = uri.match(/^file:\\/\\/documents\\/(.+)$/);
+    const match = uri.match(/^file:\\/\\/documents\\/(.+)\$/);
     const documentName = match[1];
     const content = await loadDocument(documentName);
     return { contents: [{ uri, mimeType: "text/plain", text: content }] };
@@ -5853,7 +5881,7 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict
 class CreateUserInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
     name: str = Field(..., description="User's full name", min_length=1, max_length=100)
-    email: str = Field(..., description="User's email", pattern=r'^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$')
+    email: str = Field(..., description="User's email", pattern=r'^[\\w\\.-]+@[\\w\\.-]+\\.\\w+\$')
 
     @field_validator('email')
     @classmethod
@@ -6499,7 +6527,7 @@ Example evaluation file demonstrating the XML format for evaluation questions:
 \`\`\`xml
 <evaluation>
    <qa_pair>
-      <question>Calculate the compound interest on $10,000 invested at 5% annual interest rate, compounded monthly for 3 years. What is the final amount in dollars (rounded to 2 decimal places)?</question>
+      <question>Calculate the compound interest on \$10,000 invested at 5% annual interest rate, compounded monthly for 3 years. What is the final amount in dollars (rounded to 2 decimal places)?</question>
       <answer>11614.72</answer>
    </qa_pair>
    <!-- More qa_pairs... -->
@@ -9289,7 +9317,7 @@ Put each with_skill version before its baseline counterpart.
      --skill-name "my-skill" \\
      --benchmark <workspace>/iteration-N/benchmark.json \\
      > /dev/null 2>&1 &
-   VIEWER_PID=$!
+   VIEWER_PID=\$!
    \`\`\`
    For iteration 2+, also pass \`--previous-workspace <workspace>/iteration-<N-1>\`.
 
@@ -9333,7 +9361,7 @@ Empty feedback means the user thought it was fine. Focus your improvements on th
 Kill the viewer server when you're done with it:
 
 \`\`\`bash
-kill $VIEWER_PID 2>/dev/null
+kill \$VIEWER_PID 2>/dev/null
 \`\`\`
 
 ---
@@ -12232,8 +12260,8 @@ Unless otherwise stated by the user or existing template
 
 #### Required Format Rules
 - **Years**: Format as text strings (e.g., "2024" not "2,024")
-- **Currency**: Use $#,##0 format; ALWAYS specify units in headers ("Revenue ($mm)")
-- **Zeros**: Use number formatting to make all zeros "-", including percentages (e.g., "$#,##0;($#,##0);-")
+- **Currency**: Use \$#,##0 format; ALWAYS specify units in headers ("Revenue (\$mm)")
+- **Zeros**: Use number formatting to make all zeros "-", including percentages (e.g., "\$#,##0;(\$#,##0);-")
 - **Percentages**: Default to 0.0% format (one decimal)
 - **Multiples**: Format as 0.0x for valuation multiples (EV/EBITDA, P/E)
 - **Negative numbers**: Use parentheses (123) not minus -123
@@ -12243,7 +12271,7 @@ Unless otherwise stated by the user or existing template
 #### Assumptions Placement
 - Place ALL assumptions (growth rates, margins, multiples, etc.) in separate assumption cells
 - Use cell references instead of hardcoded values in formulas
-- Example: Use =B5*(1+$B$6) instead of =B5*1.05
+- Example: Use =B5*(1+\$B\$6) instead of =B5*1.05
 
 #### Formula Error Prevention
 - Verify all cell references are correct

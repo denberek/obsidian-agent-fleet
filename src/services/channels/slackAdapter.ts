@@ -194,6 +194,15 @@ export class SlackAdapter implements ChannelAdapter {
     });
   }
 
+  /** Post directly to a Slack channel id (the bot must be a member). */
+  async sendToTarget(channelId: string, text: string): Promise<void> {
+    if (!channelId) return;
+    const mrkdwn = markdownToMrkdwn(text);
+    await this.enqueueSend(channelId, async () => {
+      await this.slackApi("chat.postMessage", { channel: channelId, text: mrkdwn });
+    });
+  }
+
   async broadcast(text: string): Promise<void> {
     // Post to the first allowed user's DM. Open the DM channel first via
     // conversations.open, then post with chat.postMessage.

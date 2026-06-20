@@ -393,19 +393,23 @@ export function carryForwardPinnedPreferences(
   prev: WorkingMemory | null,
   sections: MemorySection[],
 ): MemorySection[] {
-  // Rescue pinned entries from ANY prior section (not just Preferences) — a
-  // pin could have landed in Recent/Observations — so a reflection that omits
-  // it can never silently drop a pinned fact.
+  // Rescue pinned entries from ANY prior section (not just Preferences) — a pin
+  // could have landed in Recent/Observations.
   const pins = (prev?.sections ?? [])
     .flatMap((s) => s.entries)
     .filter((e) => e.pinned);
   if (pins.length === 0) return sections;
 
-  const present = new Set(
-    sections.flatMap((s) => s.entries).map((e) => e.text.trim().toLowerCase()),
-  );
-  const missing = pins.filter((e) => !present.has(e.text.trim().toLowerCase()));
-  if (missing.length === 0) return sections;
+  // The reflection model is explicitly instructed to preserve AND update pinned
+  // facts, so a reworded/updated pin ("14 shortlists" → "24 shortlists") is the
+  // model doing its job — not a drop. An earlier version re-added every prev pin
+  // that wasn't byte-identical to the new output, which undid the model's
+  // consolidation and piled up near-duplicate pins on every reflection. Instead,
+  // trust the consolidated output whenever it contains ANY pinned entry, and only
+  // rescue the previous pins when the reflection produced NONE at all — the real
+  // signal that it dropped them rather than updating them.
+  const newHasPins = sections.some((s) => s.entries.some((e) => e.pinned));
+  if (newHasPins) return sections;
 
   const out = sections.map((s) => ({ name: s.name, entries: [...s.entries] }));
   let prefs = out.find((s) => s.name === "Preferences");
@@ -413,7 +417,7 @@ export function carryForwardPinnedPreferences(
     prefs = { name: "Preferences", entries: [] };
     out.unshift(prefs);
   }
-  prefs.entries.unshift(...missing);
+  prefs.entries.unshift(...pins);
   return out;
 }
 

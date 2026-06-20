@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.0 — 2026-06-19
+
+New features and fixes across channels, memory, and usage tracking.
+
+**Discord channel**
+- New Discord channel adapter (Gateway over WebSocket + REST), matching the Slack/Telegram model: `@agent-name` routing, `/agents` slash command, image attachments, allowlist on the authenticated sender, and reconnect/resume. See `DISCORD_SETUP.md`.
+
+**Per-task & heartbeat channel delivery**
+- Any scheduled/manual task can post its full output to a channel via `channel:` (broadcast/DM) and `channel_target:` (a specific Discord/Slack channel id or Telegram chat id). Heartbeats gain the same `channel_target`. New `sendToTarget` on all three transports, with task/agent form fields.
+
+**Reflection visibility**
+- Memory reflection now shows live in the overview "Active Agents" card and writes a run log to Recent Activity with its full output, so you can see what it consolidated. Fixed duplicate pinned-preference accumulation (reflection now trusts the model's consolidated pins).
+
+**Comprehensive token & cost tracking**
+- The dashboard "Tokens Used" and per-agent "Total Tokens" now include chat and channel turns (a new usage ledger), not just tasks/heartbeats. Cost uses the CLI's reported amount with a per-model pricing-table fallback.
+
+**Chat**
+- Enter sends a message; Shift+Enter inserts a newline (IME-safe).
+
 ## 0.13.6 — 2026-06-14
 
 Code-quality cleanup from the community review (all non-blocking). No user-facing behavior changes.

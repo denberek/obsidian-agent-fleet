@@ -141,6 +141,9 @@ enabled: true
 schedule: "0 */6 * * *"      # Cron expression — every 6 hours
 notify: true                  # Show Obsidian notice on completion
 channel: my-slack             # Post results to this channel (optional)
+channel_target: ""            # Specific channel/conversation id within `channel` to post to
+                              # (e.g. a Discord channel id). Empty = broadcast as a DM to the
+                              # channel's first allowed user. Quote numeric ids to preserve precision.
 ---
 
 Check the following endpoints for availability and response time:
@@ -156,6 +159,8 @@ a one-line "all clear". Use [REMEMBER] to track trends across heartbeats.
 - `schedule` — cron expression (same format as tasks)
 - `notify` — show Obsidian notice when heartbeat completes (default true)
 - `channel` — name of a configured channel to post results to (optional)
+- `channel_target` — specific channel/conversation id within `channel` to post to (optional;
+  empty broadcasts a DM to the channel's first allowed user). Mirrors a task's `channel_target`.
 
 ## Creating a Channel
 
@@ -230,6 +235,12 @@ model: ""                     # Override agent model for this task only.
                               # Use aliases like "haiku" for cheap/simple tasks,
                               # or leave empty to inherit agent's model.
                               # Resolution order: task.model → agent.model → settings.defaultModel.
+channel: ""                   # Post this task's output to a channel (e.g. "my-discord").
+                              # Empty = run log only. Lets scheduled tasks deliver to chat,
+                              # not just the heartbeat.
+channel_target: ""            # Optional destination id within `channel`: a Discord/Slack
+                              # channel id or Telegram chat id. Set = post directly to that
+                              # channel; empty = DM the channel's first allowed user.
 tags:
   - monitoring
 ---
@@ -237,6 +248,23 @@ tags:
 Task prompt goes here. This is what the agent should do each run.
 Be specific and clear about expected output.
 ```
+
+**Channel delivery (`channel` + `channel_target`).** Any task can post its output to a
+configured channel by setting `channel:` to a channel name. Previously only an agent's
+heartbeat could post to a channel; now every scheduled/manual task can too. The output
+is the task run's **full** output text, prefixed with `*<agent> — <task_id>*`.
+
+Two delivery modes:
+- **`channel_target` empty** → broadcast (a DM to the channel's first allowed user) —
+  same path the heartbeat uses.
+- **`channel_target` set** → post directly to that specific channel/conversation. The
+  target is a transport-native id: a Discord/Slack channel id or a Telegram chat id.
+  (Discord: enable Developer Mode → right-click the channel → Copy Channel ID. The bot
+  must have permission to post there.)
+
+Keep the task prompt's output concise/skimmable if it's going to chat. Heartbeats still
+use `channel` in HEARTBEAT.md (broadcast only); tasks use `channel`/`channel_target` in
+their own frontmatter.
 
 ### Task Types
 - **recurring** — runs on a cron schedule. Requires `schedule` field.

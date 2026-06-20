@@ -212,6 +212,18 @@ describe("memoryFormat", () => {
     expect(prefs?.entries.filter((e) => /post to #wiki/i.test(e.text))).toHaveLength(1);
   });
 
+  it("carryForwardPinnedPreferences trusts the model and does not re-add a reworded pin", () => {
+    // The model UPDATED a pin (14 → 24) and emitted pins, so we trust its
+    // consolidation rather than re-adding the byte-different stale version.
+    let prev = emptyWorkingMemory("p", "A");
+    prev = appendEntries(prev, [{ text: "warm-path priority: 14 shortlists", pinned: true }], "Preferences");
+    const consolidated = parseSectionsFromBody("## Preferences\n- [pin] warm-path priority: 24 shortlists");
+    const merged = carryForwardPinnedPreferences(prev, consolidated);
+    const prefs = merged.find((s) => s.name === "Preferences");
+    expect(prefs?.entries).toHaveLength(1);
+    expect(prefs?.entries[0]?.text).toContain("24 shortlists");
+  });
+
   it("redactRememberForDisplay strips complete blocks and holds partial/unclosed tags", () => {
     // Complete block removed.
     expect(redactRememberForDisplay("a [REMEMBER] x [/REMEMBER] b")).toBe("a  b");

@@ -87,6 +87,15 @@ export interface ChannelAdapter {
    */
   broadcast?(text: string): Promise<void>;
 
+  /**
+   * Post a message to an explicit transport-native destination id — a Discord or
+   * Slack channel id, or a Telegram chat id — independent of any inbound
+   * conversation. Used for per-task result delivery to a specific channel.
+   * Adapters should chunk + rate-limit the same way `send()` does. Optional;
+   * transports that don't support it can omit.
+   */
+  sendToTarget?(target: string, text: string): Promise<void>;
+
   onInbound(handler: InboundHandler): () => void;
   onStatusChange(handler: StatusHandler): () => void;
 

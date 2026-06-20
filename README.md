@@ -270,6 +270,33 @@ Chat with your agents from Telegram — simpler setup than Slack, no @mention re
 
 ---
 
+### Discord
+
+Chat with your agents from Discord — in servers, channels, threads, or DMs.
+
+> **📖 [Step-by-step Discord setup guide →](DISCORD_SETUP.md)** — complete walkthrough from creating the Discord app to sending your first message.
+
+**Setup:**
+1. Create an application at [discord.com/developers](https://discord.com/developers/applications), add a bot, and copy its token
+2. **Enable the Message Content privileged intent** (required to read messages)
+3. Invite the bot with the `bot` + `applications.commands` scopes
+4. Add the token in Settings → Agent Fleet → Channel Credentials (type: Discord)
+5. Create a channel via the dashboard or as `_fleet/channels/my-discord.md`
+6. Mention or DM the bot in Discord
+
+**Features:**
+- **Gateway over WebSocket** — outbound connection, works behind NAT/firewalls, no public URL; hand-rolled over `ws`, no `discord.js` dependency
+- **Servers, threads & DMs** — every channel or thread is an isolated conversation with its own agent binding
+- **Typing indicator** — native typing dots while the agent works (auto-refreshed)
+- **Button agent picker** — the `/agents` slash command shows interactive buttons to switch agents; `@agent-name` prefix routing also works
+- **Image attachments** — images are downloaded into your vault and passed to the agent
+- **Session persistence** — conversations survive Obsidian restarts via the backend's resume (Claude `--resume` / Codex `exec resume`)
+- **Allowlist** — only approved Discord users (by numeric ID) can reach the bot
+- **2000-char message splitting** — long replies automatically chunked at paragraph boundaries
+- **Auto-reconnect & resume** — Gateway RESUME on transient drops with exponential backoff
+
+---
+
 ### Interactive Chat
 
 The chat panel is a first-class Obsidian view — dock it in the sidebar, center, or any split.
@@ -549,6 +576,7 @@ An autonomous periodic run — what an agent does on a schedule without user inp
 ## Links
 
 - [Slack Setup Guide](SLACK_SETUP.md)
+- [Discord Setup Guide](DISCORD_SETUP.md)
 - [Releases](https://github.com/denberek/obsidian-agent-fleet/releases)
 - [npm package](https://www.npmjs.com/package/obsidian-agent-fleet)
 - [Report Issues](https://github.com/denberek/obsidian-agent-fleet/issues)

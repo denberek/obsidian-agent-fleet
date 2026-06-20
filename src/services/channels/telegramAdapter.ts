@@ -135,6 +135,19 @@ export class TelegramAdapter implements ChannelAdapter {
     }
   }
 
+  /** Post directly to a Telegram chat id (user, group, or @channelusername). */
+  async sendToTarget(chatId: string, text: string): Promise<void> {
+    if (!chatId) return;
+    const chunks = splitText(text, 4096);
+    for (const chunk of chunks) {
+      await this.tgApi("sendMessage", {
+        chat_id: chatId,
+        text: chunk,
+        parse_mode: "Markdown",
+      });
+    }
+  }
+
   async setTyping(conversationId: string, on: boolean): Promise<void> {
     const chatId = chatIdFromConversationId(conversationId);
     if (!chatId) return;

@@ -288,11 +288,13 @@ export class AgentFleetSettingTab extends PluginSettingTab {
         dropdown
           .addOption("slack", "Slack")
           .addOption("telegram", "Telegram")
+          .addOption("discord", "Discord")
           .setValue("slack")
           .onChange((value) => {
             state.type = value;
             slackFields.setCssStyles({ display: value === "slack" ? "" : "none" });
             telegramFields.setCssStyles({ display: value === "telegram" ? "" : "none" });
+            discordFields.setCssStyles({ display: value === "discord" ? "" : "none" });
           }),
       );
 
@@ -330,6 +332,19 @@ export class AgentFleetSettingTab extends PluginSettingTab {
         });
       });
 
+    // Discord-specific fields
+    const discordFields = addForm.createDiv();
+    discordFields.setCssStyles({ display: "none" });
+    new Setting(discordFields)
+      .setName("Bot token")
+      .setDesc("From the Discord Developer Portal → your application → Bot → Reset Token. Enable the Message Content intent on the same page.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.setPlaceholder("MTA...").onChange((value) => {
+          state.botToken = value.trim();
+        });
+      });
+
     new Setting(addForm).addButton((button) =>
       button
         .setButtonText("Add credential")
@@ -342,6 +357,8 @@ export class AgentFleetSettingTab extends PluginSettingTab {
           let entry: ChannelCredentialEntry;
           if (state.type === "telegram") {
             entry = { type: "telegram", botToken: state.botToken };
+          } else if (state.type === "discord") {
+            entry = { type: "discord", botToken: state.botToken };
           } else {
             if (!state.appToken) {
               new Notice("Slack requires both bot token and app-level token.");

@@ -32,6 +32,7 @@ import type {
   WorkingMemory,
   SkillConfig,
   TaskConfig,
+  UsageRecord,
   ValidationIssue,
 } from "./types";
 
@@ -553,6 +554,7 @@ export class FleetRepository {
     let heartbeatBody = "";
     let heartbeatNotify = true;
     let heartbeatChannel = "";
+    let heartbeatChannelTarget = "";
     const heartbeatPath = normalizePath(`${folderPath}/HEARTBEAT.md`);
     const heartbeatFile = this.vault.getAbstractFileByPath(heartbeatPath);
     if (heartbeatFile instanceof TFile) {
@@ -562,6 +564,7 @@ export class FleetRepository {
       heartbeatSchedule = asString(parsed.frontmatter.schedule) ?? "";
       heartbeatNotify = asBoolean(parsed.frontmatter.notify, true);
       heartbeatChannel = asString(parsed.frontmatter.channel) ?? "";
+      heartbeatChannelTarget = asString(parsed.frontmatter.channel_target) ?? "";
       heartbeatBody = parsed.body;
     }
 
@@ -616,6 +619,7 @@ export class FleetRepository {
       heartbeatBody,
       heartbeatNotify,
       heartbeatChannel,
+      heartbeatChannelTarget,
       wikiKeeper: this.parseWikiKeeperConfig(configFm.wiki_keeper ?? agentFm.wiki_keeper),
       wikiReferences: this.parseWikiReferences(configFm.wiki_references ?? agentFm.wiki_references),
     };
@@ -1311,6 +1315,60 @@ export class FleetRepository {
     return parsed.sort((a, b) => b.started.localeCompare(a.started));
   }
 
+  // ═══════════════════════════════════════════════════════
+  //  Usage ledger (chat/channel token+cost) — _fleet/usage/YYYY-MM-DD.jsonl
+  // ═══════════════════════════════════════════════════════
+
+  private usageLedgerPath(ts: string): string {
+    return normalizePath(`${this.getSubfolder("usage")}/${ts.slice(0, 10)}.jsonl`);
+  }
+
+  /** Append one usage record to the day's JSONL ledger (one line per turn).
+   *  Uses the raw adapter so it doesn't go through the markdown pipeline. */
+  async appendUsage(record: UsageRecord): Promise<void> {
+    await this.ensureFolder(this.getSubfolder("usage"));
+    const path = this.usageLedgerPath(record.ts);
+    const line = `${JSON.stringify(record)}\n`;
+    const adapter = this.vault.adapter;
+    if (await adapter.exists(path)) {
+      await adapter.append(path, line);
+    } else {
+      await adapter.write(path, line);
+    }
+  }
+
+  /** Read all usage records on or after `sinceDate` (by ledger file date). */
+  async readUsageSince(sinceDate: Date): Promise<UsageRecord[]> {
+    const dir = this.getSubfolder("usage");
+    const adapter = this.vault.adapter;
+    if (!(await adapter.exists(dir))) return [];
+    const sinceStr = `${sinceDate.getFullYear()}-${String(sinceDate.getMonth() + 1).padStart(2, "0")}-${String(sinceDate.getDate()).padStart(2, "0")}`;
+    const out: UsageRecord[] = [];
+    const listing = await adapter.list(dir);
+    for (const filePath of listing.files) {
+      if (!filePath.endsWith(".jsonl")) continue;
+      const base = (filePath.split("/").pop() ?? "").replace(/\.jsonl$/, "");
+      // Files are named YYYY-MM-DD; lexicographic >= matches calendar >=.
+      if (base < sinceStr) continue;
+      let content: string;
+      try {
+        content = await adapter.read(filePath);
+      } catch {
+        continue;
+      }
+      for (const raw of content.split("\n")) {
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        try {
+          out.push(JSON.parse(trimmed) as UsageRecord);
+        } catch {
+          // skip a corrupt line rather than failing the whole read
+        }
+      }
+    }
+    return out;
+  }
+
   async readRunLog(file: TFile): Promise<RunLogData | null> {
     const content = await this.vault.cachedRead(file);
     const { frontmatter, body } = parseMarkdownWithFrontmatter<Record<string, unknown>>(content);
@@ -1776,6 +1834,8 @@ export class FleetRepository {
     catch_up?: boolean;
     effort?: string;
     model?: string;
+    channel?: string;
+    channelTarget?: string;
     tags?: string[];
     body?: string;
   }): Promise<void> {
@@ -1796,6 +1856,8 @@ export class FleetRepository {
     if (updates.catch_up !== undefined) frontmatter.catch_up = updates.catch_up;
     if (updates.effort !== undefined) frontmatter.effort = updates.effort || undefined;
     if (updates.model !== undefined) frontmatter.model = updates.model || undefined;
+    if (updates.channel !== undefined) frontmatter.channel = updates.channel || undefined;
+    if (updates.channelTarget !== undefined) frontmatter.channel_target = updates.channelTarget || undefined;
     if (updates.tags !== undefined) frontmatter.tags = updates.tags;
     const newBody = updates.body !== undefined ? updates.body : body;
     await this.vault.modify(file, stringifyMarkdownWithFrontmatter(frontmatter, newBody));
@@ -2024,6 +2086,7 @@ export class FleetRepository {
     schedule?: string;
     notify?: boolean;
     channel?: string;
+    channelTarget?: string;
     body?: string;
   }): Promise<void> {
     const agent = this.getAgentByName(agentName);
@@ -2041,6 +2104,7 @@ export class FleetRepository {
       if (updates.schedule !== undefined) frontmatter.schedule = updates.schedule || undefined;
       if (updates.notify !== undefined) frontmatter.notify = updates.notify;
       if (updates.channel !== undefined) frontmatter.channel = updates.channel || undefined;
+      if (updates.channelTarget !== undefined) frontmatter.channel_target = updates.channelTarget || undefined;
       const newBody = updates.body !== undefined ? updates.body : body;
       await this.vault.modify(file, stringifyMarkdownWithFrontmatter(frontmatter, newBody));
     } else {
@@ -2051,6 +2115,7 @@ export class FleetRepository {
       if (updates.schedule) frontmatter.schedule = updates.schedule;
       if (updates.notify !== undefined) frontmatter.notify = updates.notify;
       if (updates.channel) frontmatter.channel = updates.channel;
+      if (updates.channelTarget) frontmatter.channel_target = updates.channelTarget;
       const body = updates.body ?? "";
       await this.vault.create(
         heartbeatPath,
@@ -2257,6 +2322,7 @@ export class FleetRepository {
       heartbeatBody: "",
       heartbeatNotify: true,
       heartbeatChannel: "",
+      heartbeatChannelTarget: "",
     };
   }
 
@@ -2319,6 +2385,8 @@ export class FleetRepository {
       catchUp: asBoolean(frontmatter.catch_up, this.settings.catchUpMissedTasks),
       effort: asString(frontmatter.effort),
       model: asString(frontmatter.model),
+      channel: asString(frontmatter.channel),
+      channelTarget: asString(frontmatter.channel_target),
       tags: asStringArray(frontmatter.tags),
       body,
     };
@@ -2334,7 +2402,7 @@ export class FleetRepository {
     }
 
     const rawType = asString(frontmatter.type);
-    const validTypes: readonly string[] = ["slack", "telegram"];
+    const validTypes: readonly string[] = ["slack", "telegram", "discord"];
     if (!rawType || !validTypes.includes(rawType)) {
       this.setIssue(
         path,

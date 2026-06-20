@@ -2,7 +2,8 @@ import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } fro
 import { IconPickerModal } from "../modals/iconPickerModal";
 import { VIEW_TYPE_DASHBOARD } from "../constants";
 import type AgentFleetPlugin from "../main";
-import type { AgentConfig, AgentHealth, ChannelConfig, McpServer, McpTool, RunLogData, SkillConfig, TaskConfig } from "../types";
+import type { AgentConfig, AgentHealth, ChannelConfig, McpServer, McpTool, RunLogData, SkillConfig, TaskConfig, UsageRecord } from "../types";
+import { estimateCostFromBreakdown, estimateCostFromTotal } from "../utils/pricing";
 import { truncate, slugify, parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "../utils/markdown";
 import { splitLines } from "../utils/platform";
 import { createIcon } from "../utils/icons";
@@ -499,8 +500,9 @@ export class FleetDashboardView extends ItemView {
     this.renderStatCard(grid, "Runs Today", String(todayRuns.length), "", "activity",
       `${passed} passed \u00B7 ${failed} failed \u00B7 ${status.running} running`);
 
-    const totalTokens = todayRuns.reduce((sum, r) => sum + (r.tokensUsed ?? 0), 0);
-    const totalCost = todayRuns.reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
+    // Comprehensive: run logs (tasks/heartbeats/reflections) + chat/channel usage.
+    const todayUsage = this.plugin.runtime.getUsageRecords().filter((u) => this.runToLocalDate(u.ts) === todayStr);
+    const { tokens: totalTokens, cost: totalCost } = this.combinedTotals(todayRuns, todayUsage);
     const costSuffix = totalCost > 0 ? ` \u00B7 $${totalCost.toFixed(2)}` : "";
     this.renderStatCard(grid, "Tokens Used", formatTokenCount(totalTokens), "", "zap", `today${costSuffix}`);
 
@@ -567,6 +569,35 @@ export class FleetDashboardView extends ItemView {
     return this.toLocalDateStr(new Date(started));
   }
 
+  /** Cost of a run log: the CLI-reported dollars, or an estimate from total
+   *  tokens when the CLI reported none (e.g. Codex). */
+  private runCost(r: RunLogData): number {
+    return r.costUsd ?? estimateCostFromTotal(r.model, r.tokensUsed ?? 0);
+  }
+
+  /** Cost of a chat/channel usage record: CLI-reported, or estimated from the
+   *  per-type token breakdown when absent. */
+  private usageCost(u: UsageRecord): number {
+    return u.costUsd ?? estimateCostFromBreakdown(u.model, {
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      cacheReadTokens: u.cacheReadTokens,
+      cacheCreateTokens: u.cacheCreateTokens,
+    });
+  }
+
+  /** Comprehensive token + cost totals across run logs AND chat/channel usage
+   *  records, with the pricing fallback applied per source. */
+  private combinedTotals(runs: RunLogData[], usage: UsageRecord[]): { tokens: number; cost: number } {
+    const tokens =
+      runs.reduce((s, r) => s + (r.tokensUsed ?? 0), 0) +
+      usage.reduce((s, u) => s + u.totalTokens, 0);
+    const cost =
+      runs.reduce((s, r) => s + this.runCost(r), 0) +
+      usage.reduce((s, u) => s + this.usageCost(u), 0);
+    return { tokens, cost };
+  }
+
   private buildChartData(runs: RunLogData[], days: number): BarChartDay[] {
     const result: BarChartDay[] = [];
     const now = new Date();
@@ -616,7 +647,11 @@ export class FleetDashboardView extends ItemView {
       : undefined;
     const taskLabel = runningTask
       ? ` → ${runningTask.taskId}`
-      : state.status === "running" ? " → Heartbeat" : "";
+      : state.currentTaskId?.startsWith("reflection-")
+        ? " → Reflection"
+        : state.currentTaskId?.startsWith("heartbeat-")
+          ? " → Heartbeat"
+          : state.status === "running" ? " → Heartbeat" : "";
 
     const header = card.createDiv({ cls: "af-streaming-card-header" });
     header.createSpan({ cls: "af-dot pulse", attr: { style: "background: var(--af-yellow)" } });
@@ -626,14 +661,20 @@ export class FleetDashboardView extends ItemView {
     }
 
     const output = card.createDiv({ cls: "af-streaming-output" });
-    const buffer = this.plugin.runtime.getRunOutputBuffer(agentName);
-    const lines = splitLines(buffer).slice(-4);
-    output.setText(lines.join("\n"));
+    // Reflection reads a lot of context before emitting its memory block, so the
+    // buffer is empty for most of the run — show a placeholder instead of a blank
+    // card so it doesn't look stalled.
+    const placeholder = state.currentTaskId?.startsWith("reflection-")
+      ? "Consolidating memory…"
+      : "Working…";
+    const renderBuffer = (buf: string) => {
+      const lines = splitLines(buf).filter((l) => l.trim().length > 0).slice(-4);
+      output.setText(lines.length > 0 ? lines.join("\n") : placeholder);
+    };
+    renderBuffer(this.plugin.runtime.getRunOutputBuffer(agentName));
 
     const unsub = this.plugin.runtime.onRunOutput(agentName, () => {
-      const updated = this.plugin.runtime.getRunOutputBuffer(agentName);
-      const updatedLines = splitLines(updated).slice(-4);
-      output.setText(updatedLines.join("\n"));
+      renderBuffer(this.plugin.runtime.getRunOutputBuffer(agentName));
       output.scrollTop = output.scrollHeight;
     });
     this.streamingUnsubscribes.push(unsub);
@@ -1058,8 +1099,9 @@ export class FleetDashboardView extends ItemView {
     const successRuns = runs.filter((r) => r.status === "success").length;
     const successRate = totalRuns > 0 ? Math.round((successRuns / totalRuns) * 100) : 0;
     const avgTime = totalRuns > 0 ? Math.round(runs.reduce((s, r) => s + r.durationSeconds, 0) / totalRuns) : 0;
-    const totalTokens = runs.reduce((s, r) => s + (r.tokensUsed ?? 0), 0);
-    const totalCostAgent = runs.reduce((s, r) => s + (r.costUsd ?? 0), 0);
+    // Comprehensive: this agent's run logs + its chat/channel usage over the window.
+    const agentUsage = this.plugin.runtime.getUsageRecords().filter((u) => u.agent === agent.name);
+    const { tokens: totalTokens, cost: totalCostAgent } = this.combinedTotals(runs, agentUsage);
     const costSuffixAgent = totalCostAgent > 0 ? ` \u00B7 $${totalCostAgent.toFixed(2)}` : "";
 
     this.renderStatCard(statsRow, "Total Runs", String(totalRuns), "", "activity", "all time");
@@ -2121,6 +2163,7 @@ export class FleetDashboardView extends ItemView {
     const typeSelect = typeRow.createEl("select", { cls: "af-form-select" });
     typeSelect.createEl("option", { text: "slack", attr: { value: "slack" } });
     typeSelect.createEl("option", { text: "telegram", attr: { value: "telegram" } });
+    typeSelect.createEl("option", { text: "discord", attr: { value: "discord" } });
     typeSelect.addEventListener("change", () => { state.type = typeSelect.value; });
 
     // Credential dropdown
@@ -2205,7 +2248,7 @@ export class FleetDashboardView extends ItemView {
 
     const usersLabel = accessSection.createDiv({ cls: "af-form-label" });
     usersLabel.setText("Allowed users");
-    this.addTooltip(usersLabel, "Slack user IDs (U...), one per line. Only listed users can reach the bot.");
+    this.addTooltip(usersLabel, "User IDs, one per line — Slack (U...), Telegram (numeric), or Discord (numeric snowflakes). Only listed users can reach the bot.");
     const usersTextarea = accessSection.createEl("textarea", {
       cls: "af-create-prompt-textarea",
       attr: { placeholder: "U0AQW6P37N1\nU0BXYZ12345", rows: "4" },
@@ -2389,7 +2432,7 @@ export class FleetDashboardView extends ItemView {
     const typeRow = detailsSection.createDiv({ cls: "af-form-row" });
     typeRow.createDiv({ cls: "af-form-label", text: "Type" });
     const typeSelect = typeRow.createEl("select", { cls: "af-form-select" });
-    for (const t of ["slack", "telegram"] as const) {
+    for (const t of ["slack", "telegram", "discord"] as const) {
       const opt = typeSelect.createEl("option", { text: t, attr: { value: t } });
       if (t === channel.type) opt.selected = true;
     }
@@ -3573,6 +3616,7 @@ export class FleetDashboardView extends ItemView {
       heartbeatBody: "",
       heartbeatNotify: true,
       heartbeatChannel: "",
+      heartbeatChannelTarget: "",
       autoCompactThreshold: 85,
       wikiReferences: [] as string[],
     };
@@ -3838,7 +3882,17 @@ export class FleetDashboardView extends ItemView {
       for (const ch of createSnapshot.channels) {
         hbChannelSelect.createEl("option", { text: ch.name, attr: { value: ch.name } });
       }
-      hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; });
+      hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; syncHbTarget(); });
+
+      const hbTargetRow = hbBody.createDiv({ cls: "af-form-row" });
+      const hbTargetLabel = hbTargetRow.createDiv({ cls: "af-form-label" });
+      hbTargetLabel.setText("Target ID");
+      this.addTooltip(hbTargetLabel, "Specific channel id to post to (Discord/Slack channel id, Telegram chat id). Empty = DM the channel’s first allowed user.");
+      const hbTargetInput = hbTargetRow.createEl("input", { cls: "af-form-input", attr: { type: "text", placeholder: "Channel/chat id — empty = DM" } });
+      hbTargetInput.value = state.heartbeatChannelTarget;
+      hbTargetInput.addEventListener("input", () => { state.heartbeatChannelTarget = hbTargetInput.value.trim(); });
+      const syncHbTarget = () => { hbTargetRow.setCssStyles({ display: state.heartbeatChannel ? "" : "none" }); };
+      syncHbTarget();
 
       const hbInstructionLabel = hbBody.createDiv({ cls: "af-form-label" });
       hbInstructionLabel.setCssStyles({ width: "auto" });
@@ -4010,6 +4064,7 @@ export class FleetDashboardView extends ItemView {
             schedule: state.heartbeatSchedule.trim(),
             notify: state.heartbeatNotify,
             channel: state.heartbeatChannel,
+            channelTarget: state.heartbeatChannel ? state.heartbeatChannelTarget : "",
             body: state.heartbeatBody.trim(),
           });
         }
@@ -4238,6 +4293,7 @@ export class FleetDashboardView extends ItemView {
       heartbeatBody: agent.heartbeatBody,
       heartbeatNotify: agent.heartbeatNotify,
       heartbeatChannel: agent.heartbeatChannel,
+      heartbeatChannelTarget: agent.heartbeatChannelTarget,
       autoCompactThreshold: agent.autoCompactThreshold ?? 85,
       wikiReferences: (agent.wikiReferences ?? []).map((r) => r.agent),
     };
@@ -4495,7 +4551,17 @@ export class FleetDashboardView extends ItemView {
         const opt = hbChannelSelect.createEl("option", { text: ch.name, attr: { value: ch.name } });
         if (ch.name === state.heartbeatChannel) opt.selected = true;
       }
-      hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; });
+      hbChannelSelect.addEventListener("change", () => { state.heartbeatChannel = hbChannelSelect.value; syncHbTarget(); });
+
+      const hbTargetRow = hbBody.createDiv({ cls: "af-form-row" });
+      const hbTargetLabel = hbTargetRow.createDiv({ cls: "af-form-label" });
+      hbTargetLabel.setText("Target ID");
+      this.addTooltip(hbTargetLabel, "Specific channel id to post to (Discord/Slack channel id, Telegram chat id). Empty = DM the channel’s first allowed user.");
+      const hbTargetInput = hbTargetRow.createEl("input", { cls: "af-form-input", attr: { type: "text", placeholder: "Channel/chat id — empty = DM" } });
+      hbTargetInput.value = state.heartbeatChannelTarget;
+      hbTargetInput.addEventListener("input", () => { state.heartbeatChannelTarget = hbTargetInput.value.trim(); });
+      const syncHbTarget = () => { hbTargetRow.setCssStyles({ display: state.heartbeatChannel ? "" : "none" }); };
+      syncHbTarget();
 
       const hbInstructionLabel = hbBody.createDiv({ cls: "af-form-label" });
       hbInstructionLabel.setCssStyles({ width: "auto" });
@@ -4703,6 +4769,7 @@ export class FleetDashboardView extends ItemView {
             schedule: state.heartbeatSchedule.trim(),
             notify: state.heartbeatNotify,
             channel: state.heartbeatChannel,
+            channelTarget: state.heartbeatChannel ? state.heartbeatChannelTarget : "",
             body: state.heartbeatBody.trim(),
           });
         }
@@ -4715,6 +4782,50 @@ export class FleetDashboardView extends ItemView {
         new Notice(`Failed to update agent: ${msg}`);
       }
     };
+  }
+
+  /**
+   * Render the optional "post results to a channel" controls shared by the
+   * create and edit task forms: a channel picker plus a transport-native target
+   * id (Discord/Slack channel id, Telegram chat id). Empty target = broadcast/DM.
+   */
+  private renderTaskChannelDelivery(
+    section: HTMLElement,
+    channels: ChannelConfig[],
+    state: { channel: string; channelTarget: string },
+  ): void {
+    const channelRow = section.createDiv({ cls: "af-form-row" });
+    const channelLabel = channelRow.createDiv({ cls: "af-form-label", text: "Channel" });
+    const channelSelect = channelRow.createEl("select", { cls: "af-form-select" });
+    channelSelect.createEl("option", { text: "— none (run log only) —", attr: { value: "" } });
+    for (const ch of channels) {
+      const opt = channelSelect.createEl("option", { text: ch.name, attr: { value: ch.name } });
+      if (ch.name === state.channel) opt.selected = true;
+    }
+    this.addTooltip(
+      channelLabel,
+      "Post this task’s full output to a channel when it finishes. Leave as none to only write the run log (the default batched behavior).",
+    );
+
+    const targetRow = section.createDiv({ cls: "af-form-row" });
+    const targetLabel = targetRow.createDiv({ cls: "af-form-label", text: "Target ID" });
+    const targetInput = targetRow.createEl("input", {
+      cls: "af-form-input",
+      attr: { type: "text", placeholder: "Discord/Slack channel ID or Telegram chat ID — empty = DM you" },
+    });
+    targetInput.value = state.channelTarget;
+    targetInput.addEventListener("input", () => { state.channelTarget = targetInput.value.trim(); });
+    this.addTooltip(
+      targetLabel,
+      "Where in the channel to post. For Discord, enable Developer Mode and right-click the channel → Copy Channel ID. Leave empty to DM the first allowed user instead.",
+    );
+
+    const syncVisibility = () => { targetRow.setCssStyles({ display: state.channel ? "" : "none" }); };
+    syncVisibility();
+    channelSelect.addEventListener("change", () => {
+      state.channel = channelSelect.value;
+      syncVisibility();
+    });
   }
 
   // ═══════════════════════════════════════════════════════
@@ -4754,6 +4865,8 @@ export class FleetDashboardView extends ItemView {
       catchUp: true,
       effort: "",
       model: "",
+      channel: "",
+      channelTarget: "",
     };
 
     const form = page.createDiv({ cls: "af-create-form" });
@@ -4926,6 +5039,8 @@ export class FleetDashboardView extends ItemView {
       if (val === state.effort) opt.selected = true;
     }
     taskEffortSelect.addEventListener("change", () => { state.effort = taskEffortSelect.value; });
+    // Channel delivery (optional) — post this task's output to a channel on completion.
+    this.renderTaskChannelDelivery(execSection, snapshot.channels, state);
     this.addTooltip(
       taskEffortLabel,
       "Overrides the agent\u2019s effort level for this task. Higher effort = more thinking tokens spent.",
@@ -4965,6 +5080,8 @@ export class FleetDashboardView extends ItemView {
         catch_up: state.catchUp,
         effort: state.effort || undefined,
         model: state.model || undefined,
+        channel: state.channel || undefined,
+        channel_target: state.channel && state.channelTarget ? state.channelTarget : undefined,
         tags: parseTags(state.tags),
       };
 
@@ -5055,6 +5172,8 @@ export class FleetDashboardView extends ItemView {
       catchUp: task.catchUp,
       effort: task.effort ?? "",
       model: task.model ?? "",
+      channel: task.channel ?? "",
+      channelTarget: task.channelTarget ?? "",
       tags: task.tags.join(", "),
       body: task.body,
     };
@@ -5243,6 +5362,8 @@ export class FleetDashboardView extends ItemView {
     };
     renderTaskModelPicker(state.agent);
     agentSelect.addEventListener("change", () => renderTaskModelPicker(agentSelect.value));
+    // Channel delivery (optional) — post this task's output to a channel on completion.
+    this.renderTaskChannelDelivery(execSection, snapshot.channels, state);
     this.addTooltip(
       modelLabelEdit,
       "Override the agent\u2019s model for this task only. Useful for routing simple runs to haiku while the agent stays on opus for heavier work.",
@@ -5292,6 +5413,8 @@ export class FleetDashboardView extends ItemView {
           catch_up: state.catchUp,
           effort: state.effort || undefined,
           model: state.model || "",
+          channel: state.channel || "",
+          channelTarget: state.channel && state.channelTarget ? state.channelTarget : "",
           tags: parseTags(state.tags),
           body: state.body.trim(),
         });
