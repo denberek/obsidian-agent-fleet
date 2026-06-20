@@ -1,6 +1,6 @@
 # Agent Fleet for Obsidian
 
-**Turn Obsidian into an AI-powered command center. Create autonomous agents on Claude Code or OpenAI Codex, schedule tasks, chat in real-time, connect via Slack or Telegram, and hook into any MCP service — all from your vault.**
+**Turn Obsidian into an AI-powered command center. Create autonomous agents on Claude Code or OpenAI Codex, schedule tasks, chat in real-time, connect via Slack, Telegram, or Discord, and hook into any MCP service — all from your vault.**
 
 ![Agent Fleet Dashboard](screenshot.png)
 
@@ -22,19 +22,19 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 📊 **Live chat stats** — Compact terminal-style strip under the composer shows the model and a context-usage bar so you always know where you stand on context.
 
-📡 **Slack & Telegram** — Chat with your agents from Slack or Telegram. Multi-agent routing via `@agent-name` prefix or interactive buttons. Slack Assistants API with native "is thinking..." indicator. Telegram with inline keyboard agent picker and typing dots. Session persistence across restarts.
+📡 **Slack, Telegram & Discord** — Chat with your agents from Slack, Telegram, or Discord. Multi-agent routing via `@agent-name` prefix or interactive buttons, native typing indicators, image attachments, and session persistence across restarts. Any task or heartbeat can also post its full output to a specific channel.
 
-💓 **Heartbeat** — Autonomous periodic agent runs. Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted to Slack.
+💓 **Heartbeat** — Autonomous periodic agent runs. Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted to a Slack, Telegram, or Discord channel (broadcast, DM, or a specific channel/chat by id).
 
-📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand. Per-task model override lets you route a simple nightly summary to Haiku while keeping the agent on Opus.
+📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand. Per-task model override lets you route a simple nightly summary to Haiku while keeping the agent on Opus, and per-task channel delivery posts the result straight to Slack/Telegram/Discord.
 
 🎛️ **Model picker** — Choose between aliases (`opus` / `sonnet` / `haiku` / `opusplan` — backend-agnostic), pinned IDs, or Bedrock/Vertex/Foundry formats. One place to configure: settings default, per-agent, or per-task override. Runs log both the requested alias and the concrete resolved model.
 
 🔌 **MCP Integration** — Register an MCP server **once** and it's available to **any** agent on **either** adapter (Claude Code or Codex). Servers live in a fleet-owned registry (`_fleet/mcp/`) and are projected into each run; your native `~/.claude.json` and `~/.codex/config.toml` are never modified. One-click OAuth 2.1 (or a static bearer token), stored in your OS keychain and projected to both backends.
 
-🧠 **Agent Memory** — A two-tier, self-curating memory (curated working set + append-only ground truth) that agents write via a `remember` tool or `[REMEMBER]` tags, on both Claude and Codex. An optional nightly **reflection** consolidates it and can propose new skills from recurring patterns (approval-gated).
+🧠 **Agent Memory** — A two-tier, self-curating memory (curated working set + append-only ground truth) that agents write via a `remember` tool or `[REMEMBER]` tags, on both Claude and Codex. An optional nightly **reflection** consolidates it and can propose new skills from recurring patterns (approval-gated) — and now runs visibly, showing live in the dashboard and writing a run log with its full output.
 
-📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, streaming output from active agents, and focused run-detail panels that lead with the final result and hide the full reasoning transcript behind a toggle.
+📊 **Dashboard** — Overview with run charts, success rates, token/cost tracking, activity timeline, fleet status, streaming output from active agents, and focused run-detail panels that lead with the final result and hide the full reasoning transcript behind a toggle. Token and cost totals span **every** run — tasks, heartbeats, chat, and channel turns — via a unified usage ledger.
 
 ---
 
@@ -186,7 +186,8 @@ A heartbeat gives an agent autonomous behavior — what it does when no one is a
 enabled: true
 schedule: "0 */6 * * *"     # every 6 hours
 notify: true                 # Obsidian notice on completion
-channel: my-slack            # post results to Slack (optional)
+channel: my-slack            # post results to a channel (optional)
+channel_target: C0123456789  # a specific Slack/Discord channel id or Telegram chat id (optional)
 ---
 
 Check all monitored endpoints for availability and response time.
@@ -197,7 +198,7 @@ If everything is healthy, respond with a one-line "all clear".
 **Key behaviors:**
 - The **"Run Now" button** on any agent with a heartbeat uses the heartbeat instruction (no more generic fallback)
 - **Agent memory integration** — heartbeats can use `[REMEMBER]` tags to track trends across runs
-- **Slack delivery** — results automatically posted to a configured Slack channel
+- **Channel delivery** — results automatically posted to a configured Slack, Telegram, or Discord channel; set `channel_target` to route to one specific channel/chat rather than the channel's default
 - **Dashboard** — heartbeat status shown on the agent's Overview tab with enable/disable toggle, schedule, and next run time
 
 ---
@@ -304,6 +305,7 @@ The chat panel is a first-class Obsidian view — dock it in the sidebar, center
 **Features:**
 - **Agent Switcher** — dropdown to switch between agents instantly. Each agent has its own conversation.
 - **Session Persistence** — conversations survive Obsidian restarts via the backend's resume (Claude `--resume` / Codex `exec resume`)
+- **Enter to send** — Enter sends your message, Shift+Enter inserts a newline (IME-safe, so composing in other languages won't fire early).
 - **Bidirectional Streaming** — send follow-up messages while the agent is working. Steer it mid-task.
 - **Document Attachment** — click + to attach the active document. Agent gets the full content; you see a compact pill.
 - **Image Paste & Drop** — paste from clipboard or drag images into chat. Saved to vault, passed to the agent.
@@ -333,6 +335,7 @@ A kanban view for managing agent tasks with five columns:
 - **Cron Scheduling** — human-friendly picker (daily, weekdays, weekly, monthly, custom)
 - **Catch Up If Missed** — auto-run overdue tasks when Obsidian opens
 - **Run Now** — execute any task immediately regardless of schedule
+- **Channel delivery** — post a task's full output to a channel via `channel:` (broadcast or DM) and optionally `channel_target:` (a specific Slack/Discord channel id or Telegram chat id); works on every transport
 - **Drag & Drop** — move tasks between backlog and scheduled columns
 
 ---
@@ -444,7 +447,7 @@ A two-tier, self-curating memory that works on **task, heartbeat, and chat** run
 
 Captures land in `working.md` immediately, so the next run/turn sees them. Memory is agent-scoped (shared across all conversations, including channels).
 
-**Reflection ("dreaming")** — enable `reflection_enabled` and a nightly run (`reflection_schedule`, default `0 3 * * *`) consolidates memory from the raw log: dedups, resolves contradictions, summarizes from ground truth to fit the budget, and keeps pinned preferences. With `reflection_propose_skills`, recurring friction becomes an approval-gated **skill proposal** in the Inbox. A failed reflection never wipes memory. Trigger manually with **Reflect now** on the agent.
+**Reflection ("dreaming")** — enable `reflection_enabled` and a nightly run (`reflection_schedule`, default `0 3 * * *`) consolidates memory from the raw log: dedups, resolves contradictions, summarizes from ground truth to fit the budget, and keeps pinned preferences. With `reflection_propose_skills`, recurring friction becomes an approval-gated **skill proposal** in the Inbox. A failed reflection never wipes memory. Trigger manually with **Reflect now** on the agent. Reflection runs **visibly** — it shows live in the dashboard's Active Agents card and writes a run log to Recent Activity with its full output, so you can see exactly what it consolidated.
 
 > Legacy single-file memory (`_fleet/memory/<agent>.md`) is migrated automatically. `memory_max_entries` is superseded by `memory_token_budget`.
 
@@ -524,7 +527,7 @@ _fleet/
 ├── agents/           Agent folders (agent.md, config.md, HEARTBEAT.md, etc.)
 ├── skills/           Shared skill folders (skill.md, tools.md, etc.)
 ├── tasks/            Task files with frontmatter
-├── channels/         Channel bindings (Slack, Telegram)
+├── channels/         Channel bindings (Slack, Telegram, Discord)
 ├── mcp/              Registered MCP servers (one markdown file each)
 ├── runs/             Execution logs by date
 │   └── YYYY-MM-DD/
@@ -562,14 +565,14 @@ Yes. Each agent has persistent chat sessions that survive Obsidian restarts via 
 **Q: Does the Slack bot work when Obsidian is closed?**
 No. The bot runs inside Obsidian via Socket Mode — when Obsidian is closed, the bot goes offline. Slack buffers messages briefly during short disconnects.
 
-**Q: Can I use multiple agents in Slack or Telegram?**
-Yes. Type `@agent-name: message` to switch agents, or use `/agents` to get interactive buttons. Each agent maintains its own session. Works in both Slack and Telegram.
+**Q: Can I use multiple agents in Slack, Telegram, or Discord?**
+Yes. Type `@agent-name: message` to switch agents, or use `/agents` to get interactive buttons. Each agent maintains its own session. Works in all three transports.
 
 **Q: Which is easier to set up — Slack or Telegram?**
 Telegram. Create a bot via @BotFather (30 seconds), paste the token, create a channel. Slack requires creating an app with Socket Mode, scopes, events, and reinstalls after scope changes.
 
 **Q: What is a heartbeat?**
-An autonomous periodic run — what an agent does on a schedule without user input. Configured via `HEARTBEAT.md` in the agent's folder. Results can be posted to Slack or Telegram automatically.
+An autonomous periodic run — what an agent does on a schedule without user input. Configured via `HEARTBEAT.md` in the agent's folder. Results can be posted to Slack, Telegram, or Discord automatically — to the channel default or a specific channel/chat via `channel_target`.
 
 ---
 
