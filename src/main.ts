@@ -85,6 +85,16 @@ export default class AgentFleetPlugin extends Plugin {
       await this.saveData(this.settings);
     }
 
+    // One-time repair of historical usage-ledger cost rows (cumulative cost was
+    // recorded as per-turn cost before the per-turn-delta fix). Guarded by a
+    // marker file; no-op after the first run and fail-soft.
+    const costMigration = await this.repository.migrateUsageLedgerCosts();
+    if (costMigration && costMigration.changed > 0) {
+      console.log(
+        `Agent Fleet: repaired ${costMigration.changed} usage-ledger cost rows across ${costMigration.files} day(s).`,
+      );
+    }
+
     await this.runtime.initialize();
     await this.verifyClaudeCli(false);
     // Codex path resolution is conditional — only agents with `adapter: codex`

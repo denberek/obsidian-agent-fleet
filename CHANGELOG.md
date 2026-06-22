@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.0 — 2026-06-21
+
+Accurate cost tracking, live follow-ups in channels, and Discord docs.
+
+**Accurate per-turn cost tracking (fix)**
+- Chat and channel cost is now recorded per turn. Previously each turn stored Claude's *cumulative* `total_cost_usd` as if it were the turn's cost, so the dashboard summed running totals and inflated per-agent cost super-linearly (a long session could read up to ~7× its real cost). Token counts were always accurate; only chat/channel cost was affected (one-shot task/heartbeat run costs were already correct).
+- A one-time, marker-guarded migration repairs the historical `_fleet/usage/*.jsonl` rows on next load (fail-soft — leaves the ledger untouched on any error).
+
+**Live follow-ups in channels**
+- A message sent to an agent on Discord/Slack/Telegram *while it is still working* is now folded into the running turn (Claude: live stdin; Codex: queued follow-up turn) instead of waiting for a fresh turn — matching the in-app chat. Each turn, including injected follow-ups, gets its own reply; `[REMEMBER]` blocks are stripped from channel replies.
+
+**Docs**
+- The Fleet Orchestrator agent and the `agent-fleet-system` skill now document Discord channel support, setup, and capabilities.
+
 ## 0.14.0 — 2026-06-19
 
 New features and fixes across channels, memory, and usage tracking.

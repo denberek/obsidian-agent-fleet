@@ -323,6 +323,17 @@ export class ChatSession {
   /** Sink for per-turn token/cost records (the usage ledger). Set by the plugin. */
   private usageRecorder?: (record: UsageRecord) => void;
 
+  /**
+   * Running baseline for converting Claude's CUMULATIVE `total_cost_usd` (it
+   * accumulates across every turn of a CLI process) into a per-turn delta. Each
+   * result event reports the session-so-far cost, so the turn's own cost is
+   * `current - lastResultCostUsd`. Reset to 0 on every fresh process spawn — a
+   * `--resume` starts a new process whose cost counter restarts at 0. WITHOUT
+   * this, the cumulative figure was recorded as the per-turn cost and the
+   * dashboard summed those running totals, inflating cost super-linearly.
+   */
+  private lastResultCostUsd = 0;
+
   /** Wire the per-turn usage ledger sink. Called once after construction by the
    *  plugin for both chat-panel and channel sessions. */
   setUsageRecorder(fn: (record: UsageRecord) => void): void {
@@ -727,6 +738,10 @@ export class ChatSession {
     this.process = proc;
     this.isProcessAlive = true;
     this.stdoutBuffer = "";
+    // Fresh process → fresh cumulative cost counter. Rebase the per-turn delta
+    // so the first turn of this process is measured from 0 (a `--resume` spawn
+    // does not re-bill the resumed history's prior cost).
+    this.lastResultCostUsd = 0;
 
     // Create bound handlers so we can remove them later (avoids listener leaks
     // when the process is killed and a new one is spawned).
@@ -999,7 +1014,14 @@ export class ChatSession {
     // Result event — pulls contextWindow, maxOutputTokens, and cumulative
     // cost. Fires once per turn.
     if (event.type === "result") {
-      const costDelta = typeof event.total_cost_usd === "number" ? event.total_cost_usd : 0;
+      // `total_cost_usd` is CUMULATIVE across the process's turns, not this
+      // turn's cost. Convert to a per-turn delta against the running baseline.
+      // `Math.max(0, …)` guards a non-monotonic blip; the baseline is rebased to
+      // 0 on each fresh spawn (ensureProcess), so a resumed process measures
+      // from 0.
+      const cumulativeCost = typeof event.total_cost_usd === "number" ? event.total_cost_usd : 0;
+      const costDelta = Math.max(0, cumulativeCost - this.lastResultCostUsd);
+      this.lastResultCostUsd = cumulativeCost;
       if (costDelta > 0) {
         this.stats.costTotalUsd += costDelta;
         dirty = true;

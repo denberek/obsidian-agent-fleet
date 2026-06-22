@@ -55,11 +55,13 @@ These are inherited by all agent processes. Never store tokens in vault files.
 |---|---|---|
 | slack | Socket Mode WebSocket + Assistants API | Supported |
 | telegram | Long-poll via HTTPS (getUpdates) | Supported |
-| discord | Gateway WebSocket | Coming soon |
+| discord | Gateway WebSocket + REST | Supported (since 0.14.0) |
 
 **Slack requirements:** Slack app with Socket Mode enabled, bot token (xoxb-) + app-level token (xapp-), scopes: chat:write, im:history, im:read, im:write, app_mentions:read, assistant:write, commands.
 
 **Telegram requirements:** Bot created via @BotFather, bot token. Optional: disable privacy mode for group access, enable threaded mode for forum topics.
+
+**Discord requirements:** Bot created at the Discord Developer Portal with the **Message Content** privileged intent enabled (without it the bot receives empty message text), bot token. Invite with scopes `bot` + `applications.commands` and permissions Send Messages + Read Message History — or just DM the bot. Supports `@agent-name` routing, the `/agents` slash picker, and image attachments; the allowlist is enforced on the authenticated sender's numeric Discord user id.
 
 **Channel constraints:**
 - Agents with `approval_required` cannot be bound to channels (would deadlock)

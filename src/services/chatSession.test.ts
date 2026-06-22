@@ -368,18 +368,45 @@ describe("ChatSession.updateStatsFromEvent", () => {
     expect(rl?.isUsingOverage).toBe(false);
   });
 
-  it("accumulates cost across result events and pulls contextWindow", () => {
+  it("treats total_cost_usd as cumulative and accumulates per-turn deltas", () => {
+    // Claude's `total_cost_usd` is the running session total, not the turn's
+    // cost. costTotalUsd must track per-turn DELTAS, so two results reporting
+    // cumulative 0.01 then 0.03 sum to 0.03 (the final cumulative), not 0.04.
     const session = new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
     fire(session, {
       type: "result",
       total_cost_usd: 0.01,
       modelUsage: { "claude-opus-4-7": { contextWindow: 200000, maxOutputTokens: 64000 } },
     });
-    fire(session, { type: "result", total_cost_usd: 0.02 });
+    fire(session, { type: "result", total_cost_usd: 0.03 });
     const stats = session.getStats();
     expect(stats.costTotalUsd).toBeCloseTo(0.03, 8);
     expect(stats.contextWindow).toBe(200000);
     expect(stats.turnCount).toBe(2);
+  });
+
+  it("records per-turn cost deltas (not the cumulative total) to the usage ledger", () => {
+    const session = new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
+    const recorded: Array<{ costUsd?: number; totalTokens: number }> = [];
+    session.setUsageRecorder((r) => recorded.push({ costUsd: r.costUsd, totalTokens: r.totalTokens }));
+
+    fire(session, {
+      type: "result",
+      total_cost_usd: 0.01,
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 800, cache_creation_input_tokens: 0 },
+    });
+    fire(session, {
+      type: "result",
+      total_cost_usd: 0.05, // cumulative → this turn cost 0.04
+      usage: { input_tokens: 10, output_tokens: 200, cache_read_input_tokens: 1200, cache_creation_input_tokens: 0 },
+    });
+
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0]!.costUsd).toBeCloseTo(0.01, 8);
+    expect(recorded[1]!.costUsd).toBeCloseTo(0.04, 8); // delta, not 0.05
+    // Tokens stay per-turn (each turn's own usage), unaffected by the cost fix.
+    expect(recorded[0]!.totalTokens).toBe(950);
+    expect(recorded[1]!.totalTokens).toBe(1410);
   });
 
   it("notifies listeners on change", () => {

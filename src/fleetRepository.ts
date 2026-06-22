@@ -16,6 +16,7 @@ import {
   serializeWorkingMemory,
 } from "./utils/memoryFormat";
 import { splitLines } from "./utils/platform";
+import { deltaizeCumulativeCosts } from "./utils/usageMigration";
 import type {
   AgentConfig,
   ChannelConfig,
@@ -1367,6 +1368,65 @@ export class FleetRepository {
       }
     }
     return out;
+  }
+
+  /**
+   * One-time repair of historical usage rows that stored Claude's CUMULATIVE
+   * `total_cost_usd` as a per-turn cost (see `deltaizeCumulativeCosts`). Reads
+   * every `*.jsonl` ledger file, reconstructs per-turn costs per agent across
+   * the whole ledger (a process can't be assumed to stay within one day), and
+   * rewrites each file in place. Guarded by a marker file so it runs at most
+   * once; idempotent and fail-soft (any error leaves the ledger untouched).
+   */
+  async migrateUsageLedgerCosts(): Promise<{ files: number; rows: number; changed: number } | null> {
+    const dir = this.getSubfolder("usage");
+    const adapter = this.vault.adapter;
+    if (!(await adapter.exists(dir))) return null;
+    const marker = normalizePath(`${dir}/.cost-delta-v1`);
+    if (await adapter.exists(marker)) return null;
+
+    try {
+      const listing = await adapter.list(dir);
+      const files: Array<{ path: string; records: UsageRecord[] }> = [];
+      const all: UsageRecord[] = [];
+      for (const filePath of listing.files) {
+        if (!filePath.endsWith(".jsonl")) continue;
+        let content: string;
+        try {
+          content = await adapter.read(filePath);
+        } catch {
+          continue;
+        }
+        const records: UsageRecord[] = [];
+        for (const raw of content.split("\n")) {
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          try {
+            records.push(JSON.parse(trimmed) as UsageRecord);
+          } catch {
+            // skip a corrupt line rather than failing the whole migration
+          }
+        }
+        files.push({ path: filePath, records });
+        all.push(...records);
+      }
+
+      // Mutates `costUsd` on the same objects held in `files[].records`.
+      const changed = deltaizeCumulativeCosts(all);
+
+      if (changed > 0) {
+        for (const { path, records } of files) {
+          if (records.length === 0) continue;
+          const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+          await adapter.write(path, body);
+        }
+      }
+      await adapter.write(marker, `migrated ${all.length} rows; corrected ${changed}\n`);
+      return { files: files.length, rows: all.length, changed };
+    } catch (err) {
+      console.error("Agent Fleet: usage-ledger cost migration failed (ledger left untouched)", err);
+      return null;
+    }
   }
 
   async readRunLog(file: TFile): Promise<RunLogData | null> {

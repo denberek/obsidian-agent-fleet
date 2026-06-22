@@ -23,12 +23,14 @@ _fleet/
 ├── tasks/            Task definitions (single files)
 │   └── <name>.md     Task with schedule and prompt
 ├── channels/         External chat channel bindings
-│   └── <name>.md     Channel config (Slack, etc.)
+│   └── <name>.md     Channel config (Slack, Telegram, Discord)
+├── mcp/              MCP server registry (one file per server, since 0.13.0)
+│   └── <name>.md     Server definition (frontmatter; secrets in keychain)
 ├── runs/             Execution logs (auto-generated)
 │   └── YYYY-MM-DD/   Daily folders
 │       └── HHMMSS-<agent>-<task>.md
-└── memory/           Agent memory files
-    └── <agent-name>.md
+└── memory/           Agent memory (two-tier store, since 0.12.0)
+    └── <agent-name>/ working.md + raw/<date>.md + candidates.json + pending/
 ```
 
 ## Creating an Agent
@@ -208,10 +210,33 @@ channel_context: |
 
 Telegram uses long-poll HTTPS (no WebSocket, no SDK). Features: typing indicators, inline keyboard agent picker via `/agents`, slash command autocomplete, group chat and forum topic support.
 
+### Discord Channel
+```yaml
+---
+name: my-discord
+type: discord
+default_agent: fleet-orchestrator
+allowed_agents:
+  - fleet-orchestrator
+  - site-monitor
+enabled: true
+credential_ref: my-discord-creds
+allowed_users:
+  - "496534272610664448"
+per_user_sessions: true
+channel_context: |
+  You are being contacted via Discord. Keep replies concise. Discord uses
+  standard Markdown (NOT Slack mrkdwn): **bold**, *italic*, `code`, fenced
+  blocks with a language tag. Discord does NOT render Markdown tables.
+---
+```
+
+Discord uses the Gateway (outbound WebSocket) + REST. Features: `@agent-name` routing, the `/agents` slash picker, image attachments, allowlist on the authenticated sender, and reconnect/resume. Requires the **Message Content** privileged intent on the bot. See `DISCORD_SETUP.md`.
+
 **Important notes:**
 - `credential_ref` must match a credential name in Settings → Agent Fleet → Channel Credentials
 - Credentials are stored securely in the OS keychain via Obsidian's SecretStorage API
-- `allowed_users`: Slack user IDs (start with U) or Telegram user IDs (numeric)
+- `allowed_users`: Slack user IDs (start with U), Telegram user IDs (numeric), or Discord user IDs (numeric)
 - Agents with `approval_required` set cannot be bound to a channel
 - Multi-agent routing: type `@agent-name: message` to switch agents, or use `/agents` for interactive picker
 - Obsidian must be running for channels to work — when closed, bots go offline
@@ -321,22 +346,21 @@ mcp_servers:
 ---
 ```
 
-At runtime, the plugin writes a temporary `settings.local.json` in the agent's working directory that maps these server names to Claude Code's `mcp__<name>` allow entries. The file is restored after the run.
+**MCP v2 — one registry, projected per run (since 0.13.0).** MCP servers live in a fleet-owned registry: one markdown file per server at `_fleet/mcp/<name>.md` (frontmatter; secrets never in the vault). Register a server **once** and it's available to **any** agent on **either** adapter — Claude Code or Codex. At spawn time, only the enabled servers an agent is granted are **projected** into whichever adapter it uses: Claude Code gets a merged `--mcp-config`, Codex gets `-c mcp_servers.*` overrides. Your native `~/.claude.json` and `~/.codex/config.toml` are **read-only** — Agent Fleet never mutates them. On first load, your existing Claude and Codex servers are imported into the registry (deduplicated, marked `imported`), and any bearer tokens found are moved into the keychain.
+
+Per-agent grants: leave the agent's `mcp_servers` list empty to grant every enabled server, or list specific ones. The selection applies identically on both adapters.
 
 ### Server Types
 
-- **stdio** — local process spawned by Claude CLI (e.g., `npx @some/mcp-server`)
+- **stdio** — local process spawned by the CLI (e.g., `npx @some/mcp-server`)
 - **HTTP / SSE** — remote server accessed via URL, often with OAuth authentication
 
-### OAuth Authentication
+### Authentication
 
-HTTP/SSE servers that require OAuth can be authenticated from the dashboard:
-1. Click "Authenticate" on the server card
-2. Plugin discovers OAuth endpoints automatically (RFC 8414 / RFC 9728)
-3. Registers via Dynamic Client Registration
-4. Opens browser for PKCE authorization flow
-5. Tokens stored in OS keychain and injected into Claude CLI config
-6. Background token refresh keeps agents authenticated
+HTTP/SSE servers authenticate **once** and the token is stored in the OS keychain, then projected per run (to Claude as an `Authorization` header, to Codex via `bearer_token_env_var` — passed through the spawn environment, never written to argv or a config file). Two options:
+
+- **Static bearer token** — paste it on the server card.
+- **OAuth 2.1 PKCE** — from the dashboard: click "Authenticate"; the plugin discovers OAuth endpoints automatically (RFC 8414 / RFC 9728), registers via Dynamic Client Registration, opens the browser for the PKCE flow, stores tokens in the keychain, and refreshes them in the background to keep agents authenticated.
 
 ## Modifying Agents, Tasks, Skills, or Channels
 

@@ -13,6 +13,7 @@ import { ChatSession } from "./chatSession";
 import type { ChannelAdapter, InboundImage, InboundMessage } from "./channels/adapter";
 import { SlidingWindowRateLimiter } from "./channels/rateLimiter";
 import { markdownToMrkdwn, splitForTransport } from "./channels/formatter";
+import { stripRememberTags } from "../utils/memoryFormat";
 
 /**
  * Factory that builds a concrete `ChannelAdapter` for a given channel config.
@@ -73,9 +74,17 @@ interface SessionEntry {
  *  - Hard cap + idle hibernation (subprocess resource control)
  *  - Field-level reconcile diffing (no unnecessary socket restarts)
  *
- * INVARIANT: every inbound message for a given conversation is processed
- * sequentially. ChatSession.sendMessage has a single turnResolve slot — concurrent
- * calls to the same session would deadlock. The conversation lock enforces this.
+ * INVARIANT: at most one turn runs per conversation at a time. ChatSession has a
+ * single turnResolve slot — two concurrent sendMessage calls on the same session
+ * would deadlock. Turns for a conversation are chained on a per-conversation tail
+ * promise (`turnTails`) so they never overlap, even across agent switches.
+ *
+ * FOLLOW-UPS: a message that arrives while the SAME agent is mid-turn is folded
+ * into the running turn via ChatSession.injectMessage (Claude: written to the live
+ * stdin; Codex: queued as a follow-up turn) rather than waiting for a fresh turn.
+ * Replies are delivered per-turn off the stream callback so each turn — including
+ * injected ones — gets its own reply. A follow-up targeting a DIFFERENT agent
+ * can't share the in-flight session, so it chains as a new sequential turn.
  */
 /**
  * Parse the first token of a message as an agent name. Supports:
@@ -135,6 +144,21 @@ export class ChannelManager {
    * restarts.
    */
   private readonly threadBindings = new Map<string, string>();
+
+  /**
+   * The turn currently executing for a conversation, keyed by `${channelName}:${conversationId}`.
+   * Set synchronously when a turn starts and cleared when its full sequence (including
+   * any injected follow-ups) resolves. Used to decide whether an inbound message folds
+   * into the live turn (same agent → inject) or starts a fresh one.
+   */
+  private readonly activeTurns = new Map<string, { agent: string; session: ChatSession }>();
+
+  /**
+   * Tail of the per-conversation turn chain. Each new turn is chained after the
+   * previous one so turns for a conversation never overlap (the single-turnResolve
+   * invariant), even when a follow-up switches to a different agent.
+   */
+  private readonly turnTails = new Map<string, Promise<void>>();
 
   private hibernationInterval: number | null = null;
   private started = false;
@@ -421,8 +445,10 @@ export class ChannelManager {
       return;
     }
 
-    // Serialize per conversation — concurrent messages to the same conversation
-    // would deadlock ChatSession's single turnResolve slot.
+    // Serialize INTAKE per conversation. The intake (routing + the start-or-inject
+    // decision) is serialized so concurrent messages can't race the activeTurns
+    // map; the turn itself runs outside this lock (chained via turnTails) so a
+    // follow-up can be intaken — and injected — while a turn is still streaming.
     await this.withConversationLock(convKey, async () => {
       const metrics = this.ensureMetrics(channel.name);
       metrics.messagesReceived += 1;
@@ -478,12 +504,6 @@ export class ChannelManager {
         messageText = msg.text;
       }
 
-      try {
-        await adapter.setTyping(msg.conversationId, true);
-      } catch {
-        // typing indicator is best-effort
-      }
-
       // Save inbound images to vault and prepend file-path context so the
       // agent can read them via its Read tool (same pattern as chat view).
       if (msg.images && msg.images.length > 0) {
@@ -493,47 +513,120 @@ export class ChannelManager {
         }
       }
 
-      let replyText = "";
-      try {
-        const session = await this.getOrCreateSession(channel, msg.conversationId, agentName);
-        const result = await session.sendMessage(messageText, () => {
-          /* stream events are ignored for channels — we only act on the final turn result */
-        });
-        replyText = result.text.trim();
-        if (result.toolCalls.length > 0) {
-          const toolSummary = summarizeToolCalls(result.toolCalls);
-          if (toolSummary) replyText += `\n\n_${toolSummary}_`;
-        }
-      } catch (err) {
-        console.error(`Agent Fleet: channel turn failed on ${channel.name}/${msg.conversationId}`, err);
-        replyText = `_Sorry — the agent run failed. ${err instanceof Error ? err.message : String(err)}_`;
+      // ── Follow-up injection ───────────────────────────────
+      // If a turn for THIS agent is already streaming, fold the message into it
+      // (Claude: live stdin; Codex: queued follow-up turn) instead of waiting for
+      // a fresh turn. The reply rides the in-flight turn's stream callback. A
+      // follow-up for a DIFFERENT agent can't share that session, so it falls
+      // through and chains as its own sequential turn.
+      const active = this.activeTurns.get(convKey);
+      if (active && active.agent === agentName && active.session.isStreaming) {
+        active.session.injectMessage(messageText);
+        return;
       }
 
-      try {
-        if (replyText) {
-          // Prefix reply with agent name when multiple agents are available
-          // so the user knows which agent responded (especially useful on
-          // Telegram where the bot name can't change dynamically)
-          const multiAgent = channel.allowedAgents.length > 1 ||
-            (channel.allowedAgents.length === 0 && this.resolveAllowedAgents(channel).length > 1);
-          if (multiAgent) {
-            replyText = `*[${agentName}]*\n${replyText}`;
-          }
-          await this.deliverReply(adapter, msg.conversationId, replyText);
-          metrics.messagesSent += 1;
-        }
-      } catch (err) {
-        console.error(`Agent Fleet: reply delivery failed on ${channel.name}`, err);
-      } finally {
-        try {
-          await adapter.setTyping(msg.conversationId, false);
-        } catch {
-          // best-effort
-        }
-      }
+      const session = await this.getOrCreateSession(channel, msg.conversationId, agentName);
 
-      this.enforceHardCap();
+      // Chain this turn after any in-flight/queued turn for the conversation so
+      // turns never overlap (preserves the single-turnResolve invariant). A
+      // failed prior turn must not break the chain.
+      const prevTail = this.turnTails.get(convKey) ?? Promise.resolve();
+      const run = prevTail.catch(() => undefined).then(() => {
+        this.activeTurns.set(convKey, { agent: agentName, session });
+        return this.runChannelTurn(adapter, channel, msg.conversationId, agentName, session, messageText)
+          .finally(() => {
+            this.activeTurns.delete(convKey);
+          });
+      });
+      this.turnTails.set(convKey, run);
+      void run.finally(() => {
+        if (this.turnTails.get(convKey) === run) this.turnTails.delete(convKey);
+      });
     });
+  }
+
+  /**
+   * Run a single channel turn and deliver its reply(s). Replies are flushed
+   * per-turn off the stream callback (accumulate `text`, flush on `result`) so
+   * every turn — including follow-ups injected mid-run via `injectMessage` — gets
+   * its own reply. Deliveries are chained so messages land in order.
+   */
+  private async runChannelTurn(
+    adapter: ChannelAdapter,
+    channel: ChannelConfig,
+    conversationId: string,
+    agentName: string,
+    session: ChatSession,
+    messageText: string,
+  ): Promise<void> {
+    const metrics = this.ensureMetrics(channel.name);
+    const multiAgent = channel.allowedAgents.length > 1 ||
+      (channel.allowedAgents.length === 0 && this.resolveAllowedAgents(channel).length > 1);
+
+    try {
+      await adapter.setTyping(conversationId, true);
+    } catch {
+      // typing indicator is best-effort
+    }
+
+    // Serialize deliveries so per-turn replies (and the final await below) land
+    // in order even though flushes are kicked off from synchronous stream events.
+    let delivery: Promise<void> = Promise.resolve();
+    const enqueueDelivery = (text: string) => {
+      delivery = delivery.then(async () => {
+        try {
+          await this.deliverReply(adapter, conversationId, text);
+          metrics.messagesSent += 1;
+        } catch (err) {
+          console.error(`Agent Fleet: reply delivery failed on ${channel.name}`, err);
+        }
+      });
+    };
+
+    // Per-turn accumulation. Reset on each `result` event so an injected
+    // follow-up's response doesn't blend into the previous turn's reply.
+    let buf = "";
+    let toolCalls: Array<{ name: string }> = [];
+    const flush = () => {
+      // Prefix reply with agent name when multiple agents are available so the
+      // user knows which agent responded (Telegram can't change the bot name).
+      let reply = stripRememberTags(buf).trim();
+      if (toolCalls.length > 0) {
+        const toolSummary = summarizeToolCalls(toolCalls);
+        if (toolSummary) reply += `${reply ? "\n\n" : ""}_${toolSummary}_`;
+      }
+      buf = "";
+      toolCalls = [];
+      if (!reply) return;
+      if (multiAgent) reply = `*[${agentName}]*\n${reply}`;
+      enqueueDelivery(reply);
+    };
+
+    try {
+      await session.sendMessage(messageText, (event) => {
+        if (event.type === "text") {
+          buf += event.content;
+        } else if (event.type === "tool_use" && event.toolName) {
+          toolCalls.push({ name: event.toolName });
+        } else if (event.type === "error") {
+          const detail = event.errorMessage?.trim() || "the agent run failed";
+          enqueueDelivery(`_Sorry — ${detail}_`);
+        } else if (event.type === "result") {
+          flush();
+        }
+      });
+    } catch (err) {
+      console.error(`Agent Fleet: channel turn failed on ${channel.name}/${conversationId}`, err);
+      enqueueDelivery(`_Sorry — the agent run failed. ${err instanceof Error ? err.message : String(err)}_`);
+    } finally {
+      await delivery;
+      try {
+        await adapter.setTyping(conversationId, false);
+      } catch {
+        // best-effort
+      }
+      this.enforceHardCap();
+    }
   }
 
   private async deliverReply(

@@ -205,6 +205,14 @@ class FakeAdapter implements ChannelAdapter {
 //  class + the instance list there and re-expose them for test bodies below.
 // ═══════════════════════════════════════════════════════
 
+interface FakeStreamEvent {
+  type: "text" | "tool_use" | "result" | "error";
+  content: string;
+  toolName?: string;
+  toolCalls?: Array<{ name: string }>;
+  errorMessage?: string;
+}
+
 interface FakeChatSessionShape {
   messages: unknown[];
   isStreaming: boolean;
@@ -213,12 +221,17 @@ interface FakeChatSessionShape {
   hibernateCalls: number;
   abortCalls: number;
   sendMessageCalls: string[];
+  injectCalls: string[];
   loadPersistedStateCalls: number;
   nextResponse: { text: string; toolCalls: Array<{ name: string }> };
   sendMessageFn?: (text: string) => Promise<{ text: string; toolCalls: Array<{ name: string }> }>;
   options?: { channelName?: string; conversationId?: string; channelContext?: string };
   loadPersistedState(): Promise<boolean>;
-  sendMessage(text: string): Promise<{ text: string; toolCalls: Array<{ name: string }> }>;
+  sendMessage(
+    text: string,
+    onEvent?: (event: FakeStreamEvent) => void,
+  ): Promise<{ text: string; toolCalls: Array<{ name: string }> }>;
+  injectMessage(text: string): void;
   hibernate(): void;
   abort(): void;
 }
@@ -234,6 +247,7 @@ const mocks = vi.hoisted(() => {
     public hibernateCalls = 0;
     public abortCalls = 0;
     public sendMessageCalls: string[] = [];
+    public injectCalls: string[] = [];
     public loadPersistedStateCalls = 0;
     public nextResponse: { text: string; toolCalls: Array<{ name: string }> } = {
       text: "OK from agent",
@@ -245,6 +259,12 @@ const mocks = vi.hoisted(() => {
     public options?: { channelName?: string; conversationId?: string; channelContext?: string };
 
     public agent: unknown;
+
+    // Models the real session's multi-turn lifecycle: a turn queue drained
+    // sequentially, staying `isStreaming` across the whole sequence so that
+    // injectMessage can fold a follow-up turn into a still-running send.
+    private activeOnEvent?: (event: FakeStreamEvent) => void;
+    private turnQueue: string[] = [];
 
     constructor(
       agent: unknown,
@@ -263,21 +283,52 @@ const mocks = vi.hoisted(() => {
       return false;
     }
 
-    async sendMessage(
+    /** Drive the stream callback for one turn the way the real session does:
+     *  text delta(s), a tool_use event per tool call, then a result event. */
+    private async runTurn(
       text: string,
     ): Promise<{ text: string; toolCalls: Array<{ name: string }> }> {
+      const response = this.sendMessageFn ? await this.sendMessageFn(text) : this.nextResponse;
+      const emit = this.activeOnEvent;
+      if (emit) {
+        if (response.text) emit({ type: "text", content: response.text });
+        for (const tc of response.toolCalls ?? []) {
+          emit({ type: "tool_use", content: "", toolName: tc.name });
+        }
+        emit({ type: "result", content: "", toolCalls: response.toolCalls ?? [] });
+      }
+      return response;
+    }
+
+    async sendMessage(
+      text: string,
+      onEvent?: (event: FakeStreamEvent) => void,
+    ): Promise<{ text: string; toolCalls: Array<{ name: string }> }> {
       this.sendMessageCalls.push(text);
+      this.activeOnEvent = onEvent;
       this.isStreaming = true;
       this.lastActiveAt = Date.now();
+      this.turnQueue = [text];
+      let last = this.nextResponse;
       try {
-        if (this.sendMessageFn) {
-          return await this.sendMessageFn(text);
+        // Drain the queue — injectMessage may push follow-up turns while a
+        // turn is in flight (e.g. blocked on sendMessageFn).
+        while (this.turnQueue.length > 0) {
+          last = await this.runTurn(this.turnQueue.shift()!);
         }
-        return this.nextResponse;
+        return last;
       } finally {
         this.isStreaming = false;
+        this.activeOnEvent = undefined;
         this.lastActiveAt = Date.now();
       }
+    }
+
+    injectMessage(text: string): void {
+      // Mirror the real guard: a follow-up only folds in while a turn is live.
+      if (!this.isStreaming) return;
+      this.injectCalls.push(text);
+      this.turnQueue.push(text);
     }
 
     hibernate(): void {
@@ -611,6 +662,10 @@ describe("ChannelManager.handleInbound — conversation lock", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(order).toEqual(["start:A", "end:A", "start:B", "end:B"]);
+    // B arrived while A's turn was streaming on the same agent, so it was folded
+    // into the live turn via injectMessage rather than starting a second send.
+    expect(sess.sendMessageCalls).toEqual(["A"]);
+    expect(sess.injectCalls).toEqual(["B"]);
     await manager.stop();
   });
 
@@ -629,8 +684,152 @@ describe("ChannelManager.handleInbound — conversation lock", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     // The lock map should have GC'd the entry for this conversation.
-    const locks = (manager as unknown as { conversationLocks: Map<string, unknown> }).conversationLocks;
-    expect(locks.has("test-slack:gc-test")).toBe(false);
+    const internals = manager as unknown as {
+      conversationLocks: Map<string, unknown>;
+      activeTurns: Map<string, unknown>;
+      turnTails: Map<string, unknown>;
+    };
+    expect(internals.conversationLocks.has("test-slack:gc-test")).toBe(false);
+    // The turn-tracking maps should be empty once the turn fully resolves.
+    expect(internals.activeTurns.has("test-slack:gc-test")).toBe(false);
+    expect(internals.turnTails.has("test-slack:gc-test")).toBe(false);
+    await manager.stop();
+  });
+});
+
+describe("ChannelManager.handleInbound — follow-up injection", () => {
+  // Fire one inbound, then while its turn is blocked mid-stream, fire a second
+  // inbound. Returns the (single) session plus the captured order of events.
+  async function runFollowUp(opts: {
+    firstText: string;
+    secondText: string;
+    agents?: AgentConfig[];
+    channels?: ChannelConfig[];
+  }) {
+    const harness = buildHarness({ agents: opts.agents, channels: opts.channels });
+    const { manager, adapters, snapshot } = harness;
+    await manager.start(snapshot);
+    const adapter = adapters.get("test-slack")!;
+
+    const barrier: { resolve?: () => void } = {};
+    const waitOnce = new Promise<void>((r) => {
+      barrier.resolve = r;
+    });
+
+    // First inbound creates the session; patch its first turn to block so the
+    // follow-up arrives while it's still streaming.
+    adapter.simulateInbound({
+      conversationId: "conv-1",
+      externalUserId: "U1",
+      text: opts.firstText,
+      timestamp: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const firstSession = sessionInstances[0]!;
+    firstSession.sendMessageFn = async (text: string) => {
+      if (text === opts.firstText) await waitOnce;
+      return { text: `reply:${text}`, toolCalls: [] };
+    };
+    // The unpatched first turn already ran with nextResponse; reset counters so
+    // assertions only see the patched run.
+    firstSession.sendMessageCalls.length = 0;
+    firstSession.injectCalls.length = 0;
+    adapter.sendCalls.length = 0;
+
+    // Re-fire the first message (now patched to block), then the follow-up.
+    adapter.simulateInbound({
+      conversationId: "conv-1",
+      externalUserId: "U1",
+      text: opts.firstText,
+      timestamp: new Date().toISOString(),
+    });
+    adapter.simulateInbound({
+      conversationId: "conv-1",
+      externalUserId: "U1",
+      text: opts.secondText,
+      timestamp: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    return { harness, adapter, barrier, firstSession };
+  }
+
+  it("folds a same-agent follow-up into the live turn via injectMessage", async () => {
+    const { harness, adapter, barrier, firstSession } = await runFollowUp({
+      firstText: "first",
+      secondText: "follow-up",
+    });
+
+    // While the first turn is blocked, the follow-up must have been injected —
+    // not started as a second send, and not created a second session.
+    expect(sessionInstances).toHaveLength(1);
+    expect(firstSession.sendMessageCalls).toEqual(["first"]);
+    expect(firstSession.injectCalls).toEqual(["follow-up"]);
+
+    // Release the turn — both the original and the injected follow-up reply.
+    barrier.resolve!();
+    await new Promise((r) => setTimeout(r, 10));
+
+    const replies = adapter.sendCalls.map((c) => c.text);
+    expect(replies).toEqual(["reply:first", "reply:follow-up"]);
+    await harness.manager.stop();
+  });
+
+  it("serializes a different-agent follow-up as its own turn (no injection)", async () => {
+    const other = makeAgent({ name: "other-agent", description: "Another agent" });
+    const { harness, adapter, barrier, firstSession } = await runFollowUp({
+      firstText: "first",
+      secondText: "@other-agent: handle this",
+      agents: [makeAgent(), other],
+    });
+
+    // A different agent can't share the in-flight session — nothing injected yet,
+    // and the second turn is still queued behind the first.
+    expect(firstSession.injectCalls).toEqual([]);
+    expect(firstSession.sendMessageCalls).toEqual(["first"]);
+
+    // Release the first turn; the second agent's turn then runs.
+    barrier.resolve!();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(sessionInstances).toHaveLength(2);
+    const secondSession = sessionInstances[1]!;
+    expect((secondSession as unknown as { agent: { name: string } }).agent.name).toBe("other-agent");
+    expect(secondSession.sendMessageCalls).toEqual(["handle this"]);
+    // Replies are ordered: first agent's reply, then the second agent's. With
+    // two agents available, each reply carries its `*[agent]*` attribution.
+    const replies = adapter.sendCalls.map((c) => c.text);
+    expect(replies).toHaveLength(2);
+    expect(replies[0]).toContain("reply:first");
+    expect(replies[0]).toContain("*[test-agent]*");
+    expect(replies[1]).toContain("*[other-agent]*");
+    await harness.manager.stop();
+  });
+
+  it("starts a fresh turn when a message arrives after the previous turn finished", async () => {
+    const { manager, adapters, snapshot } = buildHarness();
+    await manager.start(snapshot);
+    const adapter = adapters.get("test-slack")!;
+
+    adapter.simulateInbound({
+      conversationId: "conv-1",
+      externalUserId: "U1",
+      text: "one",
+      timestamp: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    adapter.simulateInbound({
+      conversationId: "conv-1",
+      externalUserId: "U1",
+      text: "two",
+      timestamp: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Same session reused, but each message ran as its own send — no injection.
+    expect(sessionInstances).toHaveLength(1);
+    expect(sessionInstances[0]!.sendMessageCalls).toEqual(["one", "two"]);
+    expect(sessionInstances[0]!.injectCalls).toEqual([]);
     await manager.stop();
   });
 });
