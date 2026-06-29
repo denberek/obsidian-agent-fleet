@@ -226,7 +226,6 @@ export const claudeCodeAdapter: CliAdapter = {
   buildExec(opts: ExecBuildOptions): Promise<ExecInvocation> {
     const args = [
       "-p",
-      opts.prompt,
       "--output-format",
       opts.streaming ? "stream-json" : "json",
     ];
@@ -256,7 +255,7 @@ export const claudeCodeAdapter: CliAdapter = {
       args.push("--permission-mode", "bypassPermissions");
     }
 
-    return Promise.resolve({ cliPath: opts.settings.claudeCliPath, args });
+    return Promise.resolve({ cliPath: opts.settings.claudeCliPath, args, stdinPayload: opts.prompt });
   },
 
   parseExecOutput(stdout: string, stderr: string, streaming: boolean): ExecParseResult {
