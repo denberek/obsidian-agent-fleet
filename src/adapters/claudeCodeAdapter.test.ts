@@ -77,13 +77,14 @@ function makeBuildOptions(overrides: Partial<ExecBuildOptions> = {}): ExecBuildO
 }
 
 describe("claudeCodeAdapter.buildExec", () => {
-  it("builds the streaming invocation with -p prompt and verbose stream-json", async () => {
+  it("builds the streaming invocation with -p (prompt via stdin) and verbose stream-json", async () => {
     const inv = await claudeCodeAdapter.buildExec(makeBuildOptions());
     expect(inv.cliPath).toBe("claude");
-    expect(inv.args.slice(0, 2)).toEqual(["-p", "do the thing"]);
+    expect(inv.args[0]).toBe("-p");
     expect(inv.args).toContain("stream-json");
     expect(inv.args).toContain("--verbose");
-    expect(inv.stdinPayload).toBeUndefined();
+    expect(inv.args).not.toContain("do the thing");
+    expect(inv.stdinPayload).toBe("do the thing");
   });
 
   it("uses plain json without --verbose when not streaming", async () => {

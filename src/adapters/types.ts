@@ -27,9 +27,8 @@ export interface ExecBuildOptions {
 export interface ExecInvocation {
   cliPath: string;
   args: string[];
-  /** Written to stdin right after spawn, then stdin is closed. Codex takes
-   *  the prompt this way (positional `-`) to dodge argv length limits;
-   *  Claude takes the prompt via `-p` and needs nothing on stdin. */
+  /** Written to stdin right after spawn, then stdin is closed. Both adapters
+   *  use this to dodge OS argv length limits (Windows: 32 767 chars). */
   stdinPayload?: string;
 }
 
