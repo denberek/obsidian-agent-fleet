@@ -1,6 +1,13 @@
 # Agent Fleet for Obsidian
 
-**Turn Obsidian into an AI-powered command center. Create autonomous agents on Claude Code or OpenAI Codex, schedule tasks, chat in real-time, connect via Slack, Telegram, or Discord, and hook into any MCP service — all from your vault.**
+**Turn your vault into an AI command center.** Build and run autonomous AI agents on Claude Code or OpenAI Codex — schedule tasks, chat in real time, connect Slack, Telegram, and Discord, and hook into any MCP service. Every agent is markdown you own.
+
+<p>
+  <a href="https://afleet.md"><img src="https://img.shields.io/badge/website-afleet.md-a78bfa" alt="Website"></a>
+  <a href="https://obsidian.md/plugins?id=agent-fleet"><img src="https://img.shields.io/badge/Obsidian-Community%20Plugin-8b7cf6" alt="Obsidian Community Plugin"></a>
+  <a href="https://www.npmjs.com/package/obsidian-agent-fleet"><img src="https://img.shields.io/npm/v/obsidian-agent-fleet?color=6366f1" alt="npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8a8f98" alt="MIT License"></a>
+</p>
 
 ![Agent Fleet Dashboard](screenshot.png)
 
@@ -42,7 +49,11 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 ### Install
 
-**Via npm (recommended):**
+**Via Obsidian (recommended):**
+1. Settings → Community plugins → Browse → search **"Agent Fleet"** — or open the [plugin directory page](https://obsidian.md/plugins?id=agent-fleet)
+2. Install, then enable Agent Fleet
+
+**Via npm:**
 ```bash
 npm install -g obsidian-agent-fleet
 ```
@@ -60,6 +71,8 @@ The installer automatically finds your Obsidian vaults and copies the plugin fil
 4. Restart Obsidian → Enable Agent Fleet
 
 ### Requirements
+
+Agent Fleet runs on the subscriptions you already pay for — no separate API bill required.
 
 - **Obsidian** 1.11.4+ (desktop — macOS, Windows, Linux)
 - **At least one CLI backend** — install whichever engine(s) your agents will use:
@@ -578,6 +591,8 @@ An autonomous periodic run — what an agent does on a schedule without user inp
 
 ## Links
 
+- [Website](https://afleet.md)
+- [Obsidian Plugin Directory](https://obsidian.md/plugins?id=agent-fleet)
 - [Slack Setup Guide](SLACK_SETUP.md)
 - [Discord Setup Guide](DISCORD_SETUP.md)
 - [Releases](https://github.com/denberek/obsidian-agent-fleet/releases)
