@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.16.0 — 2026-07-01
+
+A hardening and quality release: a Windows fix, ~20 robustness fixes across process lifecycle and persistence, dashboard performance work, a batch of UX improvements, and a large internal restructuring — with 79 new tests (331 total).
+
+**Windows: ENAMETOOLONG fixed** (thanks @zhaoming-mike!)
+- The Claude adapter now passes the prompt via stdin instead of argv, so one-shot runs (heartbeats, scheduled tasks, Wiki Keeper) no longer fail on Windows' 32,767-character command-line limit. Also makes long prompts more robust on macOS/Linux.
+
+**Robustness**
+- Codex follow-up messages queued during a turn are no longer silently lost if the next turn fails to start.
+- Stdout buffers are capped (10MB) in both chat and one-shot runs — a runaway process can no longer exhaust memory.
+- The chat "working" spinner can no longer get stuck when a CLI process dies between turns.
+- Heartbeat overlap guard now holds until the run actually finishes (it previously released on enqueue, so overlapping heartbeat runs were possible).
+- One hung vault write can no longer wedge all subsequent memory captures (10s per-capture timeout).
+- Corrupted `permissions.json` or agent sidecar files now log an error and flag a validation issue in the dashboard instead of silently running the agent with empty permissions.
+- CLI output that fails to parse is now logged with context instead of showing "(no output)" with no clue — makes CLI version drift debuggable.
+- Reference validation re-runs after create/update/delete, so deleting a skill immediately flags agents that still reference it.
+- Working-memory files with a newer schema version are left untouched instead of being clobbered.
+- Legacy memory migration and Slack's send queue no longer race under concurrency; channel shutdown drains in-flight turns.
+- MCP OAuth callback server reliably frees its port (previously a lingering keep-alive connection could cause "address already in use" on the next login).
+- Stale MCP temp files and Codex overlays are swept on plugin load; temp names are now collision-proof UUIDs.
+- Reflection run failures now show a Notice (all other run types already did).
+
+**UX**
+- Deleting a task, skill, or channel now asks for confirmation (parity with agent deletion).
+- Search: shows "No results" instead of nothing, a "Showing 10 of N" footer when truncated, and is debounced.
+- All create/edit forms disable their submit button while saving (no more accidental double-submits).
+- Empty states have Create buttons; a dismissible welcome card appears on a pristine fleet.
+- Agent cards show heartbeat state, schedule, next run time, and a quick pause/resume toggle.
+- Task scheduling is a single Immediate / Recurring / One-time selector (saved file format unchanged).
+- Chat error bubbles include recovery hints for common failures (context overflow, rate limit, auth, timeout, missing CLI).
+- Switching an agent between Claude and Codex explains how permission modes map.
+- Run success Notices report how many memory facts were captured.
+
+**Performance**
+- Agents page no longer refetches runs per card (was O(n²) with fleet size).
+- Live run output batches dashboard updates (~100ms) instead of re-rendering per stdout chunk.
+- Run logs are parse-cached by mtime; fleet status is cached; name lookups are indexed; running-card timers share one ticker.
+
+**Internal**
+- `FleetRepository` decomposed into focused store modules (`src/repository/`); the dashboard view split into form and page modules (`src/views/forms/`, `src/views/pages/`). Shared prompt assembly guarantees chat and one-shot runs build identical context. Channel adapters share text-splitting and backoff helpers. 221 lines of dead CSS removed.
+
 ## 0.15.0 — 2026-06-21
 
 Accurate cost tracking, live follow-ups in channels, and Discord docs.

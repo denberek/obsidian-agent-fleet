@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig, FleetSettings } from "../types";
 import type { ExecBuildOptions } from "./types";
 import { claudeCodeAdapter, isCodexShapedModel } from "./claudeCodeAdapter";
@@ -150,6 +150,49 @@ describe("claudeCodeAdapter.parseExecOutput", () => {
   it("falls back to stderr when stdout is empty", () => {
     const parsed = claudeCodeAdapter.parseExecOutput("", "spawn failed", true);
     expect(parsed.outputText).toBe("spawn failed");
+  });
+
+  describe("parse-failure logging", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("does not warn about non-JSON noise between valid stream events", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const stdout = [
+        "Some CLI banner line",
+        JSON.stringify({ type: "result", result: "Done.", usage: { input_tokens: 1, output_tokens: 1 } }),
+      ].join("\n");
+      const parsed = claudeCodeAdapter.parseExecOutput(stdout, "", true);
+      expect(parsed.outputText).toBe("Done.");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("warns when a streaming run produced no parseable JSON event at all", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const parsed = claudeCodeAdapter.parseExecOutput("total garbage\nno json here", "", true);
+      expect(parsed.outputText).toBe("(no output)");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("no parseable JSON event");
+      expect(message).toContain("total garbage");
+    });
+
+    it("warns when non-streaming whole-stdout JSON fails to parse", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const parsed = claudeCodeAdapter.parseExecOutput('{"result": "truncat', "", false);
+      expect(parsed.outputText).toBe("(no output)");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("failed to parse");
+      expect(message).toContain('{"result": "truncat');
+    });
+
+    it("does not warn on empty stdout", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      claudeCodeAdapter.parseExecOutput("", "spawn failed", true);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });
 

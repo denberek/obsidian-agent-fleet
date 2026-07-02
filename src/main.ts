@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
+import { readdir, rm, stat } from "fs/promises";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import {
   Notice,
@@ -50,6 +51,11 @@ export default class AgentFleetPlugin extends Plugin {
   channelCredentials = new ChannelCredentialStore();
   channelManager!: ChannelManager;
   secretStore!: SecretStore;
+
+  /** Successful CLI verifications, keyed by `${label}:${cliPath}` → timestamp.
+   *  Skips re-spawning `--version` for the same binary within the TTL. */
+  private cliVerifiedAt = new Map<string, number>();
+  private static readonly CLI_VERIFY_TTL_MS = 5 * 60_000;
 
   private statusBarEl?: HTMLElement;
   private subscribedViews = new Set<{ render: () => Promise<void> }>();
@@ -208,6 +214,12 @@ export default class AgentFleetPlugin extends Plugin {
     // eager `claude mcp list` discovery. Run the one-time import of native
     // Claude/Codex servers into the registry on first load.
     void this.importNativeMcpServers();
+
+    // Sweep temp files a force-quit orphaned (their normal cleanup lives in
+    // finally blocks that never ran). Fire-and-forget — must not block load.
+    void this.cleanupStaleTempFiles().catch((err) => {
+      console.warn("Agent Fleet: stale temp-file sweep failed", err);
+    });
 
     // Periodically refresh expiring OAuth tokens (every 30 min) so the next run
     // projects a fresh bearer. Refreshed tokens persist to SecretStore.
@@ -441,6 +453,25 @@ export default class AgentFleetPlugin extends Plugin {
   }
 
   private async verifyCliBinary(cliPath: string, label: string, showNotice: boolean): Promise<boolean> {
+    // Skip re-spawning `--version` if this exact binary verified successfully
+    // recently — settings edits would otherwise probe on every save.
+    const cacheKey = `${label}:${cliPath}`;
+    const verifiedAt = this.cliVerifiedAt.get(cacheKey);
+    if (verifiedAt !== undefined && Date.now() - verifiedAt < AgentFleetPlugin.CLI_VERIFY_TTL_MS) {
+      if (showNotice) {
+        new Notice(`${label} CLI available.`);
+      }
+      return true;
+    }
+
+    const installHint =
+      label === "Claude"
+        ? "install with: npm install -g @anthropic-ai/claude-code"
+        : "install with: npm install -g @openai/codex";
+    const failureMessage =
+      `${label} CLI verification failed (path: ${cliPath || "not set"}). ` +
+      `Fix the ${label} CLI Path in settings, or ${installHint}`;
+
     return await new Promise((resolve) => {
       // On macOS/Linux: spawns through login shell so env vars are available.
       // On Windows: spawns directly (env is inherited from the system).
@@ -451,22 +482,69 @@ export default class AgentFleetPlugin extends Plugin {
       });
       proc.on("close", (code) => {
         const ok = code === 0;
-        if (!ok) {
+        if (ok) {
+          this.cliVerifiedAt.set(cacheKey, Date.now());
+        } else {
           console.error(`Agent Fleet: ${label} CLI verification failed`, stderr);
         }
         if (showNotice) {
-          new Notice(ok ? `${label} CLI available.` : `${label} CLI verification failed — check ${label} CLI Path in settings.`);
+          new Notice(ok ? `${label} CLI available.` : failureMessage, ok ? 5000 : 10000);
         }
         resolve(ok);
       });
       proc.on("error", (error) => {
         console.error(`Agent Fleet: ${label} CLI verification error`, error);
         if (showNotice) {
-          new Notice(`${label} CLI verification failed — check ${label} CLI Path in settings.`);
+          new Notice(failureMessage, 10000);
         }
         resolve(false);
       });
     });
+  }
+
+  /**
+   * Best-effort removal of per-run temp files that a force-quit left behind:
+   * MCP projection files under `<vaultBase>/.claude/` — `af-mcp.<token>.json`
+   * and `af-mcp-<slug>.<token>.cjs` (mcpProjection.ts) plus
+   * `af-remember-mcp.<token>.{json,cjs}` (rememberMcpServer.ts) — older than
+   * 24h, and per-agent CODEX_HOME overlay dirs under the OS temp dir
+   * (codexPermissions.ts OVERLAY_ROOT) older than 7 days. Conservative: only
+   * names matching the plugin's own prefixes are touched.
+   */
+  private async cleanupStaleTempFiles(): Promise<void> {
+    const now = Date.now();
+    const sweep = async (dir: string, matches: (name: string) => boolean, maxAgeMs: number) => {
+      let entries: string[];
+      try {
+        entries = await readdir(dir);
+      } catch {
+        return; // dir missing/unreadable — nothing to sweep
+      }
+      for (const name of entries) {
+        if (!matches(name)) continue;
+        const fullPath = join(dir, name);
+        try {
+          const info = await stat(fullPath);
+          if (now - info.mtimeMs > maxAgeMs) {
+            await rm(fullPath, { recursive: true, force: true });
+          }
+        } catch {
+          // best-effort — skip entries we can't stat/remove
+        }
+      }
+    };
+
+    const vaultBase = this.repository.getVaultBasePath();
+    if (vaultBase) {
+      await sweep(
+        join(vaultBase, ".claude"),
+        (name) => /^(af-mcp|af-remember-mcp)[.-].+\.(json|cjs)$/.test(name),
+        24 * 60 * 60 * 1000,
+      );
+    }
+    // Overlays are keyed by agent and rebuilt on demand, so removing old ones
+    // is safe even if the agent still exists.
+    await sweep(join(tmpdir(), "agent-fleet-codex"), () => true, 7 * 24 * 60 * 60 * 1000);
   }
 
   async openPath(path: string): Promise<void> {

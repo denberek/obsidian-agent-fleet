@@ -89,16 +89,34 @@ export function writeClaudeSettingsFile(
 }
 
 /** Best-effort cleanup. Restores the user's pre-existing settings.local.json
- *  if one was backed up, otherwise removes the file we wrote. Errors swallow. */
+ *  if one was backed up, otherwise removes the file we wrote. Never throws
+ *  (this runs in spawn handlers), but failures are logged: a leftover
+ *  agent-written settings file silently contaminates the next Claude run in
+ *  that directory. If restoring the backup fails, we fall back to deleting
+ *  the file so at least the agent's temporary config doesn't persist. */
 export function restoreClaudeSettingsFile(state: ClaudeSettingsState | null): void {
   if (!state) return;
-  try {
-    if (state.backupContent !== null) {
+  if (state.backupContent !== null) {
+    try {
       writeFileSync(state.path, state.backupContent, "utf-8");
-    } else if (existsSync(state.path)) {
+      return;
+    } catch (err) {
+      console.warn(
+        `Agent Fleet: failed to restore the previous ${state.path} ` +
+          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `deleting the temporary agent settings file instead so it doesn't affect later runs.`,
+      );
+    }
+  }
+  try {
+    if (existsSync(state.path)) {
       unlinkSync(state.path);
     }
-  } catch {
-    // Best-effort cleanup — don't crash a spawn handler over this.
+  } catch (err) {
+    console.warn(
+      `Agent Fleet: failed to remove the temporary agent settings file at ${state.path} ` +
+        `(${err instanceof Error ? err.message : String(err)}). ` +
+        `Stale agent permissions may leak into the next Claude run in this directory — delete it manually.`,
+    );
   }
 }

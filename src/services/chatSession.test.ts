@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ChatSession } from "./chatSession";
-import type { AgentConfig, FleetSettings } from "../types";
+import { ExecutionManager } from "./executionManager";
+import type { AgentConfig, FleetSettings, SkillConfig, TaskConfig, WorkingMemory } from "../types";
 import type { FleetRepository } from "../fleetRepository";
+import { MEMORY_CAPTURE_INSTRUCTION } from "../utils/memoryFormat";
 
 // ChatSession imports Vault from "obsidian" (type-only, erased at runtime) and
 // uses TFile/normalizePath which the test stub provides. We don't drive any
@@ -168,6 +170,195 @@ describe("ChatSession.buildBasePrompt", () => {
       buildBasePrompt(): Promise<string>;
     }).buildBasePrompt();
     expect(prompt).not.toContain("## Channel Context");
+  });
+});
+
+// ─── Characterization fixtures for the prompt-parity tests below.
+//     Mirrors the fixtures in executionManager.test.ts (kept separate so the
+//     two test files don't import each other's registered tests). ───
+
+function makeTask(overrides: Partial<TaskConfig> = {}): TaskConfig {
+  return {
+    filePath: "_fleet/tasks/summarize.md",
+    taskId: "summarize",
+    agent: "test-agent",
+    type: "recurring",
+    priority: "medium",
+    enabled: true,
+    created: "2026-01-01",
+    runCount: 0,
+    catchUp: false,
+    tags: [],
+    body: "Summarize the news.",
+    ...overrides,
+  };
+}
+
+function makeSkill(): SkillConfig {
+  return {
+    filePath: "_fleet/skills/research.md",
+    name: "research",
+    tags: [],
+    body: "Research things thoroughly.",
+    toolsBody: "Use WebSearch.",
+    referencesBody: "See RESEARCH.md.",
+    examplesBody: "Example: find competitors.",
+    isFolder: false,
+  };
+}
+
+function makeWorkingMemory(): WorkingMemory {
+  return {
+    filePath: "_fleet/memory/test-agent.md",
+    agent: "test-agent",
+    schema: 2,
+    tokenEstimate: 0,
+    sections: [
+      { name: "Preferences", entries: [{ text: "Prefers concise answers", pinned: true }] },
+      {
+        name: "Recent",
+        entries: [{ text: "Deploy uses GitHub Actions", pinned: false, source: "run", date: "2026-06-30" }],
+      },
+    ],
+  };
+}
+
+function makeKeeperAgent(): AgentConfig {
+  return makeAgent({
+    name: "wiki-keeper-acme",
+    filePath: "_fleet/agents/wiki-keeper-acme.md",
+    wikiKeeper: {
+      scopeRoot: "Acme",
+      inboxPath: "wiki/inbox",
+      archivePath: "wiki/archive",
+      failedPath: "wiki/failed",
+      topicsRoot: "wiki/topics",
+      indexPath: "wiki/index.md",
+      logPath: "wiki/log.md",
+      watchedFolders: [],
+      excludePatterns: [],
+      watchedSince: "",
+      fileSubstantiveAnswers: false,
+      obsidianUrlScheme: false,
+      maxTokensPerIngest: 4000,
+      maxTokensPerRefresh: 4000,
+      dedupSimilarityThreshold: 0.8,
+      summaryStaleDays: 30,
+      indexSplitThreshold: 50,
+      stateFile: ".wiki-state.json",
+    },
+  });
+}
+
+/** The fully-loaded agent used by the byte-exact characterization tests. */
+function makeFullAgent(): AgentConfig {
+  return makeAgent({
+    skills: ["research"],
+    skillsBody: "Custom agent skill notes.",
+    contextBody: "Working on Project Apollo.",
+    memory: true,
+    wikiReferences: [{ agent: "wiki-keeper-acme" }],
+  });
+}
+
+function makeFullRepoStub(): FleetRepository {
+  const skills = [makeSkill()];
+  const agents = [makeKeeperAgent()];
+  const wm = makeWorkingMemory();
+  return {
+    getSkillByName: (name: string) => skills.find((s) => s.name === name),
+    readWorkingMemory: async () => wm,
+    getAgentByName: (name: string) => agents.find((a) => a.name === name),
+  } as unknown as FleetRepository;
+}
+
+async function callBuildBasePrompt(session: ChatSession): Promise<string> {
+  return (session as unknown as { buildBasePrompt(): Promise<string> }).buildBasePrompt();
+}
+
+// Characterization tests — they capture the CURRENT byte-exact prompt output of
+// the chat path (and its parity with the one-shot run path) so the shared
+// prompt-assembly extraction is provably behavior-preserving.
+describe("ChatSession.buildBasePrompt — characterization / run-path parity", () => {
+  it("base prompt + '## Task' framing is byte-identical to ExecutionManager.buildPrompt for the same agent", async () => {
+    const repo = makeFullRepoStub();
+    const agent = makeFullAgent();
+
+    const session = new ChatSession(agent, makeSettings(), repo, vaultStub);
+    const basePrompt = await callBuildBasePrompt(session);
+    // sendMessage frames the first turn as `${basePrompt}\n\n## Task\n${messageText}`
+    const chatFirstTurn = `${basePrompt}\n\n## Task\nSummarize the news.`;
+
+    const manager = new ExecutionManager(makeSettings(), repo);
+    const runPrompt = await manager.buildPrompt(agent, makeTask({ body: "Summarize the news." }));
+
+    expect(chatFirstTurn).toBe(runPrompt);
+  });
+
+  it("fully-loaded agent with channel context: byte-exact section order (memory → channel → wiki)", async () => {
+    const repo = makeFullRepoStub();
+    const session = new ChatSession(makeFullAgent(), makeSettings(), repo, vaultStub, {
+      channelName: "my-slack",
+      conversationId: "slack:T1:C1:U1",
+      channelContext: "You are being contacted via Slack.",
+    });
+    const prompt = await callBuildBasePrompt(session);
+
+    // The channel-context section sits between memory and wiki access —
+    // this exact ordering is load-bearing (captured pre-refactor).
+    const memorySection =
+      `## Memory\n${MEMORY_CAPTURE_INSTRUCTION}\n\n### What you've learned so far\n` +
+      "## Preferences\n- [pin] Prefers concise answers\n\n" +
+      "## Recent (uncurated)\n- Deploy uses GitHub Actions <!-- src:run 2026-06-30 -->";
+
+    expect(prompt).toContain(
+      `${memorySection}\n\n## Channel Context\nYou are being contacted via Slack.\n\n## Wiki Access\n`,
+    );
+    expect(prompt.startsWith("You are a helpful test agent.\n\n## Skill: research\n")).toBe(true);
+  });
+
+  it("thread mode section comes after wiki access (last section)", async () => {
+    const repo = makeFullRepoStub();
+    const agent = makeFullAgent();
+    const parent = new ChatSession(agent, makeSettings(), repo, vaultStub);
+    parent.messages = [
+      { id: "m0", role: "user", content: "hi", timestamp: "t0" },
+      { id: "m1", role: "assistant", content: "hello there", timestamp: "t1" },
+    ];
+    const thread = new ChatSession(agent, makeSettings(), repo, vaultStub, {
+      threadAnchorId: "m1",
+      parentSession: parent,
+    });
+    (thread as unknown as { threadAnchorIndex: number }).threadAnchorIndex = 1;
+
+    const prompt = await callBuildBasePrompt(thread);
+
+    const wikiIdx = prompt.indexOf("## Wiki Access");
+    const threadIdx = prompt.indexOf("## Thread Mode");
+    expect(wikiIdx).toBeGreaterThan(-1);
+    expect(threadIdx).toBeGreaterThan(wikiIdx);
+    // Replay content is exact: preamble, then a "## Conversation so far" replay.
+    expect(prompt.endsWith(
+      "## Thread Mode\n" +
+        "You are continuing a side thread from this conversation. The user is " +
+        "following up on one of your earlier replies and wants to explore " +
+        "something specific without adding to the main thread. Your answers " +
+        "here stay in this thread only and will NOT be added back to the " +
+        "main conversation.\n\n" +
+        "## Conversation so far\nUser: hi\nAssistant: hello there",
+    )).toBe(true);
+  });
+
+  it("memory-enabled chat agent gets the memory section unconditionally (no chat-side suppression)", async () => {
+    const repo = makeFullRepoStub();
+    const session = new ChatSession(makeAgent({ memory: true }), makeSettings(), repo, vaultStub);
+    const prompt = await callBuildBasePrompt(session);
+    expect(prompt).toBe(
+      "You are a helpful test agent.\n\n" +
+        `## Memory\n${MEMORY_CAPTURE_INSTRUCTION}\n\n### What you've learned so far\n` +
+        "## Preferences\n- [pin] Prefers concise answers\n\n" +
+        "## Recent (uncurated)\n- Deploy uses GitHub Actions <!-- src:run 2026-06-30 -->",
+    );
   });
 });
 
@@ -447,6 +638,94 @@ describe("ChatSession.detachProcessListeners", () => {
     };
     session.hibernate();
     expect((session as unknown as SessionInternals).processListeners).toBeNull();
+  });
+});
+
+describe("ChatSession.handleStdout — partial-line buffer cap", () => {
+  type StdoutInternals = { stdoutBuffer: string; handleStdout(chunk: string): void };
+
+  it("keeps a small incomplete trailing line buffered", () => {
+    const session = new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
+    const s = session as unknown as StdoutInternals;
+    s.handleStdout('{"type":"sys');
+    expect(s.stdoutBuffer).toBe('{"type":"sys');
+  });
+
+  it("drops a pathological oversized partial line instead of buffering unboundedly", () => {
+    const session = new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
+    const s = session as unknown as StdoutInternals;
+    // One giant chunk with no newline — must not be retained.
+    s.handleStdout("x".repeat(10 * 1024 * 1024 + 1));
+    expect(s.stdoutBuffer).toBe("");
+    // Subsequent well-formed lines still parse (session id is captured).
+    s.handleStdout('{"type":"system","session_id":"s-after-drop"}\n');
+    expect(
+      (session as unknown as { claudeSessionId: string | null }).claudeSessionId,
+    ).toBe("s-after-drop");
+  });
+});
+
+describe("ChatSession.handleProcessClose — streaming reset between turns", () => {
+  it("resets streaming state even when no turn resolve is pending", () => {
+    const session = new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
+    type Internals = {
+      pendingTurns: number;
+      setStreaming(active: boolean): void;
+      handleProcessClose(): void;
+      turnResolve: unknown;
+    };
+    const s = session as unknown as Internals;
+    // Simulate a wedged state: spinner on, no resolver to end the turn.
+    s.setStreaming(true);
+    s.pendingTurns = 1;
+    expect(s.turnResolve).toBeNull();
+
+    s.handleProcessClose();
+
+    expect(session.isStreaming).toBe(false);
+    expect(session.pendingTurnCount).toBe(0);
+    expect(session.isProcessAlive).toBe(false);
+  });
+});
+
+describe("ChatSession codex queue — failed follow-up start is reported, not silent", () => {
+  it("emits an error event naming the dropped queued messages when startCodexTurn rejects", async () => {
+    const session = new ChatSession(
+      makeAgent({ adapter: "codex" }),
+      makeSettings(),
+      makeRepositoryStub(),
+      vaultStub,
+    );
+    type Internals = {
+      codexQueue: string[];
+      pendingTurns: number;
+      activeOnEvent: ((ev: { type: string; errorMessage?: string }) => void) | null;
+      startCodexTurn(text: string): Promise<void>;
+      handleTurnEnd(): void;
+      turnReject: ((e: Error) => void) | null;
+    };
+    const s = session as unknown as Internals;
+    const events: Array<{ type: string; errorMessage?: string }> = [];
+    const rejections: Error[] = [];
+    s.activeOnEvent = (ev) => events.push(ev);
+    s.turnReject = (e) => rejections.push(e);
+    s.codexQueue = ["queued follow-up", "second follow-up"];
+    s.pendingTurns = 3;
+    s.startCodexTurn = () => Promise.reject(new Error("spawn ENOENT"));
+
+    s.handleTurnEnd();
+    // Let the startCodexTurn rejection propagate through the catch handler.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const errEvent = events.find((e) => e.type === "error");
+    // Both the shifted message and the one still queued are reported.
+    expect(errEvent?.errorMessage).toMatch(/dropping 2 queued messages/);
+    expect(errEvent?.errorMessage).toContain("spawn ENOENT");
+    // The turn promise still rejects (handleProcessError ran) and the queue
+    // is cleared — no stale entries linger for the next turn.
+    expect(rejections.map((e) => e.message)).toEqual(["spawn ENOENT"]);
+    expect(s.codexQueue).toEqual([]);
+    expect(session.isStreaming).toBe(false);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig, FleetSettings } from "../types";
 import type { ExecBuildOptions } from "./types";
 import {
@@ -229,6 +229,39 @@ describe("codexAdapter.parseExecOutput", () => {
   it("falls back to stderr when nothing parseable arrived", () => {
     const parsed = codexAdapter.parseExecOutput("", "codex: command failed", true);
     expect(parsed.outputText).toBe("codex: command failed");
+  });
+
+  describe("parse-failure logging", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("does not warn about non-JSON noise mixed with valid JSONL events", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const stdout = [
+        "codex banner text",
+        JSON.stringify({ type: "item.completed", item: { id: "i1", type: "agent_message", text: "hi" } }),
+      ].join("\n");
+      const parsed = codexAdapter.parseExecOutput(stdout, "", true);
+      expect(parsed.outputText).toBe("hi");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("warns when non-empty stdout contained no parseable JSONL event", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const parsed = codexAdapter.parseExecOutput("plain text output\nstill not json", "", true);
+      expect(parsed.outputText).toBe("(no output)");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("no parseable JSONL event");
+      expect(message).toContain("plain text output");
+    });
+
+    it("does not warn on empty stdout", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      codexAdapter.parseExecOutput("", "codex: command failed", true);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });
 

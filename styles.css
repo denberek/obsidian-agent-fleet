@@ -334,6 +334,19 @@
   height: 14px;
 }
 
+.af-search-result-empty {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--af-text-muted);
+}
+
+.af-search-result-footer {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--af-text-muted);
+  border-top: 1px solid var(--af-border);
+}
+
 /* ─── Status Pills ─── */
 .af-status-pills {
   display: flex;
@@ -647,10 +660,6 @@
 .af-btn-icon svg {
   width: 12px;
   height: 12px;
-}
-
-.af-icon-back {
-  transform: rotate(180deg);
 }
 
 /* ─── Buttons ─── */
@@ -1446,12 +1455,6 @@
   margin-top: 16px;
 }
 
-.af-detail-value-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .af-run-list-item {
   display: flex;
   gap: 12px;
@@ -1573,7 +1576,6 @@
 }
 
 .af-kanban-running { border-color: rgba(249, 226, 175, 0.3); }
-.af-kanban-review { border-color: rgba(137, 180, 250, 0.3); }
 .af-kanban-failed { border-color: rgba(243, 139, 168, 0.15); }
 
 /* Drag and drop states */
@@ -1801,23 +1803,6 @@
   gap: 4px;
 }
 
-.af-kanban-card-tags {
-  display: flex;
-  gap: 3px;
-}
-
-.af-kanban-card-tag {
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 500;
-}
-
-.af-kanban-card-tag.monitoring { background: var(--af-blue-bg); color: var(--af-blue); }
-.af-kanban-card-tag.devops { background: var(--af-orange-bg); color: var(--af-orange); }
-.af-kanban-card-tag.sample { background: var(--af-purple-bg); color: var(--af-purple); }
-.af-kanban-card-tag.default { background: var(--af-bg-surface); color: var(--af-text-muted); }
-
 .af-kanban-card-error {
   padding: 6px 0;
   font-size: 11px;
@@ -1906,21 +1891,6 @@
   border-color: var(--af-accent);
   background: var(--af-accent-bg);
 }
-
-/* ─── Priority Badge (detail page) ─── */
-.af-priority-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: var(--af-radius-sm);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.af-priority-badge.critical { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-.af-priority-badge.high { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-.af-priority-badge.medium { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.af-priority-badge.low { background: var(--af-bg-surface); color: var(--af-text-secondary); }
 
 /* ─── Schedule body toggle ─── */
 .af-schedule-body {
@@ -2166,10 +2136,6 @@
   word-break: break-word;
 }
 
-.af-detail-value.af-accent {
-  color: var(--af-accent);
-}
-
 .af-output-block {
   background: var(--af-bg-primary);
   border: 1px solid var(--af-border);
@@ -2281,6 +2247,10 @@
   font-size: 12px;
 }
 
+.af-empty-action {
+  margin-top: 12px;
+}
+
 /* ─── Responsive ─── */
 @media (max-width: 1000px) {
   .af-dash-grid {
@@ -2331,11 +2301,6 @@
 
 .agent-fleet-task-list {
   margin: 8px 0 0 16px;
-}
-
-.agent-fleet-textarea {
-  width: 100%;
-  margin: 8px 0 16px;
 }
 
 /* ─── Create Agent Modal ─── */
@@ -2582,13 +2547,6 @@
   color: var(--af-text-secondary);
   padding-top: 7px;
   line-height: 1;
-}
-
-.af-form-desc {
-  font-size: 10px;
-  color: var(--af-text-muted);
-  font-weight: 400;
-  margin-top: 2px;
 }
 
 /* Info-icon tooltip — replaces verbose subtitles on form labels */
@@ -2970,34 +2928,6 @@
   border-radius: 8px;
 }
 
-/* ─── Chat Slideover ─── */
-.af-slideover.af-chat-slideover {
-  width: 540px;
-}
-
-.af-chat-header-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.af-chat-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.af-chat-header-icon {
-  display: flex;
-  align-items: center;
-  color: var(--af-accent);
-}
-
-.af-chat-header-icon svg {
-  width: 16px;
-  height: 16px;
-}
-
 .af-chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -3296,13 +3226,6 @@
     opacity: 1;
     transform: scale(1);
   }
-}
-
-.af-chat-working-indicator {
-  font-size: 11px;
-  color: var(--af-text-secondary);
-  padding: 0 0 6px 0;
-  opacity: 0.8;
 }
 
 .af-chat-input-area {
@@ -3802,105 +3725,6 @@
   font-size: 10px;
 }
 
-/* ─── MCP Tool Item (simple list fallback) ─── */
-.af-mcp-tool-item {
-  font-family: var(--font-monospace);
-  font-size: 12px;
-  padding: 4px 8px;
-  background: var(--af-bg-surface);
-  border-radius: 4px;
-  margin-bottom: 4px;
-  color: var(--af-text-secondary);
-}
-
-/* ── MCP Discovery Progress ── */
-
-.af-mcp-progress {
-  margin: 0 0 20px 0;
-  padding: 16px 20px;
-  background: var(--af-card-bg);
-  border: 1px solid var(--af-border);
-  border-radius: 10px;
-}
-
-.af-mcp-progress-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.af-mcp-spinner {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.af-mcp-spinner span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--af-blue);
-  animation: af-mcp-bounce 1.2s infinite ease-in-out;
-}
-
-.af-mcp-spinner span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.af-mcp-spinner span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes af-mcp-bounce {
-  0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
-  30% { opacity: 1; transform: scale(1.1); }
-}
-
-.af-mcp-progress-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--af-text-primary);
-}
-
-.af-mcp-progress-bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--af-border);
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-
-.af-mcp-progress-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--af-blue);
-  transition: width 0.4s ease;
-}
-
-.af-mcp-progress-fill-slow {
-  /* When tool discovery is running (the slow phase), add a shimmer */
-  background: linear-gradient(
-    90deg,
-    var(--af-blue) 0%,
-    color-mix(in srgb, var(--af-blue) 60%, white) 50%,
-    var(--af-blue) 100%
-  );
-  background-size: 200% 100%;
-  animation: af-mcp-shimmer 1.5s infinite linear;
-}
-
-@keyframes af-mcp-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-.af-mcp-progress-detail {
-  font-size: 11px;
-  color: var(--af-text-secondary);
-  letter-spacing: 0.01em;
-}
-
 /* ── MCP Auth Button ── */
 
 .af-mcp-auth-row {
@@ -3930,24 +3754,6 @@
 @keyframes af-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
-}
-
-.af-mcp-hint-row {
-  font-size: 11px;
-  color: var(--af-text-secondary);
-  padding: 8px 0 0;
-  border-top: 1px solid var(--af-border);
-  margin-top: 10px;
-}
-
-.af-mcp-hint-row .af-link {
-  cursor: pointer;
-  text-decoration: underline;
-  opacity: 0.8;
-}
-
-.af-mcp-hint-row .af-link:hover {
-  opacity: 1;
 }
 
 /* ── MCP Slideover Actions ── */
@@ -4467,10 +4273,6 @@
   border-top: 1px solid var(--af-border);
 }
 
-.af-wk-schedule-block {
-  margin-bottom: 12px;
-}
-
 /* ── Run-detail transcript disclosure ── */
 
 .af-run-transcript {
@@ -4518,12 +4320,6 @@
   padding-top: 10px;
   border-top: 1px dashed var(--af-border);
   opacity: 0.92;
-}
-
-.af-wk-schedule-block .af-form-hint {
-  font-size: 12px;
-  color: var(--af-text-secondary);
-  margin-bottom: 6px;
 }
 
 /* ─── Chat: conversations side rail ───────────────────────────────────── */
@@ -4731,4 +4527,177 @@
 
 .af-chat-convo-collapse-btn.is-collapsed .af-convo-toggle-bar {
   width: 8.33%;
+}
+
+/* Muted recovery hint below the message inside an error bubble */
+.af-chat-error-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--af-text-secondary);
+}
+
+/* ─── Agent card: heartbeat status line ─────────────────────────────────── */
+/* Compact line above the card footer: heart-pulse icon + schedule/next-run
+ * text + a small quick-toggle (same update path as the Overview tab). */
+.af-agent-card-heartbeat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--af-text-muted);
+}
+
+.af-agent-card-hb-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--af-green);
+  opacity: 0.7;
+}
+
+.af-agent-card-hb-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.af-agent-card-hb-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Smaller variant of the standard pill toggle for inline card rows */
+.af-agent-card-toggle-sm {
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+}
+
+.af-agent-card-toggle-sm::after {
+  width: 12px;
+  height: 12px;
+}
+
+.af-agent-card-toggle-sm.on::after {
+  transform: translateX(12px);
+}
+
+/* ─── Agent form: adapter-switch permission mapping hint ────────────────── */
+/* Muted one-liner under the permission-mode field, shown only after the user
+ * switches the adapter, explaining how the mode vocabulary was translated. */
+.af-adapter-map-hint {
+  font-size: 11px;
+  color: var(--af-text-muted);
+  line-height: 1.5;
+}
+
+/* ─── Task form: schedule type segmented control ────────────────────────── */
+.af-segmented {
+  display: inline-flex;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-md);
+  overflow: hidden;
+}
+
+.af-segmented-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--af-text-secondary);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.af-segmented-btn + .af-segmented-btn {
+  border-left: 1px solid var(--af-border);
+}
+
+.af-segmented-btn:hover {
+  color: var(--af-text-normal, var(--text-normal));
+}
+
+.af-segmented-btn.active {
+  background: var(--af-accent);
+  color: white;
+}
+
+/* ─── Dashboard: first-run welcome card ─────────────────────────────────── */
+.af-welcome-card {
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-md);
+  background: var(--af-bg-card, var(--background-secondary));
+}
+
+.af-welcome-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.af-welcome-dismiss {
+  flex-shrink: 0;
+}
+
+.af-welcome-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--af-text-secondary);
+}
+
+.af-welcome-steps {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.af-welcome-step {
+  flex: 1 1 180px;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--af-border);
+  border-radius: var(--af-radius-md);
+  cursor: pointer;
+  transition: border-color var(--af-transition), background var(--af-transition);
+}
+
+.af-welcome-step:hover {
+  border-color: var(--af-accent);
+  background: var(--background-modifier-hover);
+}
+
+.af-welcome-step-num {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--af-accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.af-welcome-step-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.af-welcome-step-desc {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--af-text-muted);
 }

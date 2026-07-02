@@ -12,6 +12,8 @@ import type {
   InboundMessage,
   StatusHandler,
 } from "./adapter";
+import { splitText } from "./formatter";
+import { ExponentialBackoff } from "./backoff";
 
 /**
  * Telegram Bot API adapter using long-polling (getUpdates).
@@ -39,7 +41,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private stopping = false;
   private pollOffset = 0;
   private pollTimer: number | null = null;
-  private backoffMs = 1000;
+  private readonly backoff = new ExponentialBackoff();
   private typingIntervals = new Map<string, number>();
 
   /** AbortController for the current long-poll request — lets stop() cancel a 30s wait. */
@@ -268,7 +270,7 @@ export class TelegramAdapter implements ChannelAdapter {
           }
         }
 
-        this.backoffMs = 1000; // Reset on success
+        this.backoff.reset(); // Reset on success
         if (this.status !== "connected") this.setStatus("connected");
       } catch (err) {
         // Abort errors from stop() are expected — don't log or backoff
@@ -278,9 +280,8 @@ export class TelegramAdapter implements ChannelAdapter {
           const msg = err instanceof Error ? err.message : String(err);
           this.setStatus(msg.includes("401") || msg.includes("Unauthorized") ? "needs-auth" : "error");
         }
-        // Backoff
-        await new Promise((r) => window.setTimeout(r, this.backoffMs));
-        this.backoffMs = Math.min(30_000, this.backoffMs * 2);
+        // Backoff — wait the current delay; the next failure waits double.
+        await new Promise((r) => window.setTimeout(r, this.backoff.nextDelay()));
       }
 
       // Schedule next poll
@@ -593,19 +594,4 @@ function threadIdFromConversationId(conversationId: string): string | undefined 
   const parts = conversationId.split(":");
   if (parts[2] === "topic" && parts[3]) return parts[3];
   return undefined;
-}
-
-function splitText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > limit) {
-    let cutAt = remaining.lastIndexOf("\n\n", limit);
-    if (cutAt < limit / 2) cutAt = remaining.lastIndexOf("\n", limit);
-    if (cutAt < limit / 2) cutAt = limit;
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).replace(/^\n+/, "");
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
 }

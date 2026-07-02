@@ -1894,7 +1894,7 @@ export class AgentChatView extends ItemView {
           // timeout, etc). Render a red error bubble so the user knows
           // exactly what happened; state clean-up is handled by the session.
           const msg = event.errorMessage?.trim() || "The agent's run ended with an error.";
-          this.addBubble("error", `Error: ${msg}`);
+          this.addErrorBubble(msg);
         } else if (event.type === "compacted") {
           // /compact completed — not a bubble anymore. The session writes
           // `stats.lastCompact` and re-emits stats, so the inline notice
@@ -1930,9 +1930,17 @@ export class AgentChatView extends ItemView {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg !== "Aborted") {
-        this.addBubble("error", `Error: ${msg}`);
+        this.addErrorBubble(msg);
       }
     }
+  }
+
+  /** Render a red error bubble, plus a muted one-line recovery hint below
+   *  the message when the error matches a known failure mode. */
+  private addErrorBubble(msg: string): void {
+    const bubble = this.addBubble("error", `Error: ${msg}`);
+    const hint = recoveryHintFor(msg);
+    if (hint) bubble.createDiv({ cls: "af-chat-error-hint", text: hint });
   }
 
   /** "+ New chat" creates a brand-new conversation alongside any existing
@@ -1989,10 +1997,32 @@ export class AgentChatView extends ItemView {
     }).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg !== "Aborted") {
-        this.addBubble("error", `Error: ${msg}`);
+        this.addErrorBubble(msg);
       }
     });
   }
+}
+
+/** Pattern-match common CLI/API failures and return a one-line recovery
+ *  hint, or null when the error isn't recognized (no hint rendered). */
+export function recoveryHintFor(errorText: string): string | null {
+  const t = errorText.toLowerCase();
+  if (/context\s*(window|length)|prompt is too long|too many tokens|token limit|maximum context|context.{0,20}exceed/.test(t)) {
+    return "Try a smaller model, or start a new session to clear history.";
+  }
+  if (/rate.?limit|\b429\b|overloaded|too many requests/.test(t)) {
+    return "Wait a minute and retry, or check your API quota.";
+  }
+  if (/\b401\b|unauthorized|api.?key|authentication|invalid.{0,10}credential|not logged in/.test(t)) {
+    return "Check your API key / CLI login (run the CLI's login command in a terminal).";
+  }
+  if (/timed out|time.?out|watchdog/.test(t)) {
+    return "A tool may be stuck. Retry, or raise the Chat Watchdog Timeout in Settings.";
+  }
+  if (/enoent|command not found|no such file or directory/.test(t)) {
+    return "CLI binary not found — check the CLI path in Settings.";
+  }
+  return null;
 }
 
 function formatTokens(n: number): string {

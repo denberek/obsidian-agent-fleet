@@ -1,6 +1,7 @@
 import type { AgentConfig, ExecutionToolUse, FleetSettings } from "../types";
 import { splitLines } from "../utils/platform";
 import { restoreClaudeSettingsFile, writeClaudeSettingsFile } from "../utils/claudeSettings";
+import { parseJsonLoud, tryParseJson, warnJsonParseFailure } from "./parseHelpers";
 import type {
   CliAdapter,
   ExecBuildOptions,
@@ -263,25 +264,25 @@ export const claudeCodeAdapter: CliAdapter = {
     let rawJson: unknown;
 
     if (streaming) {
-      // stream-json: find the last parseable event (normally the "result" line)
+      // stream-json: find the last parseable event (normally the "result"
+      // line). Individual non-JSON lines are expected (banners, verbose
+      // noise) — but a stream with NO parseable event at all is a real
+      // failure worth surfacing.
       const lines = splitLines(trimmed);
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i]?.trim();
         if (!line) continue;
-        try {
-          const parsed: unknown = JSON.parse(line);
-          if (parsed && typeof parsed === "object") {
-            rawJson = parsed;
-            break;
-          }
-        } catch { /* skip non-json lines */ }
+        const parsed = tryParseJson(line);
+        if (parsed && typeof parsed === "object") {
+          rawJson = parsed;
+          break;
+        }
+      }
+      if (rawJson === undefined && trimmed) {
+        warnJsonParseFailure("Claude Code stream-json output contained no parseable JSON event", trimmed);
       }
     } else if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      try {
-        rawJson = JSON.parse(trimmed);
-      } catch {
-        rawJson = undefined;
-      }
+      rawJson = parseJsonLoud("Claude Code JSON output failed to parse", trimmed);
     }
 
     let outputText = extractText(rawJson) ?? "";
@@ -291,17 +292,16 @@ export const claudeCodeAdapter: CliAdapter = {
       for (const line of splitLines(trimmed)) {
         const l = line.trim();
         if (!l) continue;
-        try {
-          const ev = JSON.parse(l) as ClaudeStreamEvent;
-          // Only extract assistant text content, skip system/result/user events
-          if (ev.type === "assistant" && ev.message?.content) {
-            for (const block of ev.message.content) {
-              if (block.type === "text" && block.text) textParts.push(block.text);
-            }
-          } else if (ev.type === "result" && typeof ev.result === "string") {
-            textParts.push(ev.result);
+        const ev = tryParseJson(l) as ClaudeStreamEvent | undefined;
+        if (!ev || typeof ev !== "object") continue; // non-JSON noise is expected
+        // Only extract assistant text content, skip system/result/user events
+        if (ev.type === "assistant" && ev.message?.content) {
+          for (const block of ev.message.content) {
+            if (block.type === "text" && block.text) textParts.push(block.text);
           }
-        } catch { /* not JSON, skip */ }
+        } else if (ev.type === "result" && typeof ev.result === "string") {
+          textParts.push(ev.result);
+        }
       }
       outputText = textParts.join("\n").trim();
     }
@@ -316,18 +316,17 @@ export const claudeCodeAdapter: CliAdapter = {
       for (const line of splitLines(trimmed)) {
         const l = line.trim();
         if (!l) continue;
-        try {
-          const ev: unknown = JSON.parse(l);
-          if (!concreteModel) {
-            const m = extractConcreteModel(ev);
-            if (m) concreteModel = m;
-          }
-          if (!finalResult) {
-            const r = extractFinalResult(ev);
-            if (r) finalResult = r;
-          }
-          if (concreteModel && finalResult) break;
-        } catch { /* not JSON, skip */ }
+        const ev = tryParseJson(l); // non-JSON noise is expected, skip silently
+        if (ev === undefined) continue;
+        if (!concreteModel) {
+          const m = extractConcreteModel(ev);
+          if (m) concreteModel = m;
+        }
+        if (!finalResult) {
+          const r = extractFinalResult(ev);
+          if (r) finalResult = r;
+        }
+        if (concreteModel && finalResult) break;
       }
     }
 
@@ -345,12 +344,10 @@ export const claudeCodeAdapter: CliAdapter = {
   extractStreamChunk(line: string): string | null {
     const trimmed = line.trim();
     if (!trimmed) return null;
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
+    // Live per-line parsing — non-JSON lines are expected noise, skip silently.
+    const parsed = tryParseJson(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const event = parsed as Record<string, unknown>;
     const type = event.type as string | undefined;
 
     // Assistant message: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}

@@ -239,8 +239,14 @@ export function buildCodexHomeOverlay(
       if (!f.endsWith(".rules")) continue;
       try {
         copyFileSync(join(userRulesDir, f), join(rulesDir, `user-${f}`));
-      } catch {
-        /* skip an unreadable global rule rather than fail the run */
+      } catch (err) {
+        // Skip an unreadable global rule rather than fail the run — but say
+        // so: the user's safety rules are being dropped for this agent's run.
+        console.warn(
+          `Agent Fleet: couldn't copy the Codex rules file ${join(userRulesDir, f)} into agent ` +
+            `"${agent.name}"'s permission overlay (${err instanceof Error ? err.message : String(err)}); ` +
+            `its rules will NOT apply to this agent's runs.`,
+        );
       }
     }
   }

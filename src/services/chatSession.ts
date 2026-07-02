@@ -7,10 +7,10 @@ import type { FleetRepository } from "../fleetRepository";
 import { slugify } from "../utils/markdown";
 import { resolveModel, shouldPassModelFlag } from "./../utils/modelResolution";
 import { spawnCli, splitLines } from "../utils/platform";
-import { buildWikiReferencesContext } from "../utils/wikiReferences";
-import { buildMemorySection, extractCaptures, redactRememberForDisplay, stripRememberTags } from "../utils/memoryFormat";
+import { extractCaptures, redactRememberForDisplay, stripRememberTags } from "../utils/memoryFormat";
 import { MemoryWriter } from "./memoryWriter";
 import type { McpAuthManager } from "./mcpAuth";
+import { buildAgentPromptSections } from "./promptAssembly";
 import {
   installMcpProjection,
   resolveProjectedServers,
@@ -176,6 +176,11 @@ export class ChatSession {
   private claudeResumeAttempted = false;
   private vault: Vault;
   private stdoutBuffer = "";
+  /** Cap on the buffered partial stdout line. Stream-json is line-delimited,
+   *  so the buffer only ever holds one incomplete line — a line this size
+   *  means the CLI is emitting something pathological, and buffering it
+   *  further would grow memory unboundedly. */
+  private static readonly STDOUT_LINE_CAP = 10 * 1024 * 1024;
   /** Bound event handlers for the current process — kept so we can removeListener on kill. */
   private processListeners: {
     onStdout: (chunk: Buffer | string) => void;
@@ -779,6 +784,15 @@ export class ChatSession {
     this.stdoutBuffer += chunk.toString();
     const lines = splitLines(this.stdoutBuffer);
     this.stdoutBuffer = lines.pop() ?? ""; // keep incomplete trailing line
+    if (this.stdoutBuffer.length > ChatSession.STDOUT_LINE_CAP) {
+      // Drop the oversized partial line. When its tail (and newline) finally
+      // arrives, the leftover fragment fails JSON.parse and is skipped, so
+      // line-based parsing of subsequent events continues unharmed.
+      console.warn(
+        `Agent Fleet: chat stdout line exceeded ${ChatSession.STDOUT_LINE_CAP} chars — dropping partial line`,
+      );
+      this.stdoutBuffer = "";
+    }
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -1151,6 +1165,18 @@ export class ChatSession {
       if (next !== undefined) {
         this.armWatchdog();
         void this.startCodexTurn(next).catch((err: unknown) => {
+          // The dequeued message never reached the CLI and handleProcessError
+          // clears the rest of the queue — report what was dropped so the
+          // failure isn't silent. (Re-queuing and retrying here could loop
+          // forever on a persistent spawn failure, so we drop-and-report.)
+          const dropped = 1 + this.codexQueue.length;
+          this.activeOnEvent?.({
+            type: "error",
+            content: "",
+            errorMessage:
+              `failed to start queued Codex turn — dropping ${dropped} queued ` +
+              `message${dropped === 1 ? "" : "s"}: ${err instanceof Error ? err.message : String(err)}`,
+          });
           this.handleProcessError(err instanceof Error ? err : new Error(String(err)));
         });
         return;
@@ -1205,14 +1231,16 @@ export class ChatSession {
     this.mcpProjection = null;
 
     // If a turn was pending, resolve with whatever we accumulated
-    if (this.turnResolve) {
+    const resolve = this.turnResolve;
+    let result: { text: string; toolCalls: ToolCall[] } | null = null;
+    if (resolve) {
       // Resumed turn that produced nothing → the session is almost certainly
       // expired/missing. Drop the id so the next turn starts fresh instead of
       // re-resuming a dead session and staying silent.
       if (this.claudeResumeAttempted && !this.turnResponseText.trim()) {
         this.clearSessionId();
       }
-      const result = { text: this.turnResponseText, toolCalls: [...this.turnToolCalls] };
+      result = { text: this.turnResponseText, toolCalls: [...this.turnToolCalls] };
 
       if (this.turnResponseText.trim()) {
         this.messages.push({
@@ -1223,19 +1251,22 @@ export class ChatSession {
           toolCalls: this.turnToolCalls.length > 0 ? [...this.turnToolCalls] : undefined,
         });
       }
+    }
 
-      this.pendingTurns = 0;
-      this.turnResponseText = "";
-      this.turnToolCalls = [];
-      this.clearWatchdog();
-      this.setStreaming(false);
+    // Reset streaming state unconditionally — a process closing between turns
+    // (no pending resolve) must still drop the spinner, otherwise isStreaming
+    // wedges at true with no process left to end the turn.
+    this.pendingTurns = 0;
+    this.turnResponseText = "";
+    this.turnToolCalls = [];
+    this.clearWatchdog();
+    this.setStreaming(false);
 
+    if (resolve && result) {
       void this.persist();
-
-      const resolve = this.turnResolve;
       this.turnResolve = null;
       this.turnReject = null;
-      resolve?.(result);
+      resolve(result);
     }
   }
 
@@ -1447,7 +1478,13 @@ export class ChatSession {
       proc.stdin!.write(invocation.stdinPayload ?? messageText);
       proc.stdin!.end();
     } catch (err) {
+      // Detach BEFORE killing so the kill's close event can't fire
+      // handleCodexProcessClose and double-settle the turn the caller is
+      // about to fail (it would also leak the listeners otherwise).
+      this.detachProcessListeners();
       try { proc.kill(); } catch { /* ignore */ }
+      this.process = null;
+      this.isProcessAlive = false;
       throw err instanceof Error ? err : new Error(String(err));
     }
   }
@@ -1628,42 +1665,15 @@ export class ChatSession {
    * memory entirely for channel-bound agents.
    */
   private async buildBasePrompt(): Promise<string> {
-    const sections: string[] = [this.agent.body.trim()];
-
-    for (const skillName of this.agent.skills) {
-      const skill = this.repository.getSkillByName(skillName);
-      if (skill) {
-        const parts = [skill.body.trim()];
-        if (skill.toolsBody.trim()) parts.push(`### Tools\n${skill.toolsBody.trim()}`);
-        if (skill.referencesBody.trim()) parts.push(`### References\n${skill.referencesBody.trim()}`);
-        if (skill.examplesBody.trim()) parts.push(`### Examples\n${skill.examplesBody.trim()}`);
-        sections.push(`## Skill: ${skill.name}\n${parts.join("\n\n")}`);
-      }
-    }
-
-    if (this.agent.skillsBody.trim()) {
-      sections.push(`## Agent Skills\n${this.agent.skillsBody.trim()}`);
-    }
-
-    if (this.agent.contextBody.trim()) {
-      sections.push(`## Agent Context\n${this.agent.contextBody.trim()}`);
-    }
-
-    if (this.agent.memory) {
-      const wm = await this.repository.readWorkingMemory(this.agent.name);
-      const memorySection = buildMemorySection(this.agent, wm);
-      if (memorySection) sections.push(memorySection);
-    }
-
-    // Channel context appended LAST so it takes priority over earlier sections
-    // without shadowing the agent's identity.
-    if (this.channelContext && this.channelContext.trim()) {
-      sections.push(`## Channel Context\n${this.channelContext.trim()}`);
-    }
-
-    // Wiki references — consumer-mode access to one or more Wiki Keeper scopes.
-    const wikiContext = buildWikiReferencesContext(this.agent, this.repository);
-    if (wikiContext) sections.push(wikiContext);
+    // Common sections (body/skills/context/memory/wiki) come from the shared
+    // assembly so the chat and one-shot run paths cannot drift. The chat-only
+    // channel context travels as an option because it sits between memory and
+    // wiki access; the thread-mode replay below is appended caller-side since
+    // it is always the final section.
+    const sections = await buildAgentPromptSections(this.repository, this.agent, {
+      memoryActive: this.agent.memory,
+      channelContext: this.channelContext,
+    });
 
     // Thread mode: append soft-fork preamble + replay parent history up to
     // and including the anchor message. See CHAT_THREADING_DESIGN.md §4.2.

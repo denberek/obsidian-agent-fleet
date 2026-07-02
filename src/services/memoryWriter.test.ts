@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig, MemorySection, WorkingMemory } from "../types";
 import { appendEntries, emptyWorkingMemory } from "../utils/memoryFormat";
 import { MemoryWriter, type MemoryStore } from "./memoryWriter";
@@ -196,6 +196,44 @@ describe("MemoryWriter", () => {
     const w = new MemoryWriter(store);
     await w.capture(agent(), [{ text: "a fact" }], "chat", "2026-06-13T10:00:00Z");
     expect(store.migrated).toEqual(["Agent A"]);
+  });
+
+  it("a hung store write does not wedge subsequent captures (lock slot times out)", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new FakeStore();
+      // First write hangs forever; later writes behave normally.
+      let hangNext = true;
+      const realWrite = store.writeWorkingMemory.bind(store);
+      store.writeWorkingMemory = (name, wm) => {
+        if (hangNext) {
+          hangNext = false;
+          return new Promise<void>(() => {}); // never settles
+        }
+        return realWrite(name, wm);
+      };
+      const w = new MemoryWriter(store);
+
+      // Fire-and-forget, mirroring how ChatSession invokes capture. This one
+      // wedges inside writeWorkingMemory and never settles.
+      void w.capture(agent(), [{ text: "stuck fact" }], "chat", "2026-06-13T10:00:00Z");
+      // Let the first task reach the hung write before queuing the second.
+      await vi.advanceTimersByTimeAsync(0);
+
+      const second = w.capture(agent(), [{ text: "later fact" }], "chat", "2026-06-13T10:00:01Z");
+      // Nothing moves until the stuck task's lock slot times out.
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(store.entryTexts("Agent A")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await second;
+      expect(store.entryTexts("Agent A")).toContain("later fact");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("releasing its lock slot"));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("enforces the hard cap, spilling oldest entries to raw-only", async () => {

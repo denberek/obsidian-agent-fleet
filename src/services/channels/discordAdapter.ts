@@ -13,6 +13,8 @@ import type {
   InboundMessage,
   StatusHandler,
 } from "./adapter";
+import { splitText } from "./formatter";
+import { ExponentialBackoff } from "./backoff";
 
 /**
  * Discord adapter using the Gateway (WebSocket) for inbound events and the REST
@@ -79,7 +81,7 @@ export class DiscordAdapter implements ChannelAdapter {
   private ws: WebSocket | null = null;
   private status: ChannelStatus = "stopped";
   private stopping = false;
-  private backoffMs = 1000;
+  private readonly backoff = new ExponentialBackoff();
   private reconnectTimer: number | null = null;
 
   // Gateway session state (for RESUME).
@@ -124,7 +126,7 @@ export class DiscordAdapter implements ChannelAdapter {
 
   async start(): Promise<void> {
     this.stopping = false;
-    this.backoffMs = 1000;
+    this.backoff.reset();
     this.canResume = false;
     await this.connect();
   }
@@ -411,14 +413,14 @@ export class DiscordAdapter implements ChannelAdapter {
       this.selfUserId = ready.user?.id ?? null;
       this.applicationId = ready.application?.id ?? null;
       this.canResume = true;
-      this.backoffMs = 1000;
+      this.backoff.reset();
       this.setStatus("connected");
       void this.registerAgentsCommand();
       return;
     }
 
     if (type === "RESUMED") {
-      this.backoffMs = 1000;
+      this.backoff.reset();
       this.setStatus("connected");
       return;
     }
@@ -485,8 +487,7 @@ export class DiscordAdapter implements ChannelAdapter {
   private scheduleReconnect(): void {
     if (this.stopping) return;
     if (this.reconnectTimer) return;
-    const delay = this.backoffMs;
-    this.backoffMs = Math.min(30_000, this.backoffMs * 2);
+    const delay = this.backoff.nextDelay();
     console.warn(`Agent Fleet: Discord channel ${this.config.name} scheduling reconnect in ${delay}ms`);
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -834,19 +835,4 @@ export function describeDiscordError(rawBody: string | undefined): string {
     // not JSON — fall through to raw
   }
   return raw || "no body";
-}
-
-function splitText(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > limit) {
-    let cutAt = remaining.lastIndexOf("\n\n", limit);
-    if (cutAt < limit / 2) cutAt = remaining.lastIndexOf("\n", limit);
-    if (cutAt < limit / 2) cutAt = limit;
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).replace(/^\n+/, "");
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
 }

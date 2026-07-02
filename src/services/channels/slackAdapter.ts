@@ -13,6 +13,7 @@ import type {
   StatusHandler,
 } from "./adapter";
 import { markdownToMrkdwn } from "./formatter";
+import { ExponentialBackoff } from "./backoff";
 
 /**
  * Slack Socket Mode adapter.
@@ -108,7 +109,7 @@ export class SlackAdapter implements ChannelAdapter {
   private ws: WebSocket | null = null;
   private status: ChannelStatus = "stopped";
   private stopping = false;
-  private backoffMs = 1000;
+  private readonly backoff = new ExponentialBackoff();
   private reconnectTimer: number | null = null;
 
   private readonly inboundHandlers = new Set<InboundHandler>();
@@ -383,7 +384,7 @@ export class SlackAdapter implements ChannelAdapter {
 
     // `hello` — initial handshake completed; we're ready to receive events.
     if (envelope.type === "hello") {
-      this.backoffMs = 1000; // reset backoff on a successful connection
+      this.backoff.reset(); // reset backoff on a successful connection
       this.setStatus("connected");
       return;
     }
@@ -656,8 +657,7 @@ export class SlackAdapter implements ChannelAdapter {
   private scheduleReconnect(): void {
     if (this.stopping) return;
     if (this.reconnectTimer) return;
-    const delay = this.backoffMs;
-    this.backoffMs = Math.min(30_000, this.backoffMs * 2);
+    const delay = this.backoff.nextDelay();
     console.warn(
       `Agent Fleet: Slack channel ${this.config.name} scheduling reconnect in ${delay}ms`,
     );
@@ -749,10 +749,15 @@ export class SlackAdapter implements ChannelAdapter {
       console.warn(`Agent Fleet: Slack send queue error for ${channel}`, err);
     });
     this.sendQueues.set(channel, wrapped);
-    await next;
-    // GC: if no subsequent send chained onto this channel, the queue is idle
-    if (this.sendQueues.get(channel) === wrapped) {
-      this.sendQueues.delete(channel);
+    try {
+      await next;
+    } finally {
+      // GC: if no subsequent send chained onto this channel, the queue is idle.
+      // Runs even when the send throws so a failed channel doesn't leave a
+      // settled promise behind in sendQueues.
+      if (this.sendQueues.get(channel) === wrapped) {
+        this.sendQueues.delete(channel);
+      }
     }
   }
 }

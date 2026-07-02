@@ -23,6 +23,7 @@
 // write failure returns null so the run proceeds with no fleet MCP rather than
 // aborting, and one bad server is dropped (logged) without poisoning the rest.
 
+import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { McpServer, McpTransport } from "../types";
@@ -55,9 +56,6 @@ export interface McpProjection {
   env: Record<string, string>;
   tempFiles: string[];
 }
-
-/** Monotonic suffix so concurrent installs in the same cwd never collide. */
-let projectionSeq = 0;
 
 /**
  * Descriptor for the per-run `remember` capture tool, fed through the same
@@ -254,7 +252,9 @@ export function installMcpProjection(
   const claudeDir = join(cwd, ".claude");
   try {
     if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true });
-    const token = `${process.pid}-${Date.now()}-${projectionSeq++}`;
+    // Random token so concurrent installs — even across processes — never
+    // collide. (pid+time+counter could repeat across two plugin processes.)
+    const token = randomUUID();
 
     // Prepare each server (materialize inline scripts). Drop any that fail so a
     // single broken definition doesn't take down the whole run.

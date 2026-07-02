@@ -360,44 +360,55 @@ export class McpManager {
     let onError: ((err: Error) => void) | null = null;
 
     const server = http.createServer((req, res) => {
-      const reqUrl = new URL(req.url ?? "/", "http://localhost");
-      if (reqUrl.pathname !== "/callback") {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
+      // A throw here (bad URL, dead socket on writeHead, …) would otherwise be
+      // an uncaught exception AND leave waitForCode hanging until its timeout —
+      // catch it, settle the promise, and best-effort close the response.
+      try {
+        const reqUrl = new URL(req.url ?? "/", "http://localhost");
+        if (reqUrl.pathname !== "/callback") {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
 
-      const error = reqUrl.searchParams.get("error");
-      if (error) {
-        const desc = reqUrl.searchParams.get("error_description") ?? error;
+        const error = reqUrl.searchParams.get("error");
+        if (error) {
+          const desc = reqUrl.searchParams.get("error_description") ?? error;
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(
+            "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
+            + "<h2>Authorization Failed</h2><p>" + desc + "</p>"
+            + "<p style='color:#888'>You can close this tab.</p>"
+            + "</body></html>",
+          );
+          onError?.(new Error(`OAuth denied: ${desc}`));
+          return;
+        }
+
+        const code = reqUrl.searchParams.get("code");
+        const state = reqUrl.searchParams.get("state");
+        if (!code || !state) {
+          res.writeHead(400);
+          res.end("Missing code or state");
+          return;
+        }
+
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(
           "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
-          + "<h2>Authorization Failed</h2><p>" + desc + "</p>"
-          + "<p style='color:#888'>You can close this tab.</p>"
+          + "<h2 style='color:#22c55e'>Authenticated!</h2>"
+          + "<p>You can close this tab and return to Obsidian.</p>"
+          + "<script>window.setTimeout(()=>window.close(),2000)</script>"
           + "</body></html>",
         );
-        onError?.(new Error(`OAuth denied: ${desc}`));
-        return;
+        onResult?.(code, state);
+      } catch (err) {
+        try {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        } catch { /* ignore */ }
+        onError?.(err instanceof Error ? err : new Error(String(err)));
       }
-
-      const code = reqUrl.searchParams.get("code");
-      const state = reqUrl.searchParams.get("state");
-      if (!code || !state) {
-        res.writeHead(400);
-        res.end("Missing code or state");
-        return;
-      }
-
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(
-        "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
-        + "<h2 style='color:#22c55e'>Authenticated!</h2>"
-        + "<p>You can close this tab and return to Obsidian.</p>"
-        + "<script>window.setTimeout(()=>window.close(),2000)</script>"
-        + "</body></html>",
-      );
-      onResult?.(code, state);
     });
 
     const port = await new Promise<number>((resolve, reject) => {
@@ -433,7 +444,13 @@ export class McpManager {
             reject(err);
           };
         }),
-      close: () => { try { server.close(); } catch { /* ignore */ } },
+      close: () => {
+        // Drop lingering keep-alive connections first — server.close() alone
+        // waits for them, which would keep the port bound and break the next
+        // auth attempt with "address already in use".
+        try { server.closeAllConnections(); } catch { /* ignore */ }
+        try { server.close(); } catch { /* ignore */ }
+      },
     };
   }
 
@@ -512,7 +529,12 @@ export class McpManager {
       });
 
       req.on("error", reject);
-      const timer = window.setTimeout(() => { req.destroy(); reject(new Error("OAuth request timed out")); }, 15000);
+      const timer = window.setTimeout(() => {
+        // destroy() can throw on an already-broken socket — never let that
+        // skip the reject or leave the socket lingering.
+        try { req.destroy(); } catch { /* ignore */ }
+        reject(new Error("OAuth request timed out"));
+      }, 15000);
       req.on("close", () => window.clearTimeout(timer));
       if (body) req.write(body);
       req.end();

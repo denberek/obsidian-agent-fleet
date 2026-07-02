@@ -175,6 +175,28 @@ export function splitForTransport(text: string, limit: number = SLACK_TEXT_LIMIT
   return chunks;
 }
 
+/**
+ * Plain chunker for transports that render standard markdown (Discord, Telegram):
+ * prefer a paragraph break (`\n\n`), then a line break (`\n`), then a hard split
+ * at the limit. Unlike `splitForTransport` it is NOT fence-aware — deliberately,
+ * since these transports tolerate a fence broken across messages and the callers
+ * relied on this exact cut behavior before extraction.
+ */
+export function splitText(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let cutAt = remaining.lastIndexOf("\n\n", limit);
+    if (cutAt < limit / 2) cutAt = remaining.lastIndexOf("\n", limit);
+    if (cutAt < limit / 2) cutAt = limit;
+    chunks.push(remaining.slice(0, cutAt));
+    remaining = remaining.slice(cutAt).replace(/^\n+/, "");
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 /** Count the number of triple-backtick occurrences in a string. */
 function countFences(s: string): number {
   let n = 0;

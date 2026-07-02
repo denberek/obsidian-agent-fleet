@@ -54,6 +54,21 @@ export class FleetRuntime {
   private statusChangeListeners = new Set<() => void>();
   private runOutputListeners = new Map<string, Set<(chunk: string) => void>>();
   private runOutputBuffers = new Map<string, string>();
+  /** Chunks accumulated since the last listener flush, per agent. Live output
+   *  is fanned out to listeners at most every OUTPUT_FLUSH_INTERVAL_MS (plus a
+   *  final flush at run end) so large/chatty CLI output doesn't cause a render
+   *  per stdout chunk. `runOutputBuffers` is still appended eagerly, so
+   *  getRunOutputBuffer() is always current. */
+  private runOutputPending = new Map<string, string>();
+  private runOutputFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static readonly OUTPUT_FLUSH_INTERVAL_MS = 100;
+  /** Cached expensive parts of getFleetStatus() — it's called on every render.
+   *  Keyed on the `recentRuns` array identity (refreshRunCaches() replaces the
+   *  array wholesale and nothing mutates it in place, so a changed reference
+   *  means runs/approvals changed) plus the local date, so `completedToday`
+   *  rolls over at midnight. `running` is recomputed each call (it depends on
+   *  runtimeState and is O(#agents)). */
+  private fleetStatusCache: { runs: RunLogData[]; today: string; completedToday: number; pending: number } | null = null;
   /** Heartbeat cron jobs, keyed by agent name. Separate from task scheduler jobs. */
   private heartbeatJobs = new Map<string, Cron>();
   /** Nightly reflection cron jobs, keyed by agent name (§8). */
@@ -183,17 +198,22 @@ export class FleetRuntime {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-    const completedToday = this.recentRuns.filter((run) => {
-      const d = new Date(run.started);
-      const runDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      return runDate === today;
-    }).length;
+    let cache = this.fleetStatusCache;
+    if (!cache || cache.runs !== this.recentRuns || cache.today !== today) {
+      const completedToday = this.recentRuns.filter((run) => {
+        const d = new Date(run.started);
+        const runDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        return runDate === today;
+      }).length;
+      const pending = this.recentRuns.flatMap((run) => run.approvals ?? []).filter((item) => item.status === "pending").length;
+      cache = { runs: this.recentRuns, today, completedToday, pending };
+      this.fleetStatusCache = cache;
+    }
     const running = Array.from(this.runtimeState.values()).filter((state) => state.status === "running").length;
-    const pending = this.recentRuns.flatMap((run) => run.approvals ?? []).filter((item) => item.status === "pending").length;
     return {
       running,
-      pending,
-      completedToday,
+      pending: cache.pending,
+      completedToday: cache.completedToday,
     };
   }
 
@@ -203,6 +223,10 @@ export class FleetRuntime {
   }
 
   onRunOutput(agentName: string, callback: (chunk: string) => void): () => void {
+    // Flush any batched chunks to the *existing* listeners first: the snapshot
+    // handed to the new listener below already contains them (the buffer is
+    // appended eagerly), so leaving them pending would deliver them twice.
+    this.flushRunOutput(agentName);
     let listeners = this.runOutputListeners.get(agentName);
     if (!listeners) {
       listeners = new Set();
@@ -218,6 +242,56 @@ export class FleetRuntime {
 
   getRunOutputBuffer(agentName: string): string {
     return this.runOutputBuffers.get(agentName) ?? "";
+  }
+
+  /** Record a live output chunk: append to the (always-current) buffer, and
+   *  batch listener notification so a chatty CLI doesn't trigger a dashboard
+   *  render per stdout chunk. Listeners receive the concatenated pending
+   *  chunks at most every OUTPUT_FLUSH_INTERVAL_MS. */
+  private emitRunOutput(agentName: string, chunk: string): void {
+    this.runOutputBuffers.set(agentName, (this.runOutputBuffers.get(agentName) ?? "") + chunk);
+    this.runOutputPending.set(agentName, (this.runOutputPending.get(agentName) ?? "") + chunk);
+    if (!this.runOutputFlushTimers.has(agentName)) {
+      this.runOutputFlushTimers.set(
+        agentName,
+        setTimeout(() => this.flushRunOutput(agentName), FleetRuntime.OUTPUT_FLUSH_INTERVAL_MS),
+      );
+    }
+  }
+
+  /** Deliver batched chunks (concatenated, in order) to listeners now. */
+  private flushRunOutput(agentName: string): void {
+    const timer = this.runOutputFlushTimers.get(agentName);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.runOutputFlushTimers.delete(agentName);
+    }
+    const pending = this.runOutputPending.get(agentName);
+    if (!pending) return;
+    this.runOutputPending.delete(agentName);
+    const listeners = this.runOutputListeners.get(agentName);
+    if (listeners) {
+      for (const listener of listeners) listener(pending);
+    }
+  }
+
+  /** Reset live-output state at run start (clears any stale batch/timer). */
+  private resetRunOutput(agentName: string): void {
+    const timer = this.runOutputFlushTimers.get(agentName);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.runOutputFlushTimers.delete(agentName);
+    }
+    this.runOutputPending.delete(agentName);
+    this.runOutputBuffers.set(agentName, "");
+  }
+
+  /** Final flush + teardown of live-output state at run end, so listeners see
+   *  the tail of the output before the buffer is dropped. */
+  private clearRunOutput(agentName: string): void {
+    this.flushRunOutput(agentName);
+    this.runOutputBuffers.delete(agentName);
+    this.runOutputListeners.delete(agentName);
   }
 
   async handleVaultChange(file: TFile): Promise<void> {
@@ -353,6 +427,11 @@ export class FleetRuntime {
     }
     this.reflectionJobs.clear();
     this.reflectionsInFlight.clear();
+    for (const [, timer] of this.runOutputFlushTimers) {
+      clearTimeout(timer);
+    }
+    this.runOutputFlushTimers.clear();
+    this.runOutputPending.clear();
     this.scheduler.shutdown();
   }
 
@@ -401,10 +480,17 @@ export class FleetRuntime {
     // is at least 10 seconds after registration.
     if (Date.now() - this.heartbeatRegisteredAt < 10_000) return;
 
-    // Prevent duplicate runs if the previous heartbeat is still in-flight
+    // Prevent duplicate runs if the previous heartbeat is still in-flight.
+    // The check-and-add is synchronous (no await in between), so concurrent
+    // ticks can't both pass the guard.
     if (this.heartbeatsInFlight.has(agentName)) return;
     this.heartbeatsInFlight.add(agentName);
 
+    // The guard must outlive enqueue(): the scheduler resolves it when the run
+    // is queued/started, not when it completes. runPendingTask clears the flag
+    // once the heartbeat run actually finishes; clear here only when no run was
+    // enqueued (agent gone/disabled, or enqueue threw).
+    let enqueued = false;
     try {
       const agent = this.repository.getAgentByName(agentName);
       if (!agent || !agent.enabled || !agent.heartbeatBody.trim()) return;
@@ -427,8 +513,9 @@ export class FleetRuntime {
         reason: "heartbeat",
         promptOverride: agent.heartbeatBody.trim(),
       });
+      enqueued = true;
     } finally {
-      this.heartbeatsInFlight.delete(agentName);
+      if (!enqueued) this.heartbeatsInFlight.delete(agentName);
     }
   }
 
@@ -558,7 +645,7 @@ export class FleetRuntime {
       currentTaskId: reflectionTaskId,
       runStarted: started,
     });
-    this.runOutputBuffers.set(agentName, "");
+    this.resetRunOutput(agentName);
     this.emitStatusChange();
     try {
       // Guarantee the legacy→v2 migration (and its raw-archive seeding) has run
@@ -595,14 +682,9 @@ export class FleetRuntime {
       // not emit new captures or carry the capture instruction). Stream output so
       // the overview shows live progress.
       const result = await this.withReflectionSlot(() =>
-        this.executor.execute(agent, task, prompt, (chunk) => {
-          const current = this.runOutputBuffers.get(agentName) ?? "";
-          this.runOutputBuffers.set(agentName, current + chunk);
-          const listeners = this.runOutputListeners.get(agentName);
-          if (listeners) {
-            for (const listener of listeners) listener(chunk);
-          }
-        }, { suppressMemoryCapture: true }),
+        this.executor.execute(agent, task, prompt, (chunk) => this.emitRunOutput(agentName, chunk), {
+          suppressMemoryCapture: true,
+        }),
       );
       const parsed = parseReflectionOutput(result.outputText);
 
@@ -654,6 +736,9 @@ export class FleetRuntime {
         currentRunId: result.runId,
         lastRun: { ...run, filePath: runPath },
       });
+      // Reflection runs bypass runPendingTask, so surface failures here —
+      // otherwise a broken nightly reflection is invisible outside run logs.
+      if (runStatus === "failure") this.notify(run);
       return { ok: applied, message };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -683,11 +768,11 @@ export class FleetRuntime {
         console.warn(`Agent Fleet: failed to write reflection run log for "${agentName}"`, writeErr);
       }
       this.runtimeState.set(agentName, { status: "error", lastRun });
+      this.notify(run);
       return { ok: false, message: `Reflection failed: ${msg}` };
     } finally {
       this.reflectionsInFlight.delete(agentName);
-      this.runOutputBuffers.delete(agentName);
-      this.runOutputListeners.delete(agentName);
+      this.clearRunOutput(agentName);
       this.emitStatusChange();
     }
   }
@@ -732,27 +817,27 @@ export class FleetRuntime {
   }
 
   private async runPendingTask({ task, promptOverride }: PendingRun): Promise<void> {
+    // Release the cron dedup guard once the heartbeat run is truly done — see
+    // runHeartbeat. Manual heartbeat-tagged runs delete a flag that isn't set,
+    // which is harmless.
+    const clearHeartbeatGuard = () => {
+      if (task.tags.includes("heartbeat")) this.heartbeatsInFlight.delete(task.agent);
+    };
     const agent = this.repository.getAgentByName(task.agent);
     if (!agent || !agent.enabled) {
+      clearHeartbeatGuard();
       return;
     }
 
     const started = new Date().toISOString();
     this.runtimeState.set(agent.name, { status: "running", currentTaskId: task.taskId, runStarted: started });
-    this.runOutputBuffers.set(agent.name, "");
+    this.resetRunOutput(agent.name);
     this.emitStatusChange();
 
     try {
-      const result = await this.executor.execute(agent, task, promptOverride, (chunk) => {
-        const current = this.runOutputBuffers.get(agent.name) ?? "";
-        this.runOutputBuffers.set(agent.name, current + chunk);
-        const listeners = this.runOutputListeners.get(agent.name);
-        if (listeners) {
-          for (const listener of listeners) {
-            listener(chunk);
-          }
-        }
-      });
+      const result = await this.executor.execute(agent, task, promptOverride, (chunk) =>
+        this.emitRunOutput(agent.name, chunk),
+      );
       const wasAborted = this.consumeAborted(agent.name);
       const approvals = wasAborted ? [] : this.buildApprovals(agent, result.toolsUsed);
       const runStatus = wasAborted ? "cancelled" : this.resolveRunStatus(result, approvals);
@@ -785,12 +870,14 @@ export class FleetRuntime {
         runCount: task.runCount + 1,
       });
 
+      let capturedCount = 0;
       if (agent.memory) {
         const isHeartbeat = task.tags.includes("heartbeat");
         const source = isHeartbeat ? "heartbeat" : `task:${task.taskId}`;
         const entries = extractCaptures(result.outputText);
         try {
           await this.memoryWriter.capture(agent, entries, source, new Date().toISOString());
+          capturedCount = entries.length;
         } catch (err) {
           console.warn(`Agent Fleet: failed to append memory for "${agent.name}"`, err);
         }
@@ -833,7 +920,7 @@ export class FleetRuntime {
         lastRun: { ...run, filePath: runPath },
       });
 
-      if (!wasAborted) this.notify(run);
+      if (!wasAborted) this.notify(run, capturedCount);
     } catch (error) {
       const wasAborted = this.consumeAborted(agent.name);
       const runStatus = wasAborted ? "cancelled" : "failure";
@@ -862,6 +949,7 @@ export class FleetRuntime {
       });
       if (!wasAborted) this.notify(run);
     } finally {
+      clearHeartbeatGuard();
       // Fold any `remember` MCP-tool captures from this run into memory (§7.5).
       if (agent.memory) {
         try {
@@ -870,8 +958,7 @@ export class FleetRuntime {
           console.warn(`Agent Fleet: failed to drain pending memory for "${agent.name}"`, err);
         }
       }
-      this.runOutputBuffers.delete(agent.name);
-      this.runOutputListeners.delete(agent.name);
+      this.clearRunOutput(agent.name);
       this.emitStatusChange();
     }
   }
@@ -901,7 +988,7 @@ export class FleetRuntime {
     return result.exitCode === 0 ? "success" : "failure";
   }
 
-  private notify(run: RunLogData): void {
+  private notify(run: RunLogData, capturedCount = 0): void {
     if (this.settings.notificationLevel === "none") {
       return;
     }
@@ -915,9 +1002,12 @@ export class FleetRuntime {
       .find((l) => l && !l.startsWith("{") && !l.startsWith("[")) ?? "";
     const preview = firstLine.slice(0, 120) || run.status;
 
+    // Surface memory captures on successful runs so they aren't drained silently.
+    const captureSuffix =
+      capturedCount > 0 ? ` · captured ${capturedCount} memory fact${capturedCount === 1 ? "" : "s"}` : "";
     const message =
       run.status === "success"
-        ? `✅ ${run.agent}: ${preview}`
+        ? `✅ ${run.agent}: ${preview}${captureSuffix}`
         : run.status === "pending_approval"
           ? `🔵 ${run.agent} needs approval: ${(run.approvals ?? [])[0]?.tool ?? "tool action"}`
           : `❌ ${run.agent}: ${preview}`;

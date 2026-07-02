@@ -224,6 +224,22 @@ export class ChannelManager {
       await Promise.allSettled(Array.from(this.conversationLocks.values()));
     }
 
+    // Drain in-flight turns too — they run OUTSIDE the conversation locks
+    // (chained via turnTails), so a mid-stream turn would otherwise race the
+    // hibernation below. Race against a timeout so a stuck turn can't hang
+    // shutdown forever.
+    if (this.turnTails.size > 0) {
+      let timer: number | null = null;
+      const timeout = new Promise<void>((resolve) => {
+        timer = window.setTimeout(resolve, 10_000);
+      });
+      await Promise.race([
+        Promise.allSettled(Array.from(this.turnTails.values())).then(() => undefined),
+        timeout,
+      ]);
+      if (timer !== null) window.clearTimeout(timer);
+    }
+
     // Hibernate all sessions (no pending turns — if there are, swallow the rejection).
     for (const entry of this.sessions.values()) {
       try {
@@ -440,7 +456,10 @@ export class ChannelManager {
           "_Rate limit exceeded. Please slow down and try again in a few minutes._",
         );
       } catch (err) {
-        console.warn(`Agent Fleet: rate-limit reply failed on ${channel.name}`, err);
+        console.warn(
+          `Agent Fleet: rate-limit reply failed on ${channel.name} (user ${msg.externalUserId}, conversation ${msg.conversationId})`,
+          err,
+        );
       }
       return;
     }

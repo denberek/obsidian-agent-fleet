@@ -117,6 +117,7 @@ function handle(req) {
 }
 `;
 
+import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { normalizeAdapter } from "../adapters";
@@ -134,17 +135,15 @@ export interface RememberToolInstall {
   tempFiles: string[];
 }
 
-/** Monotonic suffix so concurrent installs in the same cwd never collide. */
-let installSeq = 0;
-
 /**
  * Write the per-run temp MCP server script + config into `<cwd>/.claude` and
  * return the config path (for `--mcp-config`) plus the temp files to clean up.
  * Returns null when there is no absolute pending dir (e.g. mobile vault).
  *
- * Filenames are made UNIQUE per install (pid + time + counter) so two agents or
- * a task+chat running in the same cwd (the default vault root) can't clobber
- * each other's config or have one run's cleanup delete a peer's live files.
+ * Filenames are made UNIQUE per install (random UUID) so two agents or a
+ * task+chat running in the same cwd (the default vault root) — even across
+ * processes — can't clobber each other's config or have one run's cleanup
+ * delete a peer's live files.
  */
 export function installRememberTool(
   cwd: string,
@@ -158,7 +157,7 @@ export function installRememberTool(
   try {
     const claudeDir = join(cwd, ".claude");
     if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true });
-    const token = `${process.pid}-${Date.now()}-${installSeq++}`;
+    const token = randomUUID();
     const scriptPath = join(claudeDir, `af-remember-mcp.${token}.cjs`);
     const configPath = join(claudeDir, `af-remember-mcp.${token}.json`);
     writeFileSync(scriptPath, REMEMBER_MCP_SERVER_SOURCE, "utf-8");

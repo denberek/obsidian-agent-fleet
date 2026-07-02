@@ -1,6 +1,7 @@
 import type { AgentConfig, ExecutionToolUse, FleetSettings } from "../types";
 import { splitLines } from "../utils/platform";
 import { setupCodexPermissions } from "./codexPermissions";
+import { tryParseJson, warnJsonParseFailure } from "./parseHelpers";
 import type {
   CliAdapter,
   ExecBuildOptions,
@@ -125,17 +126,16 @@ export function buildCodexExecArgs(opts: ExecBuildOptions): { args: string[]; st
 
 type JsonRecord = Record<string, unknown>;
 
+/** Parse one JSONL line into an object event, or null. Non-JSON lines are
+ *  expected noise (CLI banners, progress text) and are skipped silently —
+ *  parseExecOutput warns separately when NO line parsed at all. */
 function parseJsonLine(line: string): JsonRecord | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as JsonRecord)
-      : null;
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJson(trimmed);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as JsonRecord)
+    : null;
 }
 
 function itemOf(event: JsonRecord): JsonRecord | null {
@@ -311,10 +311,12 @@ export const codexAdapter: CliAdapter = {
     let totalTokens = 0;
     let sessionId: string | undefined;
     let lastTurnCompleted: JsonRecord | undefined;
+    let parsedAnyEvent = false;
 
     for (const line of splitLines(stdout)) {
       const event = parseJsonLine(line);
       if (!event) continue;
+      parsedAnyEvent = true;
       const type = typeof event.type === "string" ? event.type : "";
 
       if (type === "thread.started" && typeof event.thread_id === "string") {
@@ -340,6 +342,13 @@ export const codexAdapter: CliAdapter = {
           if (tool) toolsUsed.push(tool);
         }
       }
+    }
+
+    // Non-JSON lines between events are expected; a non-empty stdout with NO
+    // parseable JSONL event at all means the CLI's output format drifted (or
+    // --json was ignored) — surface that instead of a silent "(no output)".
+    if (!parsedAnyEvent && stdout.trim()) {
+      warnJsonParseFailure("Codex exec output contained no parseable JSONL event", stdout.trim());
     }
 
     let outputText = agentMessages.join("\n\n").trim();

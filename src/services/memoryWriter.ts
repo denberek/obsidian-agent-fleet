@@ -190,18 +190,36 @@ export class MemoryWriter {
     await this.store.writeWorkingMemory(agent.name, next);
   }
 
+  /** Per-task timeout for the lock chain — one hung vault write must not
+   *  wedge every later capture for the agent forever. */
+  private static readonly LOCK_TIMEOUT_MS = 10_000;
+
   /** Run `fn` after any in-flight memory op for `key` completes. FIFO. */
   private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = MemoryWriter.locks.get(key) ?? Promise.resolve();
-    const next = prev.then(fn, fn);
-    // Keep the chain alive even if fn rejects, but don't swallow the caller's error.
-    MemoryWriter.locks.set(
-      key,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
+    // The chain link resolves when fn settles OR its timeout fires, so the
+    // chain survives both rejections (without swallowing the caller's error)
+    // and hangs. A timed-out task keeps running detached — it can't be
+    // cancelled — but its lock slot is released so later captures proceed.
+    let release!: () => void;
+    const link = new Promise<void>((resolve) => { release = resolve; });
+    const run = (): Promise<T> => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `Agent Fleet: memory write for "${key}" still pending after ` +
+            `${MemoryWriter.LOCK_TIMEOUT_MS}ms — releasing its lock slot`,
+        );
+        release();
+      }, MemoryWriter.LOCK_TIMEOUT_MS);
+      const result = fn();
+      result.then(
+        () => { clearTimeout(timer); release(); },
+        () => { clearTimeout(timer); release(); },
+      );
+      return result;
+    };
+    const next = prev.then(run, run);
+    MemoryWriter.locks.set(key, link);
     return next;
   }
 }

@@ -1,9 +1,9 @@
 {
     "id": "agent-fleet",
     "name": "Agent Fleet",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "minAppVersion": "1.11.4",
-    "description": "File-backed AI agents with task scheduling, channels, memory, and MCP — running on Claude Code or OpenAI Codex, all as plain markdown.",
+    "description": "File-backed AI agents with task scheduling, channels, memory, and MCP \u2014 running on Claude Code or OpenAI Codex, all as plain markdown.",
     "author": "Denis Berekchiyan",
     "authorUrl": "https://github.com/denberek",
     "isDesktopOnly": true

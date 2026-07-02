@@ -5,9 +5,8 @@ import type { FleetRepository } from "../fleetRepository";
 import { getAdapter } from "../adapters";
 import { resolveModel, shouldPassModelFlag } from "../utils/modelResolution";
 import { spawnCli, splitLines } from "../utils/platform";
-import { buildWikiReferencesContext } from "../utils/wikiReferences";
-import { buildMemorySection } from "../utils/memoryFormat";
 import type { McpAuthManager } from "./mcpAuth";
+import { buildAgentPromptSections } from "./promptAssembly";
 import {
   installMcpProjection,
   resolveProjectedServers,
@@ -17,6 +16,12 @@ import {
 // Re-exported for existing consumers/tests — the implementations moved to the
 // Claude Code adapter when execution became adapter-dispatched.
 export { extractConcreteModel, extractFinalResult } from "../adapters/claudeCodeAdapter";
+
+// Output caps — a runaway CLI (e.g. a tool looping on huge output) would
+// otherwise grow these buffers unbounded until the renderer OOMs. Exceeding
+// either cap kills the process and fails the run, mirroring the timeout path.
+const MAX_STDOUT_LENGTH = 10 * 1024 * 1024;
+const MAX_STDERR_LENGTH = 1024 * 1024;
 
 export function extractRememberEntries(output: string): string[] {
   const matches = output.matchAll(/\[REMEMBER\]([\s\S]*?)\[\/REMEMBER\]/g);
@@ -51,40 +56,10 @@ export class ExecutionManager {
     promptOverride?: string,
     memoryActive = agent.memory,
   ): Promise<string> {
-    const sections: string[] = [agent.body.trim()];
-
-    // Shared skills
-    for (const skillName of agent.skills) {
-      const skill = this.repository.getSkillByName(skillName);
-      if (skill) {
-        const parts = [skill.body.trim()];
-        if (skill.toolsBody.trim()) parts.push(`### Tools\n${skill.toolsBody.trim()}`);
-        if (skill.referencesBody.trim()) parts.push(`### References\n${skill.referencesBody.trim()}`);
-        if (skill.examplesBody.trim()) parts.push(`### Examples\n${skill.examplesBody.trim()}`);
-        sections.push(`## Skill: ${skill.name}\n${parts.join("\n\n")}`);
-      }
-    }
-
-    // Agent-specific skills (from SKILLS.md in folder agents)
-    if (agent.skillsBody.trim()) {
-      sections.push(`## Agent Skills\n${agent.skillsBody.trim()}`);
-    }
-
-    // Agent context (from CONTEXT.md in folder agents)
-    if (agent.contextBody.trim()) {
-      sections.push(`## Agent Context\n${agent.contextBody.trim()}`);
-    }
-
-    if (memoryActive) {
-      const wm = await this.repository.readWorkingMemory(agent.name);
-      const memorySection = buildMemorySection(agent, wm);
-      if (memorySection) sections.push(memorySection);
-    }
-
-    // Wiki references — consumer-mode access to one or more Wiki Keeper scopes.
-    const wikiContext = buildWikiReferencesContext(agent, this.repository);
-    if (wikiContext) sections.push(wikiContext);
-
+    // Common sections (body/skills/context/memory/wiki) come from the shared
+    // assembly so the run and chat paths cannot drift; only the `## Task`
+    // framing is run-specific.
+    const sections = await buildAgentPromptSections(this.repository, agent, { memoryActive });
     sections.push(`## Task\n${(promptOverride ?? task.body).trim()}`);
     return sections.filter(Boolean).join("\n\n");
   }
@@ -179,6 +154,7 @@ export class ExecutionManager {
         let stdout = "";
         let stderr = "";
         let timedOut = false;
+        let outputLimitError: string | null = null;
 
         const timer = window.setTimeout(() => {
           timedOut = true;
@@ -186,8 +162,14 @@ export class ExecutionManager {
         }, agent.timeout * 1000);
 
         proc.stdout!.on("data", (chunk: Buffer | string) => {
+          if (outputLimitError) return; // already killed — drop buffered chunks
           const text = chunk.toString();
           stdout += text;
+          if (stdout.length > MAX_STDOUT_LENGTH) {
+            outputLimitError = `Run output exceeded the ${MAX_STDOUT_LENGTH / (1024 * 1024)}MB stdout limit — process killed.`;
+            proc.kill();
+            return;
+          }
           if (useStreaming && onOutput) {
             // Parse stream lines for displayable content
             for (const line of splitLines(text)) {
@@ -198,7 +180,12 @@ export class ExecutionManager {
         });
 
         proc.stderr!.on("data", (chunk: Buffer | string) => {
+          if (outputLimitError) return;
           stderr += chunk.toString();
+          if (stderr.length > MAX_STDERR_LENGTH) {
+            outputLimitError = `Run stderr exceeded the ${MAX_STDERR_LENGTH / (1024 * 1024)}MB limit — process killed.`;
+            proc.kill();
+          }
         });
 
         proc.on("error", (error) => {
@@ -209,6 +196,11 @@ export class ExecutionManager {
         proc.on("close", (exitCode) => {
           window.clearTimeout(timer);
           this.runningProcesses.delete(agent.name);
+
+          if (outputLimitError) {
+            reject(new Error(outputLimitError));
+            return;
+          }
 
           const parsed = adapter.parseExecOutput(stdout, stderr, useStreaming);
 

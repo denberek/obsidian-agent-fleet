@@ -240,6 +240,7 @@ Discord uses the Gateway (outbound WebSocket) + REST. Features: `@agent-name` ro
 - Agents with `approval_required` set cannot be bound to a channel
 - Multi-agent routing: type `@agent-name: message` to switch agents, or use `/agents` for interactive picker
 - Obsidian must be running for channels to work — when closed, bots go offline
+- Live follow-ups (since 0.15.0): a message sent while the agent is still working is folded into the running turn (Claude: live stdin; Codex: queued follow-up turn) instead of waiting for a fresh turn — matching the in-app chat. Each injected follow-up gets its own reply; `[REMEMBER]` blocks are stripped from channel replies.
 
 ## Creating a Task
 
