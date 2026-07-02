@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Fleet — Turn Obsidian into an AI command center</title>
+  <meta name="description" content="Agent Fleet is an Obsidian plugin for building and running autonomous AI agents on Claude Code or OpenAI Codex. Schedule tasks, chat in real time, connect Slack, Telegram, and Discord — every agent is markdown you own." />
+  <meta property="og:title" content="Agent Fleet — Turn Obsidian into an AI command center" />
+  <meta property="og:description" content="Autonomous AI agents that live in your vault. Claude Code or OpenAI Codex. Tasks, chat, channels, memory — all plain markdown." />
+  <meta property="og:image" content="https://denberek.github.io/obsidian-agent-fleet/assets/dashboard.jpg" />
+  <meta property="og:url" content="https://denberek.github.io/obsidian-agent-fleet/" />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="hero-app.css" />
+  <link rel="stylesheet" href="bg-fx.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23131315'/><path d='M32 9 51 20.5v23L32 55 13 43.5v-23L32 9z' fill='none' stroke='%23a78bfa' stroke-width='4' stroke-linejoin='round'/><path d='M32 32 23 26m9 6 9-6M32 32v10' fill='none' stroke='%236366f1' stroke-width='4' stroke-linecap='round'/><path d='M32 28a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM23 23a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM41 23a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM32 39a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z' fill='%23f8fafc'/></svg>" />
+</head>
+<body>
+
+  <!-- ================= BACKGROUND FX ================= -->
+  <div class="bgfx" aria-hidden="true">
+    <div class="bgfx-blob b1"></div>
+    <div class="bgfx-blob b2"></div>
+    <div class="bgfx-blob b3"></div>
+  </div>
+  <div class="bgfx-grid" aria-hidden="true"></div>
+  <div class="bgfx-grid bottom" aria-hidden="true"></div>
+  <div class="bgfx-noise" aria-hidden="true"></div>
+
+  <!-- ================= NAV ================= -->
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#">
+        <svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path d="M32 7 53 19.5v25L32 57 11 44.5v-25L32 7z" stroke="#a78bfa" stroke-width="4.5" stroke-linejoin="round"/>
+          <path d="M32 32 22 25m10 7 10-7M32 32v11" stroke="#6366f1" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M32 28a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM22 22a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM42 22a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM32 40a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" fill="#f8fafc"/>
+        </svg>
+        <span>Agent Fleet</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#backends">Backends</a>
+        <a href="#markdown">Philosophy</a>
+        <a href="#quickstart">Quick start</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="btn btn-ghost" href="https://github.com/denberek/obsidian-agent-fleet" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+        <a class="btn btn-primary" href="#quickstart">Install</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="container">
+      <a class="pill reveal" href="https://obsidian.md/plugins?id=agent-fleet" target="_blank" rel="noopener">
+        <span class="pill-dot"></span> Now in Obsidian Community Plugins
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+      </a>
+      <h1 class="reveal d1">Turn your vault into an<br /><span class="grad">AI command center</span></h1>
+      <p class="hero-sub reveal d2">
+        Agent Fleet is an Obsidian plugin for building and running autonomous AI agents —
+        on Claude&nbsp;Code or OpenAI&nbsp;Codex. Schedule tasks, chat in real time, connect
+        Slack, Telegram, and Discord. Every agent is markdown you own.
+      </p>
+      <div class="hero-ctas reveal d3">
+        <button class="install-cmd" id="copy-cmd" title="Copy to clipboard">
+          <span class="mono"><span class="dim">$</span> npm install -g obsidian-agent-fleet</span>
+          <svg class="ic-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          <svg class="ic-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#4ade80" stroke-width="2.2" aria-hidden="true"><path d="M4 12.5l5 5L20 6.5"/></svg>
+        </button>
+        <a class="btn btn-primary btn-lg" href="obsidian://show-plugin?id=agent-fleet">Install in Obsidian</a>
+        <a class="btn btn-secondary btn-lg" href="https://github.com/denberek/obsidian-agent-fleet" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+      <div class="hero-shot reveal d4">
+        <div class="shot-frame fa-shell">
+          <div class="fa-scale" id="fa-scale">
+          <div class="fleet-app" id="fleet-app" aria-label="Live demo of the Agent Fleet dashboard with mock data">
+
+            <!-- title bar -->
+            <div class="fa-titlebar">
+              <span class="fa-dots"><i></i><i></i><i></i></span>
+              <span class="fa-title"><svg viewBox="0 0 64 64" width="13" height="13" fill="none"><path d="M32 7 53 19.5v25L32 57 11 44.5v-25L32 7z" stroke="#a78bfa" stroke-width="6" stroke-linejoin="round"/><path d="M32 32 22 25m10 7 10-7M32 32v11" stroke="#a78bfa" stroke-width="6" stroke-linecap="round"/><path d="M32 27a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM22 21a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM42 21a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM32 39a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" fill="#a78bfa"/></svg> Agent Fleet <span class="fa-crumb">/ Dashboard</span></span>
+              <span class="fa-live"><i></i><b id="fa-today">12</b> today</span>
+            </div>
+
+            <div class="fa-body">
+              <div class="fa-main">
+
+                <!-- tabs -->
+                <div class="fa-tabs" role="tablist">
+                  <button class="on" data-view="overview" role="tab">Overview</button>
+                  <button data-view="agents" role="tab">Agents <b>5</b></button>
+                  <button data-view="tasks" role="tab">Tasks Board</button>
+                  <button class="dis" tabindex="-1">Run History</button>
+                  <button class="dis" tabindex="-1">Skills <b>22</b></button>
+                  <button class="dis" tabindex="-1">MCP <b>8</b></button>
+                </div>
+
+                <!-- ============ OVERVIEW ============ -->
+                <div class="fa-view on" data-pane="overview">
+                  <div class="fa-stats">
+                    <div class="fa-stat">
+                      <span class="fa-stat-label">Active agents</span>
+                      <span class="fa-stat-value">5<span class="fa-stat-dim">/5</span></span>
+                      <span class="fa-stat-sub">5 of 5 enabled</span>
+                    </div>
+                    <div class="fa-stat">
+                      <span class="fa-stat-label">Runs today</span>
+                      <span class="fa-stat-value" id="fa-runs">12</span>
+                      <span class="fa-stat-sub" id="fa-runs-sub">12 passed · 0 failed</span>
+                    </div>
+                    <div class="fa-stat">
+                      <span class="fa-stat-label">Tokens used</span>
+                      <span class="fa-stat-value" id="fa-tokens">48.2k</span>
+                      <span class="fa-stat-sub" id="fa-cost">$0.94 today</span>
+                    </div>
+                    <div class="fa-stat">
+                      <span class="fa-stat-label">Scheduled tasks</span>
+                      <span class="fa-stat-value">4</span>
+                      <span class="fa-stat-sub">Next: jira-digest in 2h</span>
+                    </div>
+                  </div>
+
+                  <div class="fa-mid">
+                    <div class="fa-panel fa-chart-panel">
+                      <span class="fa-panel-title">Run activity <span class="fa-dim">14d</span></span>
+                      <div class="fa-chart" id="fa-chart"></div>
+                    </div>
+                    <div class="fa-panel fa-donut-panel">
+                      <span class="fa-panel-title">Success rate</span>
+                      <div class="fa-donut">
+                        <svg viewBox="0 0 80 80" width="86" height="86">
+                          <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="7"/>
+                          <circle id="fa-donut-arc" cx="40" cy="40" r="34" fill="none" stroke="#4ade80" stroke-width="7" stroke-linecap="round" stroke-dasharray="213.6" stroke-dashoffset="213.6" transform="rotate(-90 40 40)"/>
+                        </svg>
+                        <div class="fa-donut-num"><b id="fa-rate">95%</b><span id="fa-rate-sub">19/20 runs</span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="fa-cols">
+                    <div class="fa-panel fa-activity-panel">
+                      <span class="fa-panel-title">Recent activity</span>
+                      <div class="fa-activity" id="fa-activity"></div>
+                    </div>
+                    <div class="fa-panel fa-fleet-panel">
+                      <span class="fa-panel-title">Fleet status <button class="fa-mini-btn">+ New agent</button></span>
+                      <div class="fa-agents" id="fa-fleet"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ============ AGENTS ============ -->
+                <div class="fa-view" data-pane="agents">
+                  <div class="fa-agent-grid" id="fa-agent-grid"></div>
+                </div>
+
+                <!-- ============ TASKS ============ -->
+                <div class="fa-view" data-pane="tasks">
+                  <div class="fa-kanban">
+                    <div class="fa-kcol">
+                      <span class="fa-kh">Backlog <b>2</b></span>
+                      <div class="fa-kcard p-low"><span>summarize-meetings</span><i>task-manager</i></div>
+                      <div class="fa-kcard p-med"><span>refactor-weekly-note</span><i>vault-librarian</i></div>
+                    </div>
+                    <div class="fa-kcol">
+                      <span class="fa-kh">Scheduled <b>3</b></span>
+                      <div class="fa-kcard p-high"><span>jira-digest</span><i>odp-product-manager · 9:00</i></div>
+                      <div class="fa-kcard p-med"><span>slack-digest</span><i>odp-product-manager · 17:00</i></div>
+                      <div class="fa-kcard p-low"><span>vault-weekly-organize</span><i>vault-librarian · Sun</i></div>
+                    </div>
+                    <div class="fa-kcol">
+                      <span class="fa-kh amber">Running <b>1</b></span>
+                      <div class="fa-kcard p-crit running"><span>prioritize-tasks</span><i>task-manager · 2m 14s</i><em class="fa-kprog"><u></u></em></div>
+                    </div>
+                    <div class="fa-kcol">
+                      <span class="fa-kh green">Done <b>3</b></span>
+                      <div class="fa-kcard done"><span>uptime-check</span><i>site-monitor · 38s</i></div>
+                      <div class="fa-kcard done"><span>fleet-health</span><i>fleet-orchestrator · 52s</i></div>
+                      <div class="fa-kcard done"><span>slack-digest</span><i>odp-product-manager · 1m 45s</i></div>
+                    </div>
+                    <div class="fa-kcol">
+                      <span class="fa-kh">Failed <b>0</b></span>
+                      <div class="fa-kempty">Nothing failed today</div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- ============ CHAT ============ -->
+              <aside class="fa-chat">
+                <div class="fa-chat-head">
+                  <span class="fa-chat-agent"><i class="fa-dot green"></i> fleet-orchestrator</span>
+                  <button class="fa-mini-btn">+ New chat</button>
+                </div>
+                <div class="fa-msgs" id="fa-msgs"></div>
+                <div class="fa-composer">
+                  <div class="fa-input" id="fa-input"><span class="fa-placeholder" id="fa-placeholder">Message the agent…</span><span class="fa-caret"></span></div>
+                  <div class="fa-chatstats mono">opus · <span class="fa-ctx"><u id="fa-ctx-bar"></u></span> <span id="fa-ctx-pct">34%</span> ctx</div>
+                </div>
+              </aside>
+            </div>
+
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= BACKENDS ================= -->
+  <section class="section" id="backends">
+    <div class="container">
+      <p class="kicker reveal">Backends</p>
+      <h2 class="reveal">Runs on the subscriptions<br />you already pay for</h2>
+      <p class="section-sub reveal">
+        No separate API bill required. Each agent picks its engine — mix freely in the same fleet.
+        Chat, tasks, heartbeat, channels, and memory work identically on both.
+      </p>
+      <div class="backend-grid">
+        <div class="card backend-card reveal">
+          <div class="backend-head">
+            <span class="backend-logo claude"><img src="assets/claude.svg" alt="Claude logo" width="22" height="22" /></span>
+            <div>
+              <h3>Claude Code</h3>
+              <span class="mono tag">@anthropic-ai/claude-code</span>
+            </div>
+            <span class="chip">Default</span>
+          </div>
+          <p>Works with a <strong>Claude Max or Pro subscription</strong> — or an Anthropic API key. Aliases <span class="mono inline-code">opus</span> / <span class="mono inline-code">sonnet</span> / <span class="mono inline-code">haiku</span>, pinned IDs, Bedrock, Vertex, Foundry.</p>
+        </div>
+        <div class="card backend-card reveal d1">
+          <div class="backend-head">
+            <span class="backend-logo codex"><img src="assets/codex.svg" alt="OpenAI Codex logo" width="22" height="22" /></span>
+            <div>
+              <h3>OpenAI Codex</h3>
+              <span class="mono tag">@openai/codex</span>
+            </div>
+          </div>
+          <p>Works with a <strong>ChatGPT Plus/Pro plan</strong> — or an OpenAI API key. Set an agent's adapter to Codex and everything else stays the same: pick the engine, keep the workflow.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FEATURES BENTO ================= -->
+  <section class="section" id="features">
+    <div class="container">
+      <p class="kicker reveal">Features</p>
+      <h2 class="reveal">A fleet, not a chatbot</h2>
+      <p class="section-sub reveal">
+        Agents with their own prompts, permissions, schedules, and memory —
+        working while you're not asking.
+      </p>
+
+      <div class="bento">
+
+        <!-- Agents (wide) -->
+        <div class="card bento-card span-2 reveal">
+          <div class="bento-visual">
+            <pre class="filetree mono">agents/site-monitor/
+├── <span class="ft-hl">agent.md</span>       <span class="ft-c">identity &amp; system prompt</span>
+├── <span class="ft-hl">config.md</span>      <span class="ft-c">model, timeout, permissions</span>
+├── <span class="ft-hl">SKILLS.md</span>      <span class="ft-c">shared skill library</span>
+└── <span class="ft-hl">HEARTBEAT.md</span>   <span class="ft-c">autonomous schedule</span></pre>
+          </div>
+          <h3>Agents as folders of markdown</h3>
+          <p>Every agent is a folder in your vault: system prompt, model, permission mode, allow/deny lists, skills, memory. Edit the files or use the UI — same thing.</p>
+        </div>
+
+        <!-- Heartbeat -->
+        <div class="card bento-card reveal d1">
+          <div class="bento-visual">
+            <div class="cron-visual">
+              <span class="mono cron-chip">0 */6 * * *</span>
+              <div class="cron-pulse"><span></span><span></span><span></span></div>
+            </div>
+          </div>
+          <h3>Heartbeat</h3>
+          <p>Define what an agent does when no one is asking — monitoring, reports, health checks — with results posted straight to a channel.</p>
+        </div>
+
+        <!-- Chat -->
+        <div class="card bento-card reveal">
+          <div class="bento-visual">
+            <div class="chat-visual">
+              <div class="bubble user">Summarize today's Slack activity</div>
+              <div class="bubble agent"><span class="typing"><span></span><span></span><span></span></span></div>
+              <div class="thread-line"><span class="mono">↳ inline thread · own session</span></div>
+            </div>
+          </div>
+          <h3>Interactive chat</h3>
+          <p>Dock a chat panel anywhere. Stream responses, steer mid-task, attach docs and images. Inline threads let you tangent without polluting the main conversation.</p>
+        </div>
+
+        <!-- Task board -->
+        <div class="card bento-card reveal d1">
+          <div class="bento-visual">
+            <div class="kanban">
+              <div class="kcol"><span class="kh">Backlog</span><i></i><i></i></div>
+              <div class="kcol"><span class="kh">Scheduled</span><i></i><i></i><i></i></div>
+              <div class="kcol"><span class="kh run">Running</span><i class="prog"></i></div>
+              <div class="kcol"><span class="kh done">Done</span><i></i><i></i></div>
+            </div>
+          </div>
+          <h3>Task board</h3>
+          <p>Kanban with cron scheduling, priorities, real-time progress, and abort. Route a nightly summary to Haiku while the agent stays on Opus.</p>
+        </div>
+
+        <!-- Channels -->
+        <div class="card bento-card reveal d2">
+          <div class="bento-visual">
+            <div class="channel-row">
+              <span class="ch-chip"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/></svg>Slack</span>
+              <span class="ch-chip"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Telegram</span>
+              <span class="ch-chip"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><path d="M8 5c2.5-1 5.5-1 8 0l2.5 4.5c1 3 1 6-.5 9-1.5 1-3 1.6-4.5 1.9l-1-2c-1 .2-2 .2-3 0l-1 2c-1.5-.3-3-.9-4.5-1.9-1.5-3-1.5-6-.5-9L8 5z"/></svg>Discord</span>
+            </div>
+          </div>
+          <h3>Message your fleet from anywhere</h3>
+          <p>Full agent sessions over Slack, Telegram, and Discord — <span class="mono inline-code">@agent-name</span> routing, typing indicators, image attachments, sessions that survive restarts.</p>
+        </div>
+
+        <!-- Memory (wide) -->
+        <div class="card bento-card span-2 reveal">
+          <div class="bento-visual">
+            <div class="mem-visual mono">
+              <div class="mem-tier"><span class="mem-label">working.md</span><span class="mem-desc">curated · token-budgeted · injected every run</span></div>
+              <div class="mem-arrow">↑ nightly reflection consolidates</div>
+              <div class="mem-tier raw"><span class="mem-label">raw/2026-07-01.md</span><span class="mem-desc">append-only ground truth</span></div>
+            </div>
+          </div>
+          <h3>Memory that curates itself</h3>
+          <p>Agents record facts via a <span class="mono inline-code">remember</span> tool. A nightly reflection dedups, resolves contradictions, and can even propose new skills from recurring patterns — approval-gated.</p>
+        </div>
+
+        <!-- MCP -->
+        <div class="card bento-card reveal">
+          <div class="bento-visual">
+            <div class="mcp-visual">
+              <span class="mcp-node hub mono">_fleet/mcp/</span>
+              <div class="mcp-edges">
+                <span class="mcp-node mono">claude</span>
+                <span class="mcp-node mono">codex</span>
+              </div>
+            </div>
+          </div>
+          <h3>MCP, registered once</h3>
+          <p>One registry, every agent, both backends. One-click OAuth 2.1 with tokens in your OS keychain. Your native configs are never touched.</p>
+        </div>
+
+        <!-- Wiki Keeper -->
+        <div class="card bento-card reveal d1">
+          <div class="bento-visual">
+            <div class="wiki-visual mono">
+              <span class="wk-node">inbox/</span>
+              <span class="wk-arrow">→</span>
+              <span class="wk-node hl">_topics/</span>
+              <span class="wk-arrow">⇄</span>
+              <span class="wk-node">Q&amp;A</span>
+            </div>
+          </div>
+          <h3>Wiki Keeper</h3>
+          <p>Turn any folder into a self-maintaining wiki. Drop sources in an inbox; a scoped keeper agent files them into an interlinked topic tree with citations. Answers compound back in.</p>
+        </div>
+
+        <!-- Dashboard -->
+        <div class="card bento-card span-2 reveal d2">
+          <div class="bento-visual">
+            <div class="dash-visual">
+              <div class="bars"><i style="--h:30%"></i><i style="--h:55%"></i><i style="--h:40%"></i><i style="--h:75%"></i><i style="--h:60%"></i><i style="--h:95%"></i><i style="--h:80%"></i></div>
+              <span class="mono dash-stat">95% · 18/19 runs</span>
+            </div>
+          </div>
+          <h3>Full observability</h3>
+          <p>Run charts, success rates, streaming output from active agents, and token &amp; cost tracking across every run — tasks, heartbeats, chat, and channels.</p>
+        </div>
+
+      </div>
+
+      <div class="more-row reveal">
+        <span class="more-chip">22 built-in skills</span>
+        <span class="more-chip">Per-task model override</span>
+        <span class="more-chip">Permission modes &amp; allow/deny lists</span>
+        <span class="more-chip">Run history logs</span>
+        <span class="more-chip">Session resume</span>
+        <span class="more-chip">Catch-up on missed tasks</span>
+        <span class="more-chip">OS-keychain secrets</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MARKDOWN ETHOS ================= -->
+  <section class="section" id="markdown">
+    <div class="container split">
+      <div class="split-text">
+        <p class="kicker reveal">Philosophy</p>
+        <h2 class="reveal">If the plugin disappears,<br />your knowledge stays</h2>
+        <p class="section-sub left reveal">
+          Every agent, skill, task, run log, and memory is a plain markdown file in your vault.
+          Searchable, diffable, version-controllable — fully yours.
+        </p>
+        <ul class="check-list reveal">
+          <li>No proprietary database. No lock-in.</li>
+          <li>Edit any file by hand; the UI reflects it.</li>
+          <li>Secrets live in your OS keychain, never in the vault.</li>
+          <li>Sync with git, Obsidian Sync, or anything else.</li>
+        </ul>
+      </div>
+      <div class="split-visual reveal d1">
+        <pre class="filetree big mono">_fleet/
+├── agents/        <span class="ft-c">one folder per agent</span>
+├── skills/        <span class="ft-c">22 built-in, add your own</span>
+├── tasks/         <span class="ft-c">frontmatter + cron</span>
+├── channels/      <span class="ft-c">Slack · Telegram · Discord</span>
+├── mcp/           <span class="ft-c">one file per server</span>
+├── runs/          <span class="ft-c">every execution, logged</span>
+└── memory/        <span class="ft-c">working set + raw archive</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUICK START ================= -->
+  <section class="section" id="quickstart">
+    <div class="container">
+      <p class="kicker reveal">Quick start</p>
+      <h2 class="reveal">Running in three steps</h2>
+      <div class="steps">
+        <div class="card step reveal">
+          <span class="step-num mono">01</span>
+          <h3>Install the plugin</h3>
+          <pre class="code mono">Settings → Community plugins
+→ Browse → "Agent Fleet"</pre>
+          <p>Right from Obsidian's <a class="text-link" href="https://obsidian.md/plugins?id=agent-fleet" target="_blank" rel="noopener">community plugin directory</a>. Prefer the terminal? <span class="mono inline-code">npm install -g obsidian-agent-fleet</span> works too.</p>
+        </div>
+        <div class="card step reveal d1">
+          <span class="step-num mono">02</span>
+          <h3>Install a backend</h3>
+          <pre class="code mono">npm install -g @anthropic-ai/claude-code</pre>
+          <p>Claude Code (Max/Pro subscription or API key) — or OpenAI Codex with a ChatGPT plan.</p>
+        </div>
+        <div class="card step reveal d2">
+          <span class="step-num mono">03</span>
+          <h3>Meet your orchestrator</h3>
+          <pre class="code mono">"Create an agent that summarizes
+ my Slack channels every morning"</pre>
+          <p>Enable the plugin and chat with the built-in Fleet Orchestrator — it creates agents, tasks, and skills for you.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FAQ ================= -->
+  <section class="section" id="faq">
+    <div class="container narrow">
+      <p class="kicker reveal">FAQ</p>
+      <h2 class="reveal">Questions</h2>
+      <div class="faq-list reveal">
+        <details>
+          <summary>Do I need an API key?</summary>
+          <p>Not necessarily. Agent Fleet works with your Claude Max or Pro subscription via the Claude Code CLI — no separate billing. An Anthropic API key works too, as does a ChatGPT plan for Codex agents.</p>
+        </details>
+        <details>
+          <summary>Can I mix Claude and Codex agents?</summary>
+          <p>Yes. The adapter is set per agent, so some agents can run on Claude Code and others on Codex in the same fleet. Chat, tasks, heartbeat, channels, and memory work the same on both.</p>
+        </details>
+        <details>
+          <summary>What happens if I delete the plugin?</summary>
+          <p>Your <span class="mono inline-code">_fleet/</span> folder stays. All agents, tasks, skills, run logs, and memory are plain markdown files in your vault.</p>
+        </details>
+        <details>
+          <summary>Does the Slack / Telegram / Discord bot work when Obsidian is closed?</summary>
+          <p>No — channels run inside Obsidian, so the bot goes offline when Obsidian is closed. All connections are outbound (Socket Mode, long-poll, WebSocket), so no public URL is needed.</p>
+        </details>
+        <details>
+          <summary>Can multiple agents run at the same time?</summary>
+          <p>Yes, up to a configurable concurrency limit (default 2). Additional tasks queue until a slot opens.</p>
+        </details>
+        <details>
+          <summary>Is my data safe?</summary>
+          <p>All secrets — MCP OAuth/bearer tokens and channel credentials — are stored in your OS keychain via Obsidian's SecretStorage API, never in the vault. Agents respect per-agent permission modes and allow/deny lists.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FINAL CTA ================= -->
+  <section class="section cta-section">
+    <div class="cta-glow" aria-hidden="true"></div>
+    <div class="container center">
+      <h2 class="reveal">Your vault is about to<br />get a lot more done</h2>
+      <div class="hero-ctas reveal d1">
+        <button class="install-cmd" id="copy-cmd-2" title="Copy to clipboard">
+          <span class="mono"><span class="dim">$</span> npm install -g obsidian-agent-fleet</span>
+          <svg class="ic-copy" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          <svg class="ic-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#4ade80" stroke-width="2.2" aria-hidden="true"><path d="M4 12.5l5 5L20 6.5"/></svg>
+        </button>
+        <a class="btn btn-primary btn-lg" href="obsidian://show-plugin?id=agent-fleet">Install in Obsidian</a>
+        <a class="btn btn-secondary btn-lg" href="https://github.com/denberek/obsidian-agent-fleet" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FOOTER ================= -->
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div class="brand small">
+        <svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path d="M32 7 53 19.5v25L32 57 11 44.5v-25L32 7z" stroke="#8a8f98" stroke-width="4.5" stroke-linejoin="round"/>
+          <path d="M32 32 22 25m10 7 10-7M32 32v11" stroke="#8a8f98" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M32 28a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM22 22a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM42 22a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM32 40a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" fill="#8a8f98"/>
+        </svg>
+        <span>Agent Fleet</span>
+      </div>
+      <nav class="footer-links">
+        <a href="https://obsidian.md/plugins?id=agent-fleet" target="_blank" rel="noopener">Obsidian Plugins</a>
+        <a href="https://github.com/denberek/obsidian-agent-fleet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://www.npmjs.com/package/obsidian-agent-fleet" target="_blank" rel="noopener">npm</a>
+        <a href="https://github.com/denberek/obsidian-agent-fleet/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/denberek/obsidian-agent-fleet/issues" target="_blank" rel="noopener">Issues</a>
+      </nav>
+      <span class="footer-copy">MIT License · © 2026 Denis Berekchiyan</span>
+    </div>
+  </footer>
+
+  <script>
+    // Copy install command
+    for (const id of ['copy-cmd', 'copy-cmd-2']) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText('npm install -g obsidian-agent-fleet');
+        btn.classList.add('copied');
+        setTimeout(() => btn.classList.remove('copied'), 1600);
+      });
+    }
+    // Scroll reveal
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+    // Nav border on scroll
+    const nav = document.getElementById('nav');
+    addEventListener('scroll', () => nav.classList.toggle('scrolled', scrollY > 8), { passive: true });
+  </script>
+  <script src="hero-app.js" defer></script>
+</body>
+</html>

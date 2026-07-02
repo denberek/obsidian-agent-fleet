@@ -1,0 +1,106 @@
+/* ============================================================
+   Background effects — index3 experiment
+   Three layers: drifting aurora blobs, masked dot grid, grain.
+   All CSS-only, transform animations, no layout impact.
+   ============================================================ */
+
+/* anchor absolute grid layers to the document, not the viewport */
+body { position: relative; }
+
+/* ---------- ambient layer (behind everything) ---------- */
+
+.bgfx {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bgfx-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(110px);
+  will-change: transform;
+}
+
+.bgfx-blob.b1 {
+  width: 720px;
+  height: 720px;
+  top: -320px;
+  left: 8%;
+  background: radial-gradient(circle, rgba(124, 92, 246, 0.16), transparent 65%);
+  animation: bgfx-drift1 46s ease-in-out infinite alternate;
+}
+
+.bgfx-blob.b2 {
+  width: 560px;
+  height: 560px;
+  top: 18%;
+  right: -180px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.11), transparent 65%);
+  animation: bgfx-drift2 58s ease-in-out infinite alternate;
+}
+
+.bgfx-blob.b3 {
+  width: 640px;
+  height: 640px;
+  bottom: -280px;
+  left: 30%;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.08), transparent 65%);
+  animation: bgfx-drift3 52s ease-in-out infinite alternate;
+}
+
+@keyframes bgfx-drift1 {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(160px, 90px) scale(1.15); }
+}
+@keyframes bgfx-drift2 {
+  from { transform: translate(0, 0) scale(1.1); }
+  to   { transform: translate(-140px, -110px) scale(0.95); }
+}
+@keyframes bgfx-drift3 {
+  from { transform: translate(0, 0) scale(0.95); }
+  to   { transform: translate(-120px, -70px) scale(1.12); }
+}
+
+/* ---------- dot grid, anchored to the hero, fading out ---------- */
+
+.bgfx-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1300px;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.14) 1px, transparent 1px);
+  background-size: 30px 30px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 62% at 50% -5%, black 25%, transparent 72%);
+  mask-image: radial-gradient(ellipse 75% 62% at 50% -5%, black 25%, transparent 72%);
+}
+
+.bgfx-grid.bottom {
+  top: auto;
+  bottom: 0;
+  height: 900px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 58% at 50% 105%, black 20%, transparent 70%);
+  mask-image: radial-gradient(ellipse 75% 58% at 50% 105%, black 20%, transparent 70%);
+}
+
+/* ---------- film grain (above everything, very faint) ---------- */
+
+.bgfx-noise {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bgfx-blob { animation: none !important; }
+}
