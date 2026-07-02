@@ -535,13 +535,34 @@
 
   <script>
     // Copy install command
+    const CMD = 'npm install -g obsidian-agent-fleet';
+    function copyFallback() {
+      const ta = document.createElement('textarea');
+      ta.value = CMD;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, CMD.length); // iOS needs an explicit range
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      ta.remove();
+      return ok;
+    }
     for (const id of ['copy-cmd', 'copy-cmd-2']) {
       const btn = document.getElementById(id);
       if (!btn) continue;
-      btn.addEventListener('click', () => {
-        navigator.clipboard.writeText('npm install -g obsidian-agent-fleet');
-        btn.classList.add('copied');
-        setTimeout(() => btn.classList.remove('copied'), 1600);
+      btn.addEventListener('click', async () => {
+        let ok = false;
+        if (window.isSecureContext && navigator.clipboard) {
+          try { await navigator.clipboard.writeText(CMD); ok = true; } catch (e) {}
+        }
+        if (!ok) ok = copyFallback();
+        if (ok) {
+          btn.classList.add('copied');
+          setTimeout(() => btn.classList.remove('copied'), 1600);
+        }
       });
     }
     // Scroll reveal

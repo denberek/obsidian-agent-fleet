@@ -803,7 +803,8 @@ details p {
   gap: 28px;
   flex-wrap: wrap;
 }
-.footer-links { display: flex; gap: 20px; flex: 1; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 10px 20px; flex: 1; }
+.footer-links a { white-space: nowrap; }
 .footer-links a {
   color: var(--text-2);
   text-decoration: none;
