@@ -1,5 +1,5 @@
 import { Notice, setIcon } from "obsidian";
-import type { McpServer, McpTool } from "../../types";
+import type { McpServer, McpServerError, McpTool, RunLogData } from "../../types";
 import { truncate } from "../../utils/markdown";
 import { splitLines } from "../../utils/platform";
 import { createIcon } from "../../utils/icons";
@@ -49,6 +49,18 @@ export function renderMcpPage(container: HTMLElement, deps: McpPageDeps): void {
   }
 }
 
+function latestReportedError(
+  deps: McpPageDeps,
+  serverName: string,
+): { error: McpServerError; run: RunLogData } | null {
+  const wanted = serverName.toLowerCase();
+  for (const run of deps.plugin.runtime.getRecentRuns()) {
+    const error = run.mcpServerErrors?.find((entry) => entry.name.toLowerCase() === wanted);
+    if (error) return { error, run };
+  }
+  return null;
+}
+
 /** Whether the server has a stored auth token (OAuth/static bearer). */
 function mcpHasToken(deps: McpPageDeps, server: McpServer): boolean {
   return deps.plugin.mcpAuth.hasToken(server.name);
@@ -67,6 +79,7 @@ function mcpNeedsAuth(deps: McpPageDeps, server: McpServer): boolean {
 function renderMcpCard(container: HTMLElement, deps: McpPageDeps, server: McpServer): void {
   const card = container.createDiv({ cls: `af-mcp-card${server.enabled ? "" : " af-mcp-card-disabled"}` });
   const needsAuth = mcpNeedsAuth(deps, server);
+  const reportedError = latestReportedError(deps, server.name);
 
   const header = card.createDiv({ cls: "af-agent-card-header" });
   const statusClass = !server.enabled ? "disabled" : needsAuth ? "pending" : "idle";
@@ -104,6 +117,16 @@ function renderMcpCard(container: HTMLElement, deps: McpPageDeps, server: McpSer
   } else {
     setIcon(statusIcon, "check-circle");
     statusBadge.createSpan({ text: server.type === "stdio" ? " Enabled" : " Authenticated" });
+  }
+
+  if (reportedError) {
+    const errorRow = card.createDiv({ cls: "af-run-mcp-error" });
+    const errorIcon = errorRow.createSpan();
+    setIcon(errorIcon, "alert-triangle");
+    errorRow.createSpan({
+      cls: "af-run-mcp-error-msg",
+      text: ` Last CLI load error: ${reportedError.error.message || "server was skipped"}`,
+    });
   }
 
   if (server.description) {
@@ -237,6 +260,25 @@ function openMcpDetailSlideover(deps: McpPageDeps, server: McpServer): void {
   if (server.url) deps.renderDetailRow(infoSection, "URL", server.url);
   if (server.command) deps.renderDetailRow(infoSection, "Command", server.command);
   if (server.args && server.args.length > 0) deps.renderDetailRow(infoSection, "Args", server.args.join(" "));
+
+  const reportedError = latestReportedError(deps, server.name);
+  if (reportedError) {
+    const errorSection = body.createDiv({ cls: "af-slideover-section" });
+    errorSection.createDiv({ cls: "af-slideover-section-title", text: "LAST CLI LOAD ERROR" });
+    const errorRow = errorSection.createDiv({ cls: "af-run-mcp-error" });
+    errorRow.createSpan({ cls: "af-run-mcp-error-name", text: reportedError.error.message || "Server was skipped" });
+    errorRow.createDiv({
+      cls: "af-run-mcp-error-msg",
+      text: `Reported ${reportedError.run.started} by ${reportedError.run.agent} (${reportedError.run.task}).`,
+    });
+    if (reportedError.run.filePath) {
+      const openRun = errorSection.createEl("button", { cls: "af-btn-sm" });
+      const icon = openRun.createSpan();
+      setIcon(icon, "external-link");
+      openRun.appendText(" Open run note");
+      openRun.onclick = () => void deps.plugin.openPath(reportedError.run.filePath!);
+    }
+  }
 
   // Tools — populated by the on-demand probe (registry definitions carry no
   // probed tools until the user clicks "Probe tools").

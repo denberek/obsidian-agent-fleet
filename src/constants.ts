@@ -12,6 +12,12 @@ export const DEFAULT_SETTINGS: FleetSettings = {
   defaultModel: "default",
   awsRegion: "us-east-1",
   maxConcurrentRuns: 2,
+  // Both off by default — a cap that silently truncates someone's existing
+  // scheduled work on upgrade would be a worse surprise than no cap at all.
+  maxRunBudgetUsd: 0,
+  maxRunTurns: 0,
+  claudeSandboxNetworkStrictAllowlist: false,
+  claudeSandboxFilesystemDisabled: false,
   runLogRetentionDays: 30,
   catchUpMissedTasks: true,
   notificationLevel: "all",

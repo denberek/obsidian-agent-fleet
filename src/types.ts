@@ -4,12 +4,22 @@ export type RunStatus =
   | "failure"
   | "timeout"
   | "cancelled"
+  | "stopped"
   | "pending_approval"
   | "interrupted";
 export type TaskType = "recurring" | "once" | "immediate";
 export type TaskPriority = "low" | "medium" | "high" | "critical";
 export type NotificationLevel = "all" | "failures-only" | "none";
 export type ApprovalDecision = "approved" | "rejected";
+
+/** JSON-compatible data persisted in run frontmatter for structured tasks. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
 
 export interface FleetSettings {
   fleetFolder: string;
@@ -19,6 +29,20 @@ export interface FleetSettings {
   defaultModel: string;
   awsRegion: string;
   maxConcurrentRuns: number;
+  /** Fleet-wide dollar stop threshold for one run (Claude Code
+   *  `--max-budget-usd`). Checked between API turns, so cost can overshoot.
+   *  0 = no cap. Agents and tasks can override; see `src/utils/runLimits.ts`. */
+  maxRunBudgetUsd: number;
+  /** Fleet-wide agentic-turn ceiling for a single run (`--max-turns`).
+   *  0 = no cap. Agents and tasks can override. */
+  maxRunTurns: number;
+  /** Last successfully detected provider versions. Cached in data.json so
+   *  adapters can gate flags without spawning another probe per run. */
+  claudeCliVersion?: string;
+  codexCliVersion?: string;
+  /** Claude sandbox settings projected into each temporary settings file. */
+  claudeSandboxNetworkStrictAllowlist: boolean;
+  claudeSandboxFilesystemDisabled: boolean;
   runLogRetentionDays: number;
   catchUpMissedTasks: boolean;
   notificationLevel: NotificationLevel;
@@ -163,6 +187,17 @@ export interface AgentConfig {
   permissionMode: string;
   effort?: string;
   maxRetries: number;
+  /** Per-agent dollar stop threshold for one run. Absent = inherit the fleet setting;
+   *  0 or less = explicitly uncapped, overriding an inherited cap. */
+  maxBudgetUsd?: number;
+  /** Per-agent agentic-turn ceiling for one run. Same inherit/opt-out rules. */
+  maxTurns?: number;
+  /**
+   * Forward subagent text and thinking into the run's stream
+   * (Claude `--forward-subagent-text`). Off by default: the CLI nests
+   * subagents up to depth 3, so forwarding can multiply run-log volume.
+   */
+  forwardSubagentText?: boolean;
   skills: string[];
   mcpServers: string[];
   cwd?: string;
@@ -234,6 +269,17 @@ export interface TaskConfig {
   effort?: string;
   /** Optional per-task model override. Empty/absent = inherit from agent. */
   model?: string;
+  /** Per-task dollar stop threshold for one run. Absent = inherit from the agent,
+   *  then the fleet setting; 0 or less = explicitly uncapped. */
+  maxBudgetUsd?: number;
+  /** Per-task agentic-turn ceiling. Same inherit/opt-out rules. */
+  maxTurns?: number;
+  /**
+   * JSON Schema the run's final output must validate against. Claude Code
+   * takes it inline (`--json-schema`); Codex takes a file (`--output-schema`).
+   * Absent = unstructured prose output, the default.
+   */
+  outputSchema?: string;
   /** Channel name to post this task's output to (e.g. "my-discord"). Empty/absent
    *  = no channel post (run log only). Mirrors an agent's heartbeatChannel but is
    *  per-task, so scheduled tasks — not just the heartbeat — can deliver to a
@@ -283,9 +329,21 @@ export interface RunLogData {
   /**
    * Concrete model ID Claude Code actually routed to. Differs from `model`
    * when the request used an alias (e.g. model="opus",
-   * concreteModel="claude-opus-4-7"). Undefined on older run logs.
+   * concreteModel="claude-opus-5"). Undefined on older run logs.
    */
   concreteModel?: string;
+  /** The spend cap in force for this run, if any. Recorded even when unused. */
+  maxBudgetUsd?: number;
+  /** The turn cap in force for this run, if any. */
+  maxTurns?: number;
+  /**
+   * Set when a configured limit stopped the run rather than an error.
+   * A capped run uses status `stopped`, while this field records which guard
+   * fired so the UI can give a precise explanation.
+   */
+  limitHit?: RunLimitKind;
+  /** MCP servers the CLI skipped for this run, with the reason it gave. */
+  mcpServerErrors?: McpServerError[];
   exitCode: number | null;
   tags: string[];
   prompt: string;
@@ -295,6 +353,9 @@ export interface RunLogData {
    *  Persisted as its own `## Result` section in the run markdown when set.
    *  Undefined on legacy runs created before this field existed. */
   finalResult?: string;
+  /** Provider-validated JSON from a task with `output_schema`. Stored as
+   *  native run-frontmatter data so workflows can consume it directly. */
+  structuredOutput?: JsonValue;
   toolsUsed: string[];
   stderr?: string;
   approvals?: ApprovalRecord[];
@@ -415,6 +476,15 @@ export interface ExecutionToolUse {
   reason?: string;
 }
 
+/** Which configured per-run limit ended a run. See `src/utils/runLimits.ts`. */
+export type RunLimitKind = "budget" | "turns";
+
+/** One MCP server the CLI refused to load for a run, as it reported it. */
+export interface McpServerError {
+  name: string;
+  message: string;
+}
+
 export interface ExecutionResult {
   exitCode: number | null;
   durationSeconds: number;
@@ -433,16 +503,35 @@ export interface ExecutionResult {
    * run-detail panel; the full `outputText` becomes a collapsible transcript.
    */
   finalResult?: string;
+  /** Parsed structured result for schema-bound tasks. */
+  structuredOutput?: JsonValue;
   /** Model string actually passed to the CLI ("" means the flag was omitted). */
   resolvedModel: string;
   /** Which layer the model came from. */
   modelSource: ModelSource;
   /**
    * The concrete model Claude Code actually routed to (e.g. we asked for
-   * "opus" and the CLI resolved it to "claude-opus-4-7"). Parsed from
+   * "opus" and the CLI resolved it to "claude-opus-5"). Parsed from
    * stream-json. Undefined when the CLI didn't emit it (rare / errors).
    */
   concreteModel?: string;
+  /** The spend cap that applied to this run, if any. Recorded even when the
+   *  run finished well under it, so the audit trail shows what was in force. */
+  maxBudgetUsd?: number;
+  /** The turn cap that applied to this run, if any. */
+  maxTurns?: number;
+  /**
+   * Set when a configured limit — not an error — ended the run. Distinguishes
+   * "stopped because you told me to" from a genuine failure, so notifications
+   * and the run-detail panel don't report a capped run as broken.
+   */
+  limitHit?: RunLimitKind;
+  /**
+   * MCP servers the CLI skipped for this run. Previously a misconfigured
+   * server just meant its tools were silently absent, with no diagnostic
+   * anywhere; the CLI now reports them on its init event.
+   */
+  mcpServerErrors?: McpServerError[];
 }
 
 export interface ChatMessage {

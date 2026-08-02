@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "fs";
 import type { AgentConfig, FleetSettings } from "../types";
 import type { ExecBuildOptions } from "./types";
 import {
   buildCodexExecArgs,
   codexAdapter,
   codexSandboxArgs,
+  codexSupportsMaxEffort,
   isClaudeShapedModel,
   mapCodexEffort,
   newCodexTurnParseState,
@@ -54,6 +56,10 @@ function makeSettings(overrides: Partial<FleetSettings> = {}): FleetSettings {
     defaultModel: "default",
     awsRegion: "us-east-1",
     maxConcurrentRuns: 2,
+    maxRunBudgetUsd: 0,
+    maxRunTurns: 0,
+    claudeSandboxNetworkStrictAllowlist: false,
+    claudeSandboxFilesystemDisabled: false,
     runLogRetentionDays: 30,
     catchUpMissedTasks: true,
     notificationLevel: "all",
@@ -97,8 +103,11 @@ describe("codexSandboxArgs", () => {
     expect(codexSandboxArgs("read-only")).toEqual(["--sandbox", "read-only"]);
   });
 
-  it("maps acceptEdits/default/workspace-write to workspace-write sandbox", () => {
+  it("maps acceptEdits/auto/default/workspace-write to workspace-write sandbox", () => {
     expect(codexSandboxArgs("acceptEdits")).toEqual(["--sandbox", "workspace-write"]);
+    // `auto` is Claude's classifier-driven mode. It can't ask headlessly, so
+    // it lands on the same sandbox as acceptEdits rather than on bypass.
+    expect(codexSandboxArgs("auto")).toEqual(["--sandbox", "workspace-write"]);
     expect(codexSandboxArgs("default")).toEqual(["--sandbox", "workspace-write"]);
     expect(codexSandboxArgs("workspace-write")).toEqual(["--sandbox", "workspace-write"]);
   });
@@ -110,9 +119,40 @@ describe("mapCodexEffort", () => {
     expect(mapCodexEffort("low")).toBe("low");
     expect(mapCodexEffort("medium")).toBe("medium");
     expect(mapCodexEffort("high")).toBe("high");
-    expect(mapCodexEffort("max")).toBe("xhigh");
     expect(mapCodexEffort("xhigh")).toBe("xhigh");
     expect(mapCodexEffort("bogus")).toBe("");
+  });
+
+  it("emits `max` only on GPT-5.6 tiers, stepping down otherwise", () => {
+    expect(mapCodexEffort("max", "gpt-5.6-sol")).toBe("max");
+    expect(mapCodexEffort("max", "gpt-5.6-terra")).toBe("max");
+    expect(mapCodexEffort("max", "gpt-5.6-luna")).toBe("max");
+    // Older slugs reject `max`.
+    expect(mapCodexEffort("max", "gpt-5.5")).toBe("xhigh");
+    // Unknown model (Codex uses its own configured default) — stay safe.
+    expect(mapCodexEffort("max")).toBe("xhigh");
+    // Don't let a prefix collision through.
+    expect(mapCodexEffort("max", "gpt-5.65-experimental")).toBe("xhigh");
+  });
+
+  it("degrades ultracode to xhigh (Claude-only concept)", () => {
+    expect(mapCodexEffort("ultracode")).toBe("xhigh");
+    expect(mapCodexEffort("ultracode", "gpt-5.6-sol")).toBe("xhigh");
+  });
+
+  it("passes through Codex-only `minimal` written directly in frontmatter", () => {
+    expect(mapCodexEffort("minimal")).toBe("minimal");
+  });
+});
+
+describe("codexSupportsMaxEffort", () => {
+  it("recognizes the 5.6 family only", () => {
+    expect(codexSupportsMaxEffort("gpt-5.6-sol")).toBe(true);
+    expect(codexSupportsMaxEffort("GPT-5.6-TERRA")).toBe(true);
+    expect(codexSupportsMaxEffort("gpt-5.6")).toBe(true);
+    expect(codexSupportsMaxEffort("gpt-5.5")).toBe(false);
+    expect(codexSupportsMaxEffort("gpt-5.65")).toBe(false);
+    expect(codexSupportsMaxEffort("")).toBe(false);
   });
 });
 
@@ -120,10 +160,19 @@ describe("isClaudeShapedModel", () => {
   it("recognizes aliases and claude/anthropic ids", () => {
     expect(isClaudeShapedModel("opus")).toBe(true);
     expect(isClaudeShapedModel("sonnet")).toBe(true);
-    expect(isClaudeShapedModel("claude-opus-4-7")).toBe(true);
-    expect(isClaudeShapedModel("us.anthropic.claude-opus-4-7")).toBe(true);
+    expect(isClaudeShapedModel("haiku")).toBe(true);
+    expect(isClaudeShapedModel("claude-opus-5")).toBe(true);
+    expect(isClaudeShapedModel("us.anthropic.claude-opus-5")).toBe(true);
     expect(isClaudeShapedModel("gpt-5.5")).toBe(false);
+    expect(isClaudeShapedModel("gpt-5.6-sol")).toBe(false);
     expect(isClaudeShapedModel("")).toBe(false);
+  });
+
+  it("recognizes the fable alias so it can't leak into a Codex run", () => {
+    // Regression: `fable` was missing from the alias branch, so a plugin-wide
+    // defaultModel of "fable" sailed past the guard and reached `codex -m`.
+    expect(isClaudeShapedModel("fable")).toBe(true);
+    expect(isClaudeShapedModel("FABLE")).toBe(true);
   });
 });
 
@@ -177,6 +226,20 @@ describe("buildCodexExecArgs", () => {
   });
 });
 
+describe("codexAdapter.buildExec — structured output", () => {
+  it("writes the schema to a temporary file and cleans it up", async () => {
+    const invocation = await codexAdapter.buildExec(
+      makeBuildOptions({ outputSchema: '{"type":"object"}' }),
+    );
+    const schemaIndex = invocation.args.indexOf("--output-schema");
+    expect(schemaIndex).toBeGreaterThan(0);
+    const schemaPath = invocation.args[schemaIndex + 1];
+    expect(schemaPath && existsSync(schemaPath)).toBe(true);
+    invocation.cleanup?.();
+    expect(schemaPath && existsSync(schemaPath)).toBe(false);
+  });
+});
+
 describe("codexAdapter.parseExecOutput", () => {
   const fixture = [
     JSON.stringify({ type: "thread.started", thread_id: "t-42" }),
@@ -224,6 +287,21 @@ describe("codexAdapter.parseExecOutput", () => {
     const parsed = codexAdapter.parseExecOutput(failed, "", true);
     expect(parsed.outputText).toBe("model overloaded");
     expect(parsed.finalResult).toBeUndefined();
+  });
+
+  it("parses a schema-bound final agent message as JSON data", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t-json" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { id: "json", type: "agent_message", text: '{"ok":true,"items":[1,2]}' },
+      }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+    ].join("\n");
+    expect(codexAdapter.parseExecOutput(stdout, "", true).structuredOutput).toEqual({
+      ok: true,
+      items: [1, 2],
+    });
   });
 
   it("falls back to stderr when nothing parseable arrived", () => {

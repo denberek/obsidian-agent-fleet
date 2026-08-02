@@ -80,11 +80,11 @@ This file documents HTTP error codes returned by the Claude API, their common ca
 
 **Causes:**
 
-- Typo in model ID (e.g., `claude-sonnet-4.6` instead of `claude-sonnet-4-6`)
+- Typo in model ID (e.g., `claude-sonnet-5.0` instead of `claude-sonnet-5`)
 - Using deprecated model ID
 - Invalid API endpoint
 
-**Fix:** Use exact model IDs from the models documentation. You can use aliases (e.g., `claude-opus-4-6`).
+**Fix:** Use exact model IDs from the models documentation. You can use aliases (e.g., `claude-opus-5`).
 
 ---
 
@@ -166,7 +166,7 @@ thinking: budget_tokens=10000, max_tokens=16000
 | Mistake                         | Error            | Fix                                                     |
 | ------------------------------- | ---------------- | ------------------------------------------------------- |
 | `budget_tokens` >= `max_tokens` | 400              | Ensure `budget_tokens` < `max_tokens`                   |
-| Typo in model ID                | 404              | Use valid model ID like `claude-opus-4-6`               |
+| Typo in model ID                | 404              | Use valid model ID like `claude-opus-5`               |
 | First message is `assistant`    | 400              | First message must be `user`                            |
 | Consecutive same-role messages  | 400              | Alternate `user` and `assistant`                        |
 | API key in code                 | 401 (leaked key) | Use environment variable                                |
@@ -236,7 +236,7 @@ This file contains WebFetch URLs for fetching current information from platform.
 | Topic             | URL                                                                          | Extraction Prompt                                                                      |
 | ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Extended Thinking | `https://platform.claude.com/docs/en/build-with-claude/extended-thinking.md` | "Extract extended thinking parameters, budget_tokens requirements, and usage examples" |
-| Adaptive Thinking | `https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.md` | "Extract adaptive thinking setup, effort levels, and Claude Opus 4.6 usage examples"         |
+| Adaptive Thinking | `https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.md` | "Extract adaptive thinking setup, effort levels, and Claude Opus 5 usage examples"         |
 | Effort Parameter  | `https://platform.claude.com/docs/en/build-with-claude/effort.md`            | "Extract effort levels, cost-quality tradeoffs, and interaction with thinking"        |
 | Tool Use          | `https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview.md`  | "Extract tool definition schema, tool_choice options, and handling tool results"       |
 | Streaming         | `https://platform.claude.com/docs/en/build-with-claude/streaming.md`         | "Extract streaming event types, SDK examples, and best practices"                      |
@@ -344,9 +344,9 @@ If WebFetch fails (network issues, URL changed):
 For **live** capability data — context window, max output tokens, feature support (thinking, vision, effort, structured outputs, etc.) — query the Models API instead of relying on the cached tables below. Use this when the user asks "what's the context window for X", "does model X support vision/thinking/effort", "which models support feature Y", or wants to select a model by capability at runtime.
 
 ```python
-m = client.models.retrieve("claude-opus-4-6")
-m.id                 # "claude-opus-4-6"
-m.display_name       # "Claude Opus 4.6"
+m = client.models.retrieve("claude-opus-5")
+m.id                 # "claude-opus-5"
+m.display_name       # "Claude Opus 5"
 m.max_input_tokens   # context window (int)
 m.max_tokens         # max output tokens (int)
 
@@ -369,15 +369,15 @@ Top-level fields (`id`, `display_name`, `max_input_tokens`, `max_tokens`) are ty
 ### Raw HTTP
 
 ```bash
-curl https://api.anthropic.com/v1/models/claude-opus-4-6 \
+curl https://api.anthropic.com/v1/models/claude-opus-5 \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01"
 ```
 
 ```json
 {
-  "id": "claude-opus-4-6",
-  "display_name": "Claude Opus 4.6",
+  "id": "claude-opus-5",
+  "display_name": "Claude Opus 5",
   "max_input_tokens": 1000000,
   "max_tokens": 128000,
   "capabilities": {
@@ -394,14 +394,18 @@ curl https://api.anthropic.com/v1/models/claude-opus-4-6 \
 
 | Friendly Name     | Alias (use this)    | Full ID                       | Context        | Max Output | Status |
 |-------------------|---------------------|-------------------------------|----------------|------------|--------|
-| Claude Opus 4.6   | `claude-opus-4-6`   | —                             | 200K (1M beta) | 128K       | Active |
-| Claude Sonnet 4.6 | `claude-sonnet-4-6` | -                             | 200K (1M beta) | 64K        | Active |
+| Claude Fable 5    | `claude-fable-5`    | —                             | 1M             | 128K       | Active |
+| Claude Opus 5     | `claude-opus-5`     | —                             | 1M             | 128K       | Active |
+| Claude Opus 4.8   | `claude-opus-4-8`   | —                             | 1M             | 128K       | Active |
+| Claude Sonnet 5   | `claude-sonnet-5`   | —                             | 1M             | 128K       | Active |
 | Claude Haiku 4.5  | `claude-haiku-4-5`  | `claude-haiku-4-5-20251001`   | 200K           | 64K        | Active |
 
 ### Model Descriptions
 
-- **Claude Opus 4.6** — Our most intelligent model for building agents and coding. Supports adaptive thinking (recommended), 128K max output tokens (requires streaming for large outputs). 1M context window available in beta via `context-1m-2025-08-07` header.
-- **Claude Sonnet 4.6** — Our best combination of speed and intelligence. Supports adaptive thinking (recommended). 1M context window available in beta via `context-1m-2025-08-07` header. 64K max output tokens.
+- **Claude Fable 5** — The most capable widely released model, for the most demanding reasoning and long-horizon agentic work. Thinking is always on (omit the `thinking` parameter). 1M context, 128K max output.
+- **Claude Opus 5** — For complex agentic coding and enterprise work. Thinking is on by default. 1M context, 128K max output.
+- **Claude Opus 4.8** — Previous-generation Opus; highly autonomous, strong on long-horizon agentic work. 1M context.
+- **Claude Sonnet 5** — Best combination of speed and intelligence; near-Opus quality on coding and agentic work. Adaptive thinking on by default. 1M context, 128K max output.
 - **Claude Haiku 4.5** — Fastest and most cost-effective model for simple tasks.
 
 ## Legacy Models (still active)
@@ -439,13 +443,15 @@ When a user asks for a model by name, use this table to find the correct model I
 
 | User says...                              | Use this model ID              |
 |-------------------------------------------|--------------------------------|
-| "opus", "most powerful"                   | `claude-opus-4-6`              |
-| "opus 4.6"                                | `claude-opus-4-6`              |
+| "fable", "most capable"                   | `claude-fable-5`               |
+| "opus", "most powerful"                   | `claude-opus-5`                |
+| "opus 5"                                  | `claude-opus-5`                |
+| "opus 4.8"                                | `claude-opus-4-8`              |
 | "opus 4.5"                                | `claude-opus-4-5`              |
 | "opus 4.1"                                | `claude-opus-4-1`              |
 | "opus 4", "opus 4.0"                      | `claude-opus-4-0`              |
-| "sonnet", "balanced"                      | `claude-sonnet-4-6`            |
-| "sonnet 4.6"                              | `claude-sonnet-4-6`            |
+| "sonnet", "balanced"                      | `claude-sonnet-5`              |
+| "sonnet 5"                                | `claude-sonnet-5`              |
 | "sonnet 4.5"                              | `claude-sonnet-4-5`            |
 | "sonnet 4", "sonnet 4.0"                  | `claude-sonnet-4-0`            |
 | "sonnet 3.7"                              | Retired — suggest `claude-sonnet-4-5` |
@@ -664,7 +670,7 @@ if response.stop_reason == "pause_turn":
     ]
     # Make another API request — server resumes automatically
     response = client.messages.create(
-        model="claude-opus-4-6", messages=messages, tools=tools
+        model="claude-opus-5", messages=messages, tools=tools
     )
 ```
 

@@ -4,6 +4,8 @@ import type { AgentConfig, ExecutionResult, FleetSettings, TaskConfig } from "..
 import type { FleetRepository } from "../fleetRepository";
 import { getAdapter } from "../adapters";
 import { resolveModel, shouldPassModelFlag } from "../utils/modelResolution";
+import { resolveMaxBudgetUsd, resolveMaxTurns } from "../utils/runLimits";
+import { normalizeOutputSchema } from "../utils/structuredOutput";
 import { spawnCli, splitLines } from "../utils/platform";
 import type { McpAuthManager } from "./mcpAuth";
 import { buildAgentPromptSections } from "./promptAssembly";
@@ -80,6 +82,15 @@ export class ExecutionManager {
     const resolved = resolveModel(task, agent, this.settings);
     const useStreaming = onOutput != null;
     const adapter = getAdapter(agent.adapter);
+    const outputSchema = task.outputSchema?.trim()
+      ? normalizeOutputSchema(task.outputSchema)
+      : undefined;
+
+    // Per-run stop limits. Scheduled runs are unattended, so these are the
+    // only backstop against a looping or expensive task. Claude Code enforces
+    // both; Codex ignores them but they're still recorded on the run.
+    const budget = resolveMaxBudgetUsd(task, agent, this.settings);
+    const turns = resolveMaxTurns(task, agent, this.settings);
 
     const invocation = await adapter.buildExec({
       prompt,
@@ -89,6 +100,10 @@ export class ExecutionManager {
       agent,
       settings: this.settings,
       streaming: useStreaming,
+      budgetUsd: budget.value,
+      maxTurns: turns.value,
+      forwardSubagentText: agent.forwardSubagentText === true,
+      outputSchema,
     });
 
     // Empty-string cwd must fall back to the vault base (?? alone keeps "",
@@ -203,6 +218,14 @@ export class ExecutionManager {
           }
 
           const parsed = adapter.parseExecOutput(stdout, stderr, useStreaming);
+          if (outputSchema && exitCode === 0 && parsed.structuredOutput === undefined) {
+            reject(
+              new Error(
+                `${adapter.label} completed successfully but returned no valid structured output for the configured schema.`,
+              ),
+            );
+            return;
+          }
 
           resolve({
             runId,
@@ -221,12 +244,18 @@ export class ExecutionManager {
             modelSource: resolved.source,
             concreteModel: parsed.concreteModel,
             finalResult: parsed.finalResult,
+            structuredOutput: outputSchema ? parsed.structuredOutput : undefined,
+            maxBudgetUsd: budget.value,
+            maxTurns: turns.value,
+            limitHit: parsed.limitHit,
+            mcpServerErrors: parsed.mcpServerErrors,
           });
         });
       });
     } finally {
       permissionState?.restore();
       uninstallMcpProjection(projection);
+      invocation.cleanup?.();
     }
   }
 }

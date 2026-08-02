@@ -4,6 +4,8 @@ import type { ChannelConfig, TaskConfig } from "../../types";
 import { slugify, stringifyMarkdownWithFrontmatter } from "../../utils/markdown";
 import { createIcon } from "../../utils/icons";
 import { renderModelPicker } from "../../components/modelPicker";
+import { effortOptions } from "../../utils/effort";
+import { normalizeOutputSchema } from "../../utils/structuredOutput";
 import type { DashboardFormDeps } from "./shared";
 import { parseCronComponents } from "./shared";
 
@@ -139,6 +141,87 @@ function renderInlineSchedule(
   showHideFields();
 }
 
+
+/**
+ * Per-task overrides for the run limits and structured output. Shared by the
+ * create and edit task forms.
+ *
+ * Blank leaves the field absent so the task inherits the agent's value and
+ * then the fleet setting; an explicit 0 means "uncapped for this task",
+ * which is how one expensive job opts out of a fleet-wide cap.
+ */
+function renderTaskRunLimits(
+  section: HTMLElement,
+  deps: TaskFormDeps,
+  state: { maxBudgetUsd: number | undefined; maxTurns: number | undefined; outputSchema: string },
+): void {
+  const budgetRow = section.createDiv({ cls: "af-form-row" });
+  const budgetLabel = budgetRow.createDiv({ cls: "af-form-label", text: "Spend limit" });
+  const budgetInput = budgetRow.createEl("input", {
+    cls: "af-form-input af-form-input-sm",
+    attr: {
+      type: "number",
+      min: "0",
+      step: "0.01",
+      placeholder: "inherit",
+      value: state.maxBudgetUsd !== undefined ? String(state.maxBudgetUsd) : "",
+    },
+  });
+  budgetInput.addEventListener("input", () => {
+    if (!budgetInput.value.trim()) {
+      state.maxBudgetUsd = undefined;
+      return;
+    }
+    const n = parseFloat(budgetInput.value);
+    state.maxBudgetUsd = Number.isFinite(n) && n >= 0 ? n : undefined;
+  });
+  deps.addTooltip(
+    budgetLabel,
+    "Dollar stop threshold for this task’s runs; Claude checks it between API turns, so cost can overshoot. Overrides the agent and fleet settings. " +
+      "Blank inherits; 0 is explicitly uncapped. Claude Code only — Codex has no spend cap.",
+  );
+
+  const turnsRow = section.createDiv({ cls: "af-form-row" });
+  const turnsLabel = turnsRow.createDiv({ cls: "af-form-label", text: "Turn limit" });
+  const turnsInput = turnsRow.createEl("input", {
+    cls: "af-form-input af-form-input-sm",
+    attr: {
+      type: "number",
+      min: "0",
+      step: "1",
+      placeholder: "inherit",
+      value: state.maxTurns !== undefined ? String(state.maxTurns) : "",
+    },
+  });
+  turnsInput.addEventListener("input", () => {
+    if (!turnsInput.value.trim()) {
+      state.maxTurns = undefined;
+      return;
+    }
+    const n = parseInt(turnsInput.value, 10);
+    state.maxTurns = Number.isFinite(n) && n >= 0 ? n : undefined;
+  });
+  deps.addTooltip(
+    turnsLabel,
+    "Maximum agentic turns for this task’s runs, overriding the agent and fleet settings. " +
+      "Blank inherits; 0 is explicitly uncapped. Claude Code only.",
+  );
+
+  const schemaRow = section.createDiv({ cls: "af-form-row" });
+  const schemaLabel = schemaRow.createDiv({ cls: "af-form-label", text: "Output schema" });
+  const schemaInput = schemaRow.createEl("textarea", {
+    cls: "af-create-textarea",
+    attr: { rows: "3", placeholder: '{"type":"object","properties":{...}}', spellcheck: "false" },
+  });
+  schemaInput.value = state.outputSchema;
+  schemaInput.addEventListener("input", () => { state.outputSchema = schemaInput.value; });
+  deps.addTooltip(
+    schemaLabel,
+    "Optional JSON Schema the run’s output must validate against, so downstream " +
+      "tasks can read it as data instead of parsing prose. Leave blank for normal output.",
+  );
+}
+
 /**
  * Render the optional "post results to a channel" controls shared by the
  * create and edit task forms: a channel picker plus a transport-native target
@@ -268,6 +351,9 @@ export function renderCreateTaskForm(page: HTMLElement, deps: TaskFormDeps): voi
     catchUp: true,
     effort: "",
     model: "",
+    maxBudgetUsd: undefined as number | undefined,
+    maxTurns: undefined as number | undefined,
+    outputSchema: "",
     channel: "",
     channelTarget: "",
   };
@@ -418,11 +504,12 @@ export function renderCreateTaskForm(page: HTMLElement, deps: TaskFormDeps): voi
   const taskEffortRow = execSection.createDiv({ cls: "af-form-row" });
   const taskEffortLabel = taskEffortRow.createDiv({ cls: "af-form-label", text: "Effort" });
   const taskEffortSelect = taskEffortRow.createEl("select", { cls: "af-form-select" });
-  for (const [val, lbl] of [["", "Agent Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]] as const) {
+  for (const [val, lbl] of effortOptions("Agent Default")) {
     const opt = taskEffortSelect.createEl("option", { text: lbl, attr: { value: val } });
     if (val === state.effort) opt.selected = true;
   }
   taskEffortSelect.addEventListener("change", () => { state.effort = taskEffortSelect.value; });
+  renderTaskRunLimits(execSection, deps, state);
   // Channel delivery (optional) — post this task's output to a channel on completion.
   renderTaskChannelDelivery(execSection, deps, snapshot.channels, state);
   deps.addTooltip(
@@ -446,6 +533,15 @@ export function renderCreateTaskForm(page: HTMLElement, deps: TaskFormDeps): voi
     }
     const taskId = slugify(title);
     const parseTags = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
+    const outputSchema = state.outputSchema.trim();
+    if (outputSchema) {
+      try {
+        normalizeOutputSchema(outputSchema);
+      } catch (err) {
+        new Notice(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
 
     const effectiveType = state.scheduleEnabled
       ? state.scheduleMode === "once"
@@ -464,6 +560,9 @@ export function renderCreateTaskForm(page: HTMLElement, deps: TaskFormDeps): voi
       catch_up: state.catchUp,
       effort: state.effort || undefined,
       model: state.model || undefined,
+      max_budget_usd: state.maxBudgetUsd,
+      max_turns: state.maxTurns,
+      output_schema: outputSchema || undefined,
       channel: state.channel || undefined,
       channel_target: state.channel && state.channelTarget ? state.channelTarget : undefined,
       tags: parseTags(state.tags),
@@ -534,6 +633,9 @@ export function renderEditTaskForm(page: HTMLElement, deps: TaskFormDeps, task: 
     catchUp: task.catchUp,
     effort: task.effort ?? "",
     model: task.model ?? "",
+    maxBudgetUsd: task.maxBudgetUsd,
+    maxTurns: task.maxTurns,
+    outputSchema: task.outputSchema ?? "",
     channel: task.channel ?? "",
     channelTarget: task.channelTarget ?? "",
     tags: task.tags.join(", "),
@@ -677,14 +779,12 @@ export function renderEditTaskForm(page: HTMLElement, deps: TaskFormDeps, task: 
   const effortRow = execSection.createDiv({ cls: "af-form-row" });
   const effortLabel = effortRow.createDiv({ cls: "af-form-label", text: "Effort" });
   const effortSelect = effortRow.createEl("select", { cls: "af-form-select" });
-  const effortOptions: Array<[string, string]> = [
-    ["", "Agent Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"],
-  ];
-  for (const [val, lbl] of effortOptions) {
+  for (const [val, lbl] of effortOptions("Agent Default")) {
     const opt = effortSelect.createEl("option", { text: lbl, attr: { value: val } });
     if (val === state.effort) opt.selected = true;
   }
   effortSelect.addEventListener("change", () => { state.effort = effortSelect.value; });
+  renderTaskRunLimits(execSection, deps, state);
   deps.addTooltip(
     effortLabel,
     "Overrides the agent’s effort level for this task. Higher effort = more thinking tokens spent.",
@@ -757,6 +857,15 @@ export function renderEditTaskForm(page: HTMLElement, deps: TaskFormDeps, task: 
       new Notice("Pick a date/time for the one-time run.");
       return;
     }
+    const outputSchema = state.outputSchema.trim();
+    if (outputSchema) {
+      try {
+        normalizeOutputSchema(outputSchema);
+      } catch (err) {
+        new Notice(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
     const restoreSubmit = deps.markSubmitBusy(saveBtn, "Saving...", "check", "Save Changes");
     try {
       await plugin.repository.updateTask(task.taskId, {
@@ -769,6 +878,9 @@ export function renderEditTaskForm(page: HTMLElement, deps: TaskFormDeps, task: 
         catch_up: state.catchUp,
         effort: state.effort || undefined,
         model: state.model || "",
+        maxBudgetUsd: state.maxBudgetUsd ?? null,
+        maxTurns: state.maxTurns ?? null,
+        outputSchema,
         channel: state.channel || "",
         channelTarget: state.channel && state.channelTarget ? state.channelTarget : "",
         tags: parseTags(state.tags),

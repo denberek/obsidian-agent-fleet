@@ -69,6 +69,19 @@ export function renderTaskDetailPage(container: HTMLElement, deps: TaskDetailPag
   deps.renderConfigRow(detailsBody, "Agent", task.agent);
   deps.renderConfigRow(detailsBody, "Priority", task.priority.charAt(0).toUpperCase() + task.priority.slice(1));
   deps.renderConfigRow(detailsBody, "Status", task.enabled ? "Enabled" : "Disabled");
+  deps.renderConfigRow(detailsBody, "Model", task.model || "inherit agent");
+  deps.renderConfigRow(detailsBody, "Effort", task.effort || "inherit agent");
+  deps.renderConfigRow(
+    detailsBody,
+    "Spend limit",
+    task.maxBudgetUsd === undefined ? "inherit agent/fleet" : task.maxBudgetUsd <= 0 ? "uncapped" : `$${task.maxBudgetUsd}`,
+  );
+  deps.renderConfigRow(
+    detailsBody,
+    "Turn limit",
+    task.maxTurns === undefined ? "inherit agent/fleet" : task.maxTurns <= 0 ? "uncapped" : String(task.maxTurns),
+  );
+  deps.renderConfigRow(detailsBody, "Structured output", task.outputSchema ? "Enabled" : "Off");
 
   // Schedule — human-readable, no raw cron
   const scheduleText = task.schedule

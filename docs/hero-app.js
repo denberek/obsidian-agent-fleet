@@ -67,7 +67,7 @@
     ['fleet-orchestrator', 'Manages the fleet — creates agents, tasks, skills, and channels on request.', 'claude', 'opus'],
     ['odp-product-manager', 'Writes Jira and Slack digests into your daily notes every morning.', 'claude', 'sonnet'],
     ['task-manager', 'Prioritizes and schedules tasks from your inbox and calendar signals.', 'claude', 'sonnet'],
-    ['vault-librarian', 'Files, links, and dedups notes across the vault every week.', 'codex', 'gpt-5.5-codex'],
+    ['vault-librarian', 'Files, links, and dedups notes across the vault every week.', 'codex', 'gpt-5.6-terra'],
     ['site-monitor', 'Uptime checks with memory of past incidents. Posts anomalies to Slack.', 'claude', 'haiku'],
   ];
   const gridEl = $('fa-agent-grid');

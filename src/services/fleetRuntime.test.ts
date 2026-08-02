@@ -27,6 +27,10 @@ interface RuntimeInternals {
   resetRunOutput(agentName: string): void;
   clearRunOutput(agentName: string): void;
   notify(run: RunLogData, capturedCount?: number): void;
+  resolveRunStatus(
+    result: { exitCode: number | null; timedOut: boolean; limitHit?: "budget" | "turns" },
+    approvals?: RunLogData["approvals"],
+  ): RunLogData["status"];
   recentRuns: RunLogData[];
 }
 
@@ -206,6 +210,14 @@ describe("run output batching", () => {
     vi.advanceTimersByTime(100);
 
     expect(received).toEqual(["a"]);
+  });
+});
+
+describe("run-limit status", () => {
+  it("records a configured cap as stopped rather than failed", () => {
+    const { internals } = makeRuntime();
+    expect(internals.resolveRunStatus({ exitCode: 1, timedOut: false, limitHit: "budget" })).toBe("stopped");
+    expect(internals.resolveRunStatus({ exitCode: 1, timedOut: false })).toBe("failure");
   });
 });
 

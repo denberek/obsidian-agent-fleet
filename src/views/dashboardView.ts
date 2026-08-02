@@ -5,6 +5,7 @@ import type { AgentConfig, AgentHealth, McpTool, RunLogData, TaskConfig, UsageRe
 import { estimateCostFromBreakdown, estimateCostFromTotal } from "../utils/pricing";
 import { truncate, parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "../utils/markdown";
 import { splitLines } from "../utils/platform";
+import { describeLimitHit } from "../utils/runLimits";
 import { createIcon } from "../utils/icons";
 import { renderBarChart, renderDonutChart } from "../components/chartRenderer";
 import type { BarChartDay } from "../components/chartRenderer";
@@ -486,8 +487,9 @@ export class FleetDashboardView extends ItemView {
     const todayRuns = runs.filter((r) => this.runToLocalDate(r.started) === todayStr);
     const passed = todayRuns.filter((r) => r.status === "success").length;
     const failed = todayRuns.filter((r) => r.status === "failure" || r.status === "timeout").length;
+    const stopped = todayRuns.filter((r) => r.status === "stopped").length;
     this.renderStatCard(grid, "Runs Today", String(todayRuns.length), "", "activity",
-      `${passed} passed \u00B7 ${failed} failed \u00B7 ${status.running} running`);
+      `${passed} passed \u00B7 ${failed} failed \u00B7 ${stopped} stopped \u00B7 ${status.running} running`);
 
     // Comprehensive: run logs (tasks/heartbeats/reflections) + chat/channel usage.
     const todayUsage = this.plugin.runtime.getUsageRecords().filter((u) => this.runToLocalDate(u.ts) === todayStr);
@@ -670,7 +672,9 @@ export class FleetDashboardView extends ItemView {
         date: dateStr,
         success: dayRuns.filter((r) => r.status === "success").length,
         failure: dayRuns.filter((r) => r.status === "failure" || r.status === "timeout").length,
-        cancelled: dayRuns.filter((r) => r.status === "cancelled").length,
+        // Both are user-directed, non-failure stops and share the warning
+        // segment in the compact three-state chart.
+        cancelled: dayRuns.filter((r) => r.status === "cancelled" || r.status === "stopped").length,
       });
     }
     return result;
@@ -995,7 +999,7 @@ export class FleetDashboardView extends ItemView {
       if (run.status === "success" && this.runToLocalDate(run.started) === today) {
         completed.push(run);
       } else if (
-        (run.status === "failure" || run.status === "timeout" || run.status === "cancelled") &&
+        (run.status === "failure" || run.status === "timeout" || run.status === "cancelled" || run.status === "stopped") &&
         this.runToLocalDate(run.started) === today
       ) {
         failed.push(run);
@@ -1047,7 +1051,7 @@ export class FleetDashboardView extends ItemView {
       }
     }, "completed");
 
-    this.renderKanbanColumn(board, "Failed", "x-circle", failed.length, (body) => {
+    this.renderKanbanColumn(board, "Stopped / Failed", "x-circle", failed.length, (body) => {
       for (const run of failed) {
         this.renderKanbanFailedCard(body, run);
       }
@@ -1247,7 +1251,8 @@ export class FleetDashboardView extends ItemView {
 
   private renderKanbanFailedCard(container: HTMLElement, run: RunLogData): void {
     const isCancelled = run.status === "cancelled";
-    const card = container.createDiv({ cls: `af-kanban-card ${isCancelled ? "af-kanban-card-cancelled" : "af-kanban-card-failed"}` });
+    const isStopped = run.status === "stopped";
+    const card = container.createDiv({ cls: `af-kanban-card ${isCancelled || isStopped ? "af-kanban-card-cancelled" : "af-kanban-card-failed"}` });
     card.createDiv({ cls: "af-kanban-card-title", text: run.task });
 
     const agentRow = card.createDiv({ cls: "af-kanban-card-agent" });
@@ -1257,19 +1262,21 @@ export class FleetDashboardView extends ItemView {
 
     const errorText = isCancelled
       ? `Stopped after ${run.durationSeconds}s`
+      : isStopped && run.limitHit
+        ? describeLimitHit(run.limitHit, run.limitHit === "budget" ? run.maxBudgetUsd : run.maxTurns)
       : run.status === "timeout"
         ? `Timeout after ${run.durationSeconds}s`
         : truncate(run.output, 60);
     const errorDiv = card.createDiv({ cls: "af-kanban-card-error" });
-    createIcon(errorDiv, isCancelled ? "square" : "alert-triangle", "af-meta-icon");
+    createIcon(errorDiv, isCancelled || isStopped ? "square" : "alert-triangle", "af-meta-icon");
     errorDiv.appendText(` ${errorText}`);
 
     const footer = card.createDiv({ cls: "af-kanban-card-footer" });
     const scheduleEl = footer.createSpan({ cls: "af-kanban-card-schedule" });
-    createIcon(scheduleEl, isCancelled ? "square" : "x-circle", "af-meta-icon");
+    createIcon(scheduleEl, isCancelled || isStopped ? "square" : "x-circle", "af-meta-icon");
     scheduleEl.appendText(` ${this.formatStarted(run.started)}`);
 
-    if (!isCancelled) {
+    if (!isCancelled && !isStopped) {
       const retryBtn = footer.createEl("button", { cls: "af-btn-sm" });
       createIcon(retryBtn, "refresh-cw", "af-btn-icon");
       retryBtn.appendText(" Retry");
@@ -1636,10 +1643,38 @@ export class FleetDashboardView extends ItemView {
       };
       const suffix = run.modelSource ? ` (${sourceLabel[run.modelSource] ?? run.modelSource})` : "";
       // Show the concrete model the CLI resolved to when it differs from the
-      // requested string — lets users trace "opus" → "claude-opus-4-7".
+      // requested string — lets users trace "opus" → "claude-opus-5".
       const concrete =
         run.concreteModel && run.concreteModel !== run.model ? ` → ${run.concreteModel}` : "";
       this.renderDetailRow(metaSection, "Model", `${run.model}${concrete}${suffix}`);
+    }
+
+    // A run stopped by a configured cap isn't a malfunction — say so plainly
+    // so nobody goes debugging a limit they set themselves.
+    if (run.limitHit) {
+      const limit = run.limitHit === "budget" ? run.maxBudgetUsd : run.maxTurns;
+      this.renderDetailRow(metaSection, "Stopped by", describeLimitHit(run.limitHit, limit));
+    } else if (run.maxBudgetUsd || run.maxTurns) {
+      const parts: string[] = [];
+      if (run.maxBudgetUsd) parts.push(`$${run.maxBudgetUsd}`);
+      if (run.maxTurns) parts.push(`${run.maxTurns} turns`);
+      this.renderDetailRow(metaSection, "Limits", parts.join(" · "));
+    }
+
+    // MCP servers the CLI refused to load. Before the CLI reported these, a
+    // mistyped server just meant its tools were quietly missing and the run
+    // looked fine — surface it where someone debugging the run will see it.
+    if (run.mcpServerErrors && run.mcpServerErrors.length > 0) {
+      const mcpSection = body.createDiv({ cls: "af-slideover-section" });
+      mcpSection.createDiv({ cls: "af-slideover-section-title", text: "MCP SERVERS SKIPPED" });
+      const list = mcpSection.createDiv({ cls: "af-run-mcp-errors" });
+      for (const err of run.mcpServerErrors) {
+        const row = list.createDiv({ cls: "af-run-mcp-error" });
+        row.createSpan({ cls: "af-run-mcp-error-name", text: err.name });
+        if (err.message) {
+          row.createSpan({ cls: "af-run-mcp-error-msg", text: err.message });
+        }
+      }
     }
 
     // Output — focused on the final result. If the CLI's result event was
@@ -1653,6 +1688,15 @@ export class FleetDashboardView extends ItemView {
         ? s.slice(0, MAX_RENDER_CHARS) +
           `\n\n---\n*Truncated (${(s.length / 1024).toFixed(0)} KB total). Open the run note for full content.*`
         : s;
+
+    if (run.structuredOutput !== undefined) {
+      const structuredSection = body.createDiv({ cls: "af-slideover-section" });
+      structuredSection.createDiv({ cls: "af-slideover-section-title", text: "STRUCTURED OUTPUT" });
+      structuredSection.createEl("pre", {
+        cls: "af-output-block af-run-structured-output",
+        text: cap(JSON.stringify(run.structuredOutput, null, 2)),
+      });
+    }
 
     const hasFinalResult = !!(run.finalResult && run.finalResult.trim());
     const outputForTranscript = run.output?.trim() ?? "";
@@ -1794,6 +1838,7 @@ export class FleetDashboardView extends ItemView {
       case "timeout":
         return "error";
       case "cancelled":
+      case "stopped":
         return "warning";
       case "pending_approval":
         return "pending";
@@ -1813,6 +1858,7 @@ export class FleetDashboardView extends ItemView {
       case "pending_approval":
         return "shield-check";
       case "cancelled":
+      case "stopped":
         return "square";
       default:
         return "loader-2";
@@ -1830,6 +1876,7 @@ export class FleetDashboardView extends ItemView {
       case "pending_approval":
         return "pending";
       case "cancelled":
+      case "stopped":
         return "cancelled";
       default:
         return "running";
@@ -1848,6 +1895,8 @@ export class FleetDashboardView extends ItemView {
         return "Pending";
       case "cancelled":
         return "Cancelled";
+      case "stopped":
+        return "Stopped by limit";
       case "interrupted":
         return "Interrupted";
       default:

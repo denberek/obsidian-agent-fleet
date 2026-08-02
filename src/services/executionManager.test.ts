@@ -31,6 +31,26 @@ Middle
       expect(extractConcreteModel(result)).toBe("claude-opus-4-7");
     });
 
+    it("chooses the primary model when result usage includes an internal helper", () => {
+      const result = {
+        type: "result",
+        modelUsage: {
+          "claude-haiku-4-5-20251001": {
+            inputTokens: 500,
+            outputTokens: 10,
+            costUSD: 0.0006,
+          },
+          "claude-opus-5": {
+            inputTokens: 2,
+            outputTokens: 50,
+            cacheCreationInputTokens: 25_000,
+            costUSD: 0.25,
+          },
+        },
+      };
+      expect(extractConcreteModel(result)).toBe("claude-opus-5");
+    });
+
     it("pulls from assistant message.model", () => {
       const assistant = {
         type: "assistant",
@@ -104,6 +124,10 @@ function makeSettings(overrides: Partial<FleetSettings> = {}): FleetSettings {
     defaultModel: "default",
     awsRegion: "us-east-1",
     maxConcurrentRuns: 2,
+    maxRunBudgetUsd: 0,
+    maxRunTurns: 0,
+    claudeSandboxNetworkStrictAllowlist: false,
+    claudeSandboxFilesystemDisabled: false,
     runLogRetentionDays: 30,
     catchUpMissedTasks: true,
     notificationLevel: "all",

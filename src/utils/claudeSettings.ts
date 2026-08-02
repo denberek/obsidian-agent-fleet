@@ -31,6 +31,8 @@ export interface WriteSettingsOptions {
    *  grants + the synthetic `remember` tool), NOT just `agent.mcpServers` — a
    *  memory agent with no explicit grants still needs `mcp__remember` allowed. */
   mcpAllowServers?: string[];
+  sandboxNetworkStrictAllowlist?: boolean;
+  sandboxFilesystemDisabled?: boolean;
 }
 
 /** Normalize a server name into its `mcp__<name>` allow-list entry. Whitespace
@@ -50,7 +52,9 @@ export function writeClaudeSettingsFile(
   const hasPermMode = !!permMode && permMode !== "default";
   const mcpAllow = opts.mcpAllowServers ?? [];
   const hasMcpServers = mcpAllow.length > 0;
-  const needsSettingsFile = hasPermRules || hasPermMode || hasMcpServers;
+  const hasSandboxSettings =
+    opts.sandboxNetworkStrictAllowlist === true || opts.sandboxFilesystemDisabled === true;
+  const needsSettingsFile = hasPermRules || hasPermMode || hasMcpServers || hasSandboxSettings;
   if (!needsSettingsFile) return null;
 
   const claudeDir = join(cwd, ".claude");
@@ -81,6 +85,16 @@ export function writeClaudeSettingsFile(
     settingsObj.permissions = {
       allow: allowList,
       deny: agent.permissionRules.deny,
+    };
+  }
+  if (hasSandboxSettings) {
+    settingsObj.sandbox = {
+      ...(opts.sandboxNetworkStrictAllowlist
+        ? { network: { strictAllowlist: true } }
+        : {}),
+      ...(opts.sandboxFilesystemDisabled
+        ? { filesystem: { disabled: true } }
+        : {}),
     };
   }
 

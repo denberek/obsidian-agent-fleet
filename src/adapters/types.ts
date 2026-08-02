@@ -1,4 +1,14 @@
-import type { AgentConfig, ExecutionToolUse, FleetSettings, ModelSource } from "../types";
+import type {
+  AgentConfig,
+  ExecutionToolUse,
+  FleetSettings,
+  JsonValue,
+  McpServerError,
+  ModelSource,
+  RunLimitKind,
+} from "../types";
+
+export type { McpServerError };
 
 /** Canonical adapter ids. Anything unknown in agent frontmatter normalizes
  *  to "claude-code" (see `normalizeAdapter`). */
@@ -13,12 +23,25 @@ export interface ExecBuildOptions {
    *  passed to Codex, and vice versa). */
   modelSource: ModelSource;
   /** Reasoning effort ("" = omit). Stored values follow the Claude scale
-   *  (low/medium/high/max); adapters map to their own vocabulary. */
+   *  (low/medium/high/xhigh/max/ultracode — see `src/utils/effort.ts`);
+   *  adapters map to their own vocabulary. */
   effort: string;
   agent: AgentConfig;
   settings: FleetSettings;
   /** True when stream events are consumed live while the process runs. */
   streaming: boolean;
+  /** Dollar stop threshold for this run (undefined = uncapped). Claude Code
+   *  checks it between API turns via `--max-budget-usd`; Codex ignores it. */
+  budgetUsd?: number;
+  /** Agentic-turn ceiling for this run (undefined = uncapped). Claude Code
+   *  enforces it via `--max-turns`; Codex has no equivalent. */
+  maxTurns?: number;
+  /** Forward subagent text/thinking into the stream (Claude `--forward-subagent-text`).
+   *  Opt-in per agent — it multiplies stream volume on nested subagent work. */
+  forwardSubagentText?: boolean;
+  /** JSON Schema for validated structured output. Claude passes it via
+   *  `--json-schema`; Codex writes it to a temp file for `--output-schema`. */
+  outputSchema?: string;
   /** Chat-mode only: provider session/thread id to resume. One-shot task
    *  execution leaves this undefined. */
   resumeSessionId?: string | null;
@@ -30,11 +53,18 @@ export interface ExecInvocation {
   /** Written to stdin right after spawn, then stdin is closed. Both adapters
    *  use this to dodge OS argv length limits (Windows: 32 767 chars). */
   stdinPayload?: string;
+  /** Release anything the invocation allocated on disk (Codex writes the
+   *  output schema to a temp file). Callers MUST invoke this in a finally
+   *  block, alongside the permission restore. */
+  cleanup?: () => void;
 }
 
 export interface ExecParseResult {
   outputText: string;
   finalResult?: string;
+  /** Provider-emitted JSON result. ExecutionManager only accepts it when the
+   *  task explicitly requested an output schema. */
+  structuredOutput?: JsonValue;
   tokensUsed?: number;
   costUsd?: number;
   toolsUsed: ExecutionToolUse[];
@@ -43,6 +73,12 @@ export interface ExecParseResult {
   /** Provider session/thread id parsed from the output, when the adapter
    *  emits one (Codex: thread.started). Unused by one-shot task runs. */
   sessionId?: string;
+  /** Set when a configured run limit ended the run rather than an error. */
+  limitHit?: RunLimitKind;
+  /** MCP servers the CLI reported as unusable for this run, with the reason.
+   *  Claude Code lists skipped `--mcp-config` entries on its init event; Codex
+   *  emits no equivalent, so this stays empty there. */
+  mcpServerErrors?: McpServerError[];
 }
 
 /** Opaque cleanup handle returned by `setupPermissions`. */

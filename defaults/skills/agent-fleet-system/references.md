@@ -7,6 +7,7 @@
 | bypassPermissions | Auto-runs everything | Hard-blocked | Trusted agents with a blacklist |
 | dontAsk | Only allow-listed | Hard-blocked | Locked-down agents with a whitelist |
 | acceptEdits | File edits auto-approved | Hard-blocked | Agents editing files only |
+| auto | Classifier decides; asks only when risky | Hard-blocked | Adaptive interactive safety |
 | plan | Read-only | Hard-blocked | Research/analysis |
 | default | Prompts for permission | Hard-blocked | Not useful for headless |
 
@@ -35,8 +36,14 @@ Examples:
 
 The plugin spawns Claude Code with:
 ```
-claude -p "<prompt>" --output-format stream-json --verbose [--model <model>]
+claude -p --output-format stream-json --verbose [--model <model>] \
+  [--max-budget-usd <n>] [--max-turns <n>] [--forward-subagent-text] \
+  [--json-schema '<schema>']
 ```
+
+The prompt is sent on stdin. Interactive chat also runs print/SDK mode with
+`--input-format stream-json --include-partial-messages`. MCP load failures from
+the init event are recorded in the run note and shown on both the run and MCP pages.
 
 On macOS/Linux, commands run through a login shell (`/bin/zsh -l -c` or `/bin/bash -l -c`) so shell profile environment variables are available. On Windows, commands spawn directly — Windows inherits environment variables from the system without a shell wrapper.
 
@@ -96,9 +103,9 @@ When a run happens, the model passed to `claude --model` is resolved in this ord
 3. **`settings.defaultModel`** — plugin-wide default
 4. If all three are empty or one of the sentinels (`""`, `"default"`, `"subscription"`), `--model` is omitted → CLI picks its subscription default.
 
-Use **aliases** (`opus`, `sonnet`, `haiku`, `opusplan`) for backend-agnostic, future-proof selection. They're resolved inside Claude Code itself and work identically on direct API, Bedrock, Vertex, Foundry, and Mantle. Use **Custom** (free text) for pinned concrete IDs when reproducibility matters.
+Use **aliases** (`opus`, `sonnet`, `haiku`, `fable`) for backend-agnostic, future-proof selection. They're resolved inside Claude Code itself and work identically on direct API, Bedrock, Vertex, Foundry, and Mantle. Use **Custom** (free text) for pinned concrete IDs when reproducibility matters.
 
-Run log frontmatter records both what was requested (`model: opus`) and what the CLI concretely resolved to (`resolved_concrete_model: claude-opus-4-7`) for audit traceability.
+Run log frontmatter records both what was requested (`model: opus`) and what the CLI concretely resolved to (`resolved_concrete_model: claude-opus-5`) for audit traceability.
 
 ## Shared Subscription Rate Limits
 

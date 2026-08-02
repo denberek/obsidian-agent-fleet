@@ -8,6 +8,7 @@ import { extractCaptures, renderSections } from "../utils/memoryFormat";
 import { buildReflectionPrompt, mergeCandidates, parseReflectionOutput } from "../utils/reflection";
 import { MemoryWriter } from "./memoryWriter";
 import { resolveModel } from "../utils/modelResolution";
+import { describeLimitHit } from "../utils/runLimits";
 import { McpManager } from "./mcpManager";
 import type { McpAuthManager } from "./mcpAuth";
 import { TaskScheduler } from "./taskScheduler";
@@ -706,8 +707,11 @@ export class FleetRuntime {
       // history with its full output — the user can confirm it ran and see what
       // it consolidated. A clean CLI exit is "success" even if nothing changed;
       // `finalResult` carries the consolidation outcome.
-      const runStatus: RunStatus =
-        result.exitCode === 0 || result.exitCode === null ? "success" : "failure";
+      const runStatus: RunStatus = result.limitHit
+        ? "stopped"
+        : result.exitCode === 0 || result.exitCode === null
+          ? "success"
+          : "failure";
       const run: RunLogData = {
         runId: result.runId,
         agent: agent.name,
@@ -721,24 +725,29 @@ export class FleetRuntime {
         model: result.resolvedModel || agent.reflection.model || agent.model,
         modelSource: result.modelSource,
         concreteModel: result.concreteModel,
+        maxBudgetUsd: result.maxBudgetUsd,
+        maxTurns: result.maxTurns,
+        limitHit: result.limitHit,
+        mcpServerErrors: result.mcpServerErrors,
         exitCode: result.exitCode,
         tags: Array.from(new Set([...agent.tags, "reflection"])),
         prompt: result.prompt,
         output: result.outputText,
         toolsUsed: result.toolsUsed.map((tool) => `${tool.tool}${tool.command ? `: ${tool.command}` : ""}`),
         finalResult: message,
+        structuredOutput: result.structuredOutput,
         stderr: result.stderr,
       };
       const runPath = await this.repository.writeRunLog(run);
       await this.refreshRunCaches();
       this.runtimeState.set(agentName, {
-        status: runStatus === "success" ? "idle" : "error",
+        status: runStatus === "success" || runStatus === "stopped" ? "idle" : "error",
         currentRunId: result.runId,
         lastRun: { ...run, filePath: runPath },
       });
       // Reflection runs bypass runPendingTask, so surface failures here —
       // otherwise a broken nightly reflection is invisible outside run logs.
-      if (runStatus === "failure") this.notify(run);
+      if (runStatus === "failure" || runStatus === "stopped") this.notify(run);
       return { ok: applied, message };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -854,12 +863,17 @@ export class FleetRuntime {
         model: result.resolvedModel || agent.model,
         modelSource: result.modelSource,
         concreteModel: result.concreteModel,
+        maxBudgetUsd: result.maxBudgetUsd,
+        maxTurns: result.maxTurns,
+        limitHit: result.limitHit,
+        mcpServerErrors: result.mcpServerErrors,
         exitCode: result.exitCode,
         tags: Array.from(new Set([...agent.tags, ...task.tags])),
         prompt: result.prompt,
         output: result.outputText,
         toolsUsed: result.toolsUsed.map((tool) => `${tool.tool}${tool.command ? `: ${tool.command}` : ""}`),
         finalResult: result.finalResult,
+        structuredOutput: result.structuredOutput,
         stderr: result.stderr,
         approvals,
       };
@@ -915,7 +929,11 @@ export class FleetRuntime {
 
       await this.refreshRunCaches();
       this.runtimeState.set(agent.name, {
-        status: wasAborted ? "idle" : runStatus === "success" ? "idle" : runStatus === "pending_approval" ? "pending" : "error",
+        status: wasAborted || runStatus === "success" || runStatus === "stopped"
+          ? "idle"
+          : runStatus === "pending_approval"
+            ? "pending"
+            : "error",
         currentRunId: result.runId,
         lastRun: { ...run, filePath: runPath },
       });
@@ -976,7 +994,7 @@ export class FleetRuntime {
   }
 
   private resolveRunStatus(
-    result: { exitCode: number | null; timedOut: boolean },
+    result: { exitCode: number | null; timedOut: boolean; limitHit?: "budget" | "turns" },
     approvals?: ApprovalRecord[],
   ): RunStatus {
     if (approvals?.length) {
@@ -984,6 +1002,9 @@ export class FleetRuntime {
     }
     if (result.timedOut) {
       return "timeout";
+    }
+    if (result.limitHit) {
+      return "stopped";
     }
     return result.exitCode === 0 ? "success" : "failure";
   }
@@ -1005,6 +1026,15 @@ export class FleetRuntime {
     // Surface memory captures on successful runs so they aren't drained silently.
     const captureSuffix =
       capturedCount > 0 ? ` · captured ${capturedCount} memory fact${capturedCount === 1 ? "" : "s"}` : "";
+    // A run that stopped at a configured cap is not a malfunction. It still
+    // warrants a notification — you asked to be told when you hit the threshold —
+    // but reporting it as a plain failure sends people debugging a non-bug.
+    if (run.limitHit) {
+      const limit = run.limitHit === "budget" ? run.maxBudgetUsd : run.maxTurns;
+      new Notice(`🛑 ${run.agent}: ${describeLimitHit(run.limitHit, limit)}`, 0);
+      return;
+    }
+
     const message =
       run.status === "success"
         ? `✅ ${run.agent}: ${preview}${captureSuffix}`

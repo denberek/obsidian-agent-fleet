@@ -513,7 +513,7 @@ export class AgentChatView extends ItemView {
         `Context: ${formatTokens(stats.contextTokensUsed)} / ${formatTokens(stats.contextWindow)} tokens (${pct}%)\n\n` +
         "Includes the agent's system prompt, attached skills, tool schemas, memory, and prior turns. " +
         "A fresh chat starts non-zero because all of that is loaded on turn 1.\n\n" +
-        "To get 1M context on Opus, set the agent's model to claude-opus-4-7[1m] (or us.anthropic.claude-opus-4-7[1m] on Bedrock).";
+        "Opus, Sonnet, and Fable have a 1M-token context window by default — no suffix needed.";
     }
 
     // Transient "just compacted" notice — session sets `stats.lastCompact`

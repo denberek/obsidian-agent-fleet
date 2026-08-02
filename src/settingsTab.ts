@@ -38,6 +38,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.claudeCliPath).onChange(async (value) => {
           this.plugin.settings.claudeCliPath = value.trim() || DEFAULT_SETTINGS.claudeCliPath;
+          this.plugin.settings.claudeCliVersion = undefined;
           await this.plugin.saveSettings();
         }),
       );
@@ -51,6 +52,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.codexCliPath).onChange(async (value) => {
           this.plugin.settings.codexCliPath = value.trim() || DEFAULT_SETTINGS.codexCliPath;
+          this.plugin.settings.codexCliVersion = undefined;
           await this.plugin.saveSettings();
         }),
       );
@@ -58,7 +60,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
     const modelSetting = new Setting(containerEl)
       .setName("Default model")
       .setDesc(
-        "Fallback for agents that don\u2019t set their own. Aliases (opus/sonnet/haiku) work on any backend; use Custom for pinned IDs or Bedrock/Vertex/Foundry.",
+        "Fallback for agents that don\u2019t set their own. Aliases (opus/sonnet/haiku/fable) work on any backend; use Custom for pinned IDs or Bedrock/Vertex/Foundry.",
       );
     const modelPickerHost = modelSetting.controlEl.createDiv();
     renderModelPicker(modelPickerHost, {
@@ -85,6 +87,72 @@ export class AgentFleetSettingTab extends PluginSettingTab {
           this.plugin.settings.maxConcurrentRuns = value;
           await this.plugin.saveSettings();
         }),
+      );
+
+    new Setting(containerEl)
+      .setName("Spend limit per run")
+      .setDesc(
+        "Dollar stop threshold for a single run. Claude checks it between API turns, so an in-flight response can overshoot it. " +
+          "Scheduled runs are unattended, so this stops subsequent work after an expensive turn. 0 disables it. " +
+          "Agents and tasks can override. Claude Code only — Codex has no spend cap.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("0")
+          .setValue(this.plugin.settings.maxRunBudgetUsd ? String(this.plugin.settings.maxRunBudgetUsd) : "")
+          .onChange(async (value) => {
+            const parsed = Number.parseFloat(value.trim());
+            this.plugin.settings.maxRunBudgetUsd =
+              Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Turn limit per run")
+      .setDesc(
+        "Maximum agentic turns in a single run, as a runaway guard. 0 disables it. " +
+          "Agents and tasks can override. Claude Code only.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("0")
+          .setValue(this.plugin.settings.maxRunTurns ? String(this.plugin.settings.maxRunTurns) : "")
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value.trim(), 10);
+            this.plugin.settings.maxRunTurns = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Strict Claude sandbox network allowlist")
+      .setDesc(
+        "Enforce Claude Code’s sandbox.network.strictAllowlist for every agent run. " +
+          "Leave off unless your Claude settings define the required allowed domains.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.claudeSandboxNetworkStrictAllowlist)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeSandboxNetworkStrictAllowlist = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Disable Claude filesystem sandbox")
+      .setDesc(
+        "Set Claude Code’s sandbox.filesystem.disabled for agent runs. Permission rules still apply; " +
+          "use only when the filesystem sandbox conflicts with an external sandbox.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.claudeSandboxFilesystemDisabled)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeSandboxFilesystemDisabled = value;
+            await this.plugin.saveSettings();
+          }),
       );
 
     new Setting(containerEl)
@@ -154,8 +222,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
       .setDesc("Checks that the configured binary is reachable.")
       .addButton((button) =>
         button.setButtonText("Verify").onClick(async () => {
-          const ok = await this.plugin.verifyClaudeCli();
-          new Notice(ok ? "Claude CLI detected." : "Claude CLI check failed. See console for details.");
+          await this.plugin.verifyClaudeCli();
         }),
       );
 
@@ -164,8 +231,7 @@ export class AgentFleetSettingTab extends PluginSettingTab {
       .setDesc("Checks that the configured Codex binary is reachable.")
       .addButton((button) =>
         button.setButtonText("Verify").onClick(async () => {
-          const ok = await this.plugin.verifyCodexCli();
-          new Notice(ok ? "Codex CLI detected." : "Codex CLI check failed. See console for details.");
+          await this.plugin.verifyCodexCli();
         }),
       );
 

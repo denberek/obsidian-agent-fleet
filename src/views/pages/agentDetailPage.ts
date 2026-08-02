@@ -279,6 +279,19 @@ function renderAgentConfigTab(container: HTMLElement, deps: AgentDetailPageDeps,
   deps.renderConfigRow(form, "Name", agent.name);
   deps.renderConfigRow(form, "Description", agent.description ?? "");
   deps.renderConfigRow(form, "Model", agent.model);
+  deps.renderConfigRow(form, "Adapter", agent.adapter === "codex" ? "OpenAI Codex" : "Claude Code");
+  deps.renderConfigRow(form, "Effort", agent.effort || "backend default");
+  deps.renderConfigRow(
+    form,
+    "Spend limit",
+    agent.maxBudgetUsd === undefined ? "inherit fleet" : agent.maxBudgetUsd <= 0 ? "uncapped" : `$${agent.maxBudgetUsd}`,
+  );
+  deps.renderConfigRow(
+    form,
+    "Turn limit",
+    agent.maxTurns === undefined ? "inherit fleet" : agent.maxTurns <= 0 ? "uncapped" : String(agent.maxTurns),
+  );
+  deps.renderConfigRow(form, "Subagent output", agent.forwardSubagentText ? "Forwarded" : "Off");
   deps.renderConfigRow(form, "Timeout", `${agent.timeout}s`);
   deps.renderConfigRow(form, "Working Directory", agent.cwd ?? "(vault root)");
   deps.renderConfigRow(form, "Permission Mode", agent.permissionMode || "default");

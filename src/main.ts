@@ -27,6 +27,12 @@ import type { ChannelConfig, ChannelCredentialEntry, FleetSettings } from "./typ
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
 import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, isAbsolutePath } from "./utils/platform";
 import { normalizeAdapter } from "./adapters";
+import {
+  cliVersionWarning,
+  MIN_CLAUDE_CLI_VERSION,
+  MIN_CODEX_CLI_VERSION,
+  parseCliVersion,
+} from "./utils/cliVersion";
 import { cleanupCodexOverlays, resetCodexPermissionCaches } from "./adapters/codexPermissions";
 import { SidebarView } from "./views/sidebarView";
 import { FleetDashboardView } from "./views/dashboardView";
@@ -67,6 +73,10 @@ export default class AgentFleetPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.settings.claudeCliPath = await this.resolveClaudeCliPath(this.settings.claudeCliPath);
+    // Detect feature support before runtime initialization can execute startup
+    // catch-up tasks. Known-old CLIs must never receive a silently unsupported
+    // spend cap or output contract.
+    await this.verifyClaudeCli(true, false);
     this.repository = new FleetRepository(this.app, this.settings);
     this.repository.setChannelCredentialGetter(() => this.channelCredentials.toRecord());
     this.runtime = new FleetRuntime(this.repository, this.settings, this.mcpAuth);
@@ -101,12 +111,14 @@ export default class AgentFleetPlugin extends Plugin {
       );
     }
 
+    // Load once before scheduler startup so Codex can be detected before any
+    // catch-up task runs. FleetRuntime.initialize() reloads after migrations;
+    // the second pass is intentional and keeps its normal initialization API.
+    await this.repository.loadAll();
+    // Codex path/version resolution is conditional — only agents with
+    // `adapter: codex` pay the probe cost.
+    await this.maybeResolveCodexCliPath(true);
     await this.runtime.initialize();
-    await this.verifyClaudeCli(false);
-    // Codex path resolution is conditional — only agents with `adapter: codex`
-    // need it, and probing a missing binary on every load would slow startup
-    // for everyone else.
-    await this.maybeResolveCodexCliPath();
 
     this.addRibbonIcon("bot", "Agent Fleet Dashboard", () => void this.activateDashboardView());
     this.addRibbonIcon("message-circle", "Agent Chat", () => {
@@ -437,29 +449,38 @@ export default class AgentFleetPlugin extends Plugin {
     this.statusBarEl.setText(`🤖 ${status.running} running · ${status.pending} pending · ${status.completedToday} completed today`);
   }
 
-  async verifyClaudeCli(showNotice = true): Promise<boolean> {
+  async verifyClaudeCli(showNotice = true, showSuccessNotice = showNotice): Promise<boolean> {
     const cliPath = await this.resolveClaudeCliPath(this.settings.claudeCliPath);
     this.settings.claudeCliPath = cliPath;
-    return await this.verifyCliBinary(cliPath, "Claude", showNotice);
+    return await this.verifyCliBinary(cliPath, "Claude", showNotice, showSuccessNotice);
   }
 
-  async verifyCodexCli(showNotice = true): Promise<boolean> {
+  async verifyCodexCli(showNotice = true, showSuccessNotice = showNotice): Promise<boolean> {
     const cliPath = await this.resolveCliPathFrom(
       resolveCodexCliCandidates(this.settings.codexCliPath),
       this.settings.codexCliPath,
     );
     this.settings.codexCliPath = cliPath;
-    return await this.verifyCliBinary(cliPath, "Codex", showNotice);
+    return await this.verifyCliBinary(cliPath, "Codex", showNotice, showSuccessNotice);
   }
 
-  private async verifyCliBinary(cliPath: string, label: string, showNotice: boolean): Promise<boolean> {
+  private async verifyCliBinary(
+    cliPath: string,
+    label: "Claude" | "Codex",
+    showNotice: boolean,
+    showSuccessNotice = showNotice,
+  ): Promise<boolean> {
     // Skip re-spawning `--version` if this exact binary verified successfully
     // recently — settings edits would otherwise probe on every save.
     const cacheKey = `${label}:${cliPath}`;
     const verifiedAt = this.cliVerifiedAt.get(cacheKey);
     if (verifiedAt !== undefined && Date.now() - verifiedAt < AgentFleetPlugin.CLI_VERIFY_TTL_MS) {
       if (showNotice) {
-        new Notice(`${label} CLI available.`);
+        const version = label === "Claude" ? this.settings.claudeCliVersion ?? null : this.settings.codexCliVersion ?? null;
+        const minimum = label === "Claude" ? MIN_CLAUDE_CLI_VERSION : MIN_CODEX_CLI_VERSION;
+        const warning = cliVersionWarning(label, version, minimum);
+        if (warning) new Notice(warning, 10000);
+        else if (showSuccessNotice) new Notice(`${label} CLI ${version ?? "available"}.`, 5000);
       }
       return true;
     }
@@ -477,6 +498,10 @@ export default class AgentFleetPlugin extends Plugin {
       // On Windows: spawns directly (env is inherited from the system).
       const proc = spawnCli(cliPath, ["--version"]);
       let stderr = "";
+      let stdout = "";
+      proc.stdout!.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      });
       proc.stderr!.on("data", (chunk: Buffer | string) => {
         stderr += chunk.toString();
       });
@@ -484,12 +509,34 @@ export default class AgentFleetPlugin extends Plugin {
         const ok = code === 0;
         if (ok) {
           this.cliVerifiedAt.set(cacheKey, Date.now());
+          // The probe already ran, so reading the version off it is free.
+          // Some builds print to stderr instead — check both.
+          const version = parseCliVersion(stdout) ?? parseCliVersion(stderr);
+          if (label === "Claude") {
+            if (version) this.settings.claudeCliVersion = version;
+            else delete this.settings.claudeCliVersion;
+          } else if (version) {
+            this.settings.codexCliVersion = version;
+          } else {
+            delete this.settings.codexCliVersion;
+          }
+          // Persist only the detection result. Clearing a stale value when a
+          // future CLI prints an unparseable version is as important as caching
+          // a known one: unknown versions deliberately pass feature gates.
+          // Calling saveSettings() here would rebuild the runtime mid-startup.
+          void this.saveData(this.settings);
+          const minimum = label === "Claude" ? MIN_CLAUDE_CLI_VERSION : MIN_CODEX_CLI_VERSION;
+          const warning = cliVersionWarning(label, version, minimum);
+          if (warning) {
+            console.warn(`Agent Fleet: ${warning}`);
+            if (showNotice) new Notice(warning, 10000);
+          } else if (showNotice && showSuccessNotice) {
+            new Notice(`${label} CLI ${version ?? "available"}.`, 5000);
+          }
         } else {
           console.error(`Agent Fleet: ${label} CLI verification failed`, stderr);
         }
-        if (showNotice) {
-          new Notice(ok ? `${label} CLI available.` : failureMessage, ok ? 5000 : 10000);
-        }
+        if (showNotice && !ok) new Notice(failureMessage, 10000);
         resolve(ok);
       });
       proc.on("error", (error) => {
@@ -782,15 +829,20 @@ export default class AgentFleetPlugin extends Plugin {
   /** Resolve the Codex CLI path, but only when some agent actually uses the
    *  codex adapter — probing a missing binary adds startup/save latency for
    *  everyone else. `verifyCodexCli` resolves unconditionally. */
-  private async maybeResolveCodexCliPath(): Promise<void> {
-    const hasCodexAgent = this.runtime
-      ?.getSnapshot()
-      .agents.some((a) => normalizeAdapter(a.adapter) === "codex");
+  private async maybeResolveCodexCliPath(verifyVersion = false): Promise<void> {
+    const runtimeAgents = this.runtime?.getSnapshot().agents ?? [];
+    const agents = runtimeAgents.length > 0
+      ? runtimeAgents
+      : (this.repository?.getSnapshot().agents ?? []);
+    const hasCodexAgent = agents.some((a) => normalizeAdapter(a.adapter) === "codex");
     if (!hasCodexAgent) return;
     this.settings.codexCliPath = await this.resolveCliPathFrom(
       resolveCodexCliCandidates(this.settings.codexCliPath),
       this.settings.codexCliPath,
     );
+    if (verifyVersion) {
+      await this.verifyCliBinary(this.settings.codexCliPath, "Codex", true, false);
+    }
   }
 
   private async resolveCliPathFrom(candidates: string[], fallback: string): Promise<string> {

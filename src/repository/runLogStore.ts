@@ -3,8 +3,24 @@ import type { App, Vault } from "obsidian";
 import { DEFAULT_SETTINGS } from "../constants";
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter, slugify } from "../utils/markdown";
 import { splitLines } from "../utils/platform";
-import type { RunLogData } from "../types";
+import { isJsonValue } from "../utils/structuredOutput";
+import type { McpServerError, RunLogData } from "../types";
 import { asNumber, asString, asStringArray, collectMarkdownChildren, ensureFolder, isRecord } from "./shared";
+
+/** Read back the `mcp_server_errors` frontmatter list. Tolerant of shape drift
+ *  for the same reason the adapter-side extractor is — this is a young field
+ *  and a malformed entry shouldn't cost us the whole run log. */
+function parseMcpServerErrors(value: unknown): McpServerError[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: McpServerError[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const name = asString(entry.name) ?? "";
+    const message = asString(entry.error) ?? asString(entry.message) ?? "";
+    if (name || message) out.push({ name: name || "(unnamed)", message });
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 /**
  * Run-log store: reads/writes `_fleet/runs/YYYY-MM-DD/*.md` files and owns
@@ -114,11 +130,21 @@ export class RunLogStore {
         return undefined;
       })(),
       concreteModel: asString(frontmatter.resolved_concrete_model),
+      maxBudgetUsd: typeof frontmatter.max_budget_usd === "number" ? frontmatter.max_budget_usd : undefined,
+      maxTurns: typeof frontmatter.max_turns === "number" ? frontmatter.max_turns : undefined,
+      limitHit: ((): RunLogData["limitHit"] => {
+        const raw = asString(frontmatter.limit_hit);
+        return raw === "budget" || raw === "turns" ? raw : undefined;
+      })(),
+      mcpServerErrors: parseMcpServerErrors(frontmatter.mcp_server_errors),
       exitCode: typeof frontmatter.exit_code === "number" ? frontmatter.exit_code : null,
       tags: asStringArray(frontmatter.tags),
       prompt: promptMatch?.[1]?.trim() ?? "",
       output: outputMatch?.[1]?.trim() ?? "",
       finalResult: resultMatch?.[1]?.trim() || undefined,
+      structuredOutput: isJsonValue(frontmatter.structured_output)
+        ? frontmatter.structured_output
+        : undefined,
       toolsUsed: toolsMatch?.[1]
         ? splitLines(toolsMatch[1])
           .map((line) => line.replace(/^- /, "").trim())
@@ -152,6 +178,13 @@ export class RunLogStore {
         model: run.model,
         model_source: run.modelSource,
         resolved_concrete_model: run.concreteModel,
+        max_budget_usd: run.maxBudgetUsd,
+        max_turns: run.maxTurns,
+        limit_hit: run.limitHit,
+        mcp_server_errors: run.mcpServerErrors && run.mcpServerErrors.length > 0
+          ? run.mcpServerErrors.map((e) => ({ name: e.name, error: e.message }))
+          : undefined,
+        structured_output: run.structuredOutput,
         exit_code: run.exitCode,
         tags: run.tags,
         approvals: run.approvals,

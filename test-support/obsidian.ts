@@ -20,6 +20,12 @@ export function parseYaml(input: string): Record<string, unknown> {
       result[key] = false;
     } else if (/^-?\d+$/.test(rawValue)) {
       result[key] = Number(rawValue);
+    } else if (rawValue.startsWith("[") || rawValue.startsWith("{")) {
+      try {
+        result[key] = JSON.parse(rawValue);
+      } catch {
+        result[key] = rawValue;
+      }
     } else {
       result[key] = rawValue.replace(/^['"]|['"]$/g, "");
     }
@@ -30,7 +36,9 @@ export function parseYaml(input: string): Record<string, unknown> {
 
 export function stringifyYaml(input: Record<string, unknown>): string {
   return Object.entries(input)
-    .map(([key, value]) => `${key}: ${String(value)}`)
+    .map(([key, value]) =>
+      `${key}: ${value !== null && typeof value === "object" ? JSON.stringify(value) : String(value)}`,
+    )
     .join("\n");
 }
 

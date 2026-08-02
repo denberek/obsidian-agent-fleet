@@ -78,7 +78,7 @@ You have deep knowledge of (delegated to the \`agent-fleet-system\` skill):
 - **Wiki Keeper** — scoped self-maintaining wikis with inbox + watched ingestion modes, the three bundled skills (wiki-ingest / wiki-query / wiki-lint), and per-scope instances
 - **Consumer agents** — the \`wiki_references\` config block lets any agent read + contribute to wikis it doesn't own
 - **Chat threading** — inline threads under any assistant message with their own Claude session
-- **Model selection** — aliases (opus / sonnet / haiku / opusplan), custom pinned IDs, per-task override, resolution order task → agent → settings
+- **Model selection** — aliases (opus / sonnet / haiku / fable), custom pinned IDs, per-task override, resolution order task → agent → settings
 - **Auto-compact** — \`auto_compact_threshold\` (default 85%) triggers \`/compact\` before next message; users can also type \`/compact\` directly
 - The folder structure, file formats, and cross-platform support (macOS, Windows, Linux)
 
@@ -479,6 +479,7 @@ Explains: "Auto-compact now kicks in at 70% context instead of 85%. Next time th
 | bypassPermissions | Auto-runs everything | Hard-blocked | Trusted agents with a blacklist |
 | dontAsk | Only allow-listed | Hard-blocked | Locked-down agents with a whitelist |
 | acceptEdits | File edits auto-approved | Hard-blocked | Agents editing files only |
+| auto | Classifier decides; asks only when risky | Hard-blocked | Adaptive interactive safety |
 | plan | Read-only | Hard-blocked | Research/analysis |
 | default | Prompts for permission | Hard-blocked | Not useful for headless |
 
@@ -507,8 +508,14 @@ Examples:
 
 The plugin spawns Claude Code with:
 \`\`\`
-claude -p "<prompt>" --output-format stream-json --verbose [--model <model>]
+claude -p --output-format stream-json --verbose [--model <model>] \\
+  [--max-budget-usd <n>] [--max-turns <n>] [--forward-subagent-text] \\
+  [--json-schema '<schema>']
 \`\`\`
+
+The prompt is sent on stdin. Interactive chat also runs print/SDK mode with
+\`--input-format stream-json --include-partial-messages\`. MCP load failures from
+the init event are recorded in the run note and shown on both the run and MCP pages.
 
 On macOS/Linux, commands run through a login shell (\`/bin/zsh -l -c\` or \`/bin/bash -l -c\`) so shell profile environment variables are available. On Windows, commands spawn directly — Windows inherits environment variables from the system without a shell wrapper.
 
@@ -568,9 +575,9 @@ When a run happens, the model passed to \`claude --model\` is resolved in this o
 3. **\`settings.defaultModel\`** — plugin-wide default
 4. If all three are empty or one of the sentinels (\`""\`, \`"default"\`, \`"subscription"\`), \`--model\` is omitted → CLI picks its subscription default.
 
-Use **aliases** (\`opus\`, \`sonnet\`, \`haiku\`, \`opusplan\`) for backend-agnostic, future-proof selection. They're resolved inside Claude Code itself and work identically on direct API, Bedrock, Vertex, Foundry, and Mantle. Use **Custom** (free text) for pinned concrete IDs when reproducibility matters.
+Use **aliases** (\`opus\`, \`sonnet\`, \`haiku\`, \`fable\`) for backend-agnostic, future-proof selection. They're resolved inside Claude Code itself and work identically on direct API, Bedrock, Vertex, Foundry, and Mantle. Use **Custom** (free text) for pinned concrete IDs when reproducibility matters.
 
-Run log frontmatter records both what was requested (\`model: opus\`) and what the CLI concretely resolved to (\`resolved_concrete_model: claude-opus-4-7\`) for audit traceability.
+Run log frontmatter records both what was requested (\`model: opus\`) and what the CLI concretely resolved to (\`resolved_concrete_model: claude-opus-5\`) for audit traceability.
 
 ## Shared Subscription Rate Limits
 
@@ -677,20 +684,25 @@ who it is, how it behaves, what it does.
 ### config.md — Runtime Configuration
 \`\`\`yaml
 ---
-model: opus                       # Claude aliases work everywhere: opus / sonnet / haiku / opusplan.
+model: opus                       # Claude aliases work everywhere: opus / sonnet / haiku / fable.
                                   # Or "default" (let CLI pick), or a pinned ID like
-                                  # "claude-opus-4-7" (direct), "us.anthropic.claude-opus-4-7" (Bedrock),
-                                  # "claude-opus-4-7@20251101" (Vertex). For Codex agents use slugs
-                                  # like "gpt-5.5". Backend-agnostic aliases are preferred.
+                                  # "claude-opus-5" (direct), "us.anthropic.claude-opus-5" (Bedrock).
+                                  # For Codex agents use slugs like "gpt-5.6-terra".
+                                  # Backend-agnostic aliases are preferred.
 adapter: claude-code              # "claude-code" (default) or "codex" (OpenAI Codex CLI)
 timeout: 300                      # Seconds before kill
 max_retries: 1
 cwd: ""                           # Working directory (empty = vault root)
-permission_mode: bypassPermissions # Claude: "bypassPermissions", "dontAsk", "acceptEdits", "plan".
+permission_mode: bypassPermissions # Claude: "bypassPermissions", "dontAsk", "acceptEdits", "auto", "plan".
                                   # Codex: "bypassPermissions" (no sandbox), "workspace-write", "read-only".
                                   # Claude-style values map to the nearest Codex sandbox automatically.
-effort: ""                        # Reasoning effort: "low", "medium", "high", "max", or "" for default
-                                  # (Codex maps "max" to its "xhigh" level)
+effort: ""                        # Claude scale: low / medium / high / xhigh / max / ultracode.
+                                  # Codex supports max on GPT-5.6; ultracode falls back to xhigh.
+max_budget_usd:                   # Per-run spend stop (Claude only). Blank = inherit fleet;
+                                  # 0 = explicitly uncapped even if fleet has a cap.
+                                  # Checked between API turns; an in-flight response can overshoot.
+max_turns:                        # Per-run agentic-turn cap. Same inherit/0 semantics.
+forward_subagent_text: false      # Claude only; include bounded nested subagent transcript.
 approval_required: []
 allowed_tools: []
 blocked_tools: []
@@ -873,11 +885,15 @@ enabled: true
 created: 2026-03-29T10:00:00
 run_count: 0
 catch_up: false               # Run missed executions on startup
-effort: ""                    # Override agent effort: "low", "medium", "high", "max", or "" for agent default
+effort: ""                    # Override agent effort: low / medium / high / xhigh / max / ultracode
 model: ""                     # Override agent model for this task only.
                               # Use aliases like "haiku" for cheap/simple tasks,
                               # or leave empty to inherit agent's model.
                               # Resolution order: task.model → agent.model → settings.defaultModel.
+max_budget_usd:              # Override spend stop. Blank = inherit agent/fleet; 0 = uncapped.
+                             # Claude checks between API turns, so final cost can overshoot.
+max_turns:                   # Override turn cap with the same semantics.
+output_schema: '{"type":"object"}' # Optional; validated JSON is stored in structured_output.
 channel: ""                   # Post this task's output to a channel (e.g. "my-discord").
                               # Empty = run log only. Lets scheduled tasks deliver to chat,
                               # not just the heartbeat.
@@ -998,11 +1014,12 @@ Delete (or move to trash) the agent folder, task file, skill folder, or channel 
 ## Run Logs
 
 Run logs are auto-generated in \`_fleet/runs/YYYY-MM-DD/\`. Each run creates a markdown file with:
-- Frontmatter: run_id, agent, task, status, timestamps, tokens_used, cost_usd, model
+- Frontmatter: run_id, agent, task, status, timestamps, tokens_used, cost_usd, model,
+  model source/concrete model, enforced limits, MCP load errors, and optional \`structured_output\`
 - Body: prompt sent, output received, tools used, stderr
 - Heartbeat runs are tagged with \`heartbeat\`
 
-Status values: \`success\`, \`failure\`, \`timeout\`, \`cancelled\`, \`pending_approval\`
+Status values: \`success\`, \`failure\`, \`timeout\`, \`cancelled\`, \`stopped\` (configured limit), \`pending_approval\`
 
 ## Agent Memory
 
@@ -1123,7 +1140,10 @@ Set \`auto_compact_threshold: 0\` in \`config.md\` to disable. Users can also ty
 Every run log now carries these additional frontmatter fields:
 
 - \`model_source\` — one of \`task\` / \`agent\` / \`settings\` / \`cli-default\`, shows which layer the model came from.
-- \`resolved_concrete_model\` — the concrete model Claude Code routed to (e.g. we asked for \`opus\`, it resolved to \`claude-opus-4-7\`).
+- \`resolved_concrete_model\` — the concrete model Claude Code routed to (e.g. we asked for \`opus\`, it resolved to \`claude-opus-5\`).
+- \`max_budget_usd\` / \`max_turns\` / \`limit_hit\` — the configured guards and which one stopped the run.
+- \`mcp_server_errors\` — Claude MCP servers skipped during CLI initialization and their errors.
+- \`structured_output\` — provider-validated JSON for a task with \`output_schema\`; native YAML data, not prose.
 - \`## Result\` section — the final assistant answer, separate from the full narration in \`## Output\`. Run-detail panel leads with this and hides the full transcript behind a toggle.
 `,
   },
@@ -2641,11 +2661,11 @@ This file documents HTTP error codes returned by the Claude API, their common ca
 
 **Causes:**
 
-- Typo in model ID (e.g., \`claude-sonnet-4.6\` instead of \`claude-sonnet-4-6\`)
+- Typo in model ID (e.g., \`claude-sonnet-5.0\` instead of \`claude-sonnet-5\`)
 - Using deprecated model ID
 - Invalid API endpoint
 
-**Fix:** Use exact model IDs from the models documentation. You can use aliases (e.g., \`claude-opus-4-6\`).
+**Fix:** Use exact model IDs from the models documentation. You can use aliases (e.g., \`claude-opus-5\`).
 
 ---
 
@@ -2727,7 +2747,7 @@ thinking: budget_tokens=10000, max_tokens=16000
 | Mistake                         | Error            | Fix                                                     |
 | ------------------------------- | ---------------- | ------------------------------------------------------- |
 | \`budget_tokens\` >= \`max_tokens\` | 400              | Ensure \`budget_tokens\` < \`max_tokens\`                   |
-| Typo in model ID                | 404              | Use valid model ID like \`claude-opus-4-6\`               |
+| Typo in model ID                | 404              | Use valid model ID like \`claude-opus-5\`               |
 | First message is \`assistant\`    | 400              | First message must be \`user\`                            |
 | Consecutive same-role messages  | 400              | Alternate \`user\` and \`assistant\`                        |
 | API key in code                 | 401 (leaked key) | Use environment variable                                |
@@ -2797,7 +2817,7 @@ This file contains WebFetch URLs for fetching current information from platform.
 | Topic             | URL                                                                          | Extraction Prompt                                                                      |
 | ----------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Extended Thinking | \`https://platform.claude.com/docs/en/build-with-claude/extended-thinking.md\` | "Extract extended thinking parameters, budget_tokens requirements, and usage examples" |
-| Adaptive Thinking | \`https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.md\` | "Extract adaptive thinking setup, effort levels, and Claude Opus 4.6 usage examples"         |
+| Adaptive Thinking | \`https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.md\` | "Extract adaptive thinking setup, effort levels, and Claude Opus 5 usage examples"         |
 | Effort Parameter  | \`https://platform.claude.com/docs/en/build-with-claude/effort.md\`            | "Extract effort levels, cost-quality tradeoffs, and interaction with thinking"        |
 | Tool Use          | \`https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview.md\`  | "Extract tool definition schema, tool_choice options, and handling tool results"       |
 | Streaming         | \`https://platform.claude.com/docs/en/build-with-claude/streaming.md\`         | "Extract streaming event types, SDK examples, and best practices"                      |
@@ -2905,9 +2925,9 @@ If WebFetch fails (network issues, URL changed):
 For **live** capability data — context window, max output tokens, feature support (thinking, vision, effort, structured outputs, etc.) — query the Models API instead of relying on the cached tables below. Use this when the user asks "what's the context window for X", "does model X support vision/thinking/effort", "which models support feature Y", or wants to select a model by capability at runtime.
 
 \`\`\`python
-m = client.models.retrieve("claude-opus-4-6")
-m.id                 # "claude-opus-4-6"
-m.display_name       # "Claude Opus 4.6"
+m = client.models.retrieve("claude-opus-5")
+m.id                 # "claude-opus-5"
+m.display_name       # "Claude Opus 5"
 m.max_input_tokens   # context window (int)
 m.max_tokens         # max output tokens (int)
 
@@ -2930,15 +2950,15 @@ Top-level fields (\`id\`, \`display_name\`, \`max_input_tokens\`, \`max_tokens\`
 ### Raw HTTP
 
 \`\`\`bash
-curl https://api.anthropic.com/v1/models/claude-opus-4-6 \\
+curl https://api.anthropic.com/v1/models/claude-opus-5 \\
   -H "x-api-key: \$ANTHROPIC_API_KEY" \\
   -H "anthropic-version: 2023-06-01"
 \`\`\`
 
 \`\`\`json
 {
-  "id": "claude-opus-4-6",
-  "display_name": "Claude Opus 4.6",
+  "id": "claude-opus-5",
+  "display_name": "Claude Opus 5",
   "max_input_tokens": 1000000,
   "max_tokens": 128000,
   "capabilities": {
@@ -2955,14 +2975,18 @@ curl https://api.anthropic.com/v1/models/claude-opus-4-6 \\
 
 | Friendly Name     | Alias (use this)    | Full ID                       | Context        | Max Output | Status |
 |-------------------|---------------------|-------------------------------|----------------|------------|--------|
-| Claude Opus 4.6   | \`claude-opus-4-6\`   | —                             | 200K (1M beta) | 128K       | Active |
-| Claude Sonnet 4.6 | \`claude-sonnet-4-6\` | -                             | 200K (1M beta) | 64K        | Active |
+| Claude Fable 5    | \`claude-fable-5\`    | —                             | 1M             | 128K       | Active |
+| Claude Opus 5     | \`claude-opus-5\`     | —                             | 1M             | 128K       | Active |
+| Claude Opus 4.8   | \`claude-opus-4-8\`   | —                             | 1M             | 128K       | Active |
+| Claude Sonnet 5   | \`claude-sonnet-5\`   | —                             | 1M             | 128K       | Active |
 | Claude Haiku 4.5  | \`claude-haiku-4-5\`  | \`claude-haiku-4-5-20251001\`   | 200K           | 64K        | Active |
 
 ### Model Descriptions
 
-- **Claude Opus 4.6** — Our most intelligent model for building agents and coding. Supports adaptive thinking (recommended), 128K max output tokens (requires streaming for large outputs). 1M context window available in beta via \`context-1m-2025-08-07\` header.
-- **Claude Sonnet 4.6** — Our best combination of speed and intelligence. Supports adaptive thinking (recommended). 1M context window available in beta via \`context-1m-2025-08-07\` header. 64K max output tokens.
+- **Claude Fable 5** — The most capable widely released model, for the most demanding reasoning and long-horizon agentic work. Thinking is always on (omit the \`thinking\` parameter). 1M context, 128K max output.
+- **Claude Opus 5** — For complex agentic coding and enterprise work. Thinking is on by default. 1M context, 128K max output.
+- **Claude Opus 4.8** — Previous-generation Opus; highly autonomous, strong on long-horizon agentic work. 1M context.
+- **Claude Sonnet 5** — Best combination of speed and intelligence; near-Opus quality on coding and agentic work. Adaptive thinking on by default. 1M context, 128K max output.
 - **Claude Haiku 4.5** — Fastest and most cost-effective model for simple tasks.
 
 ## Legacy Models (still active)
@@ -3000,13 +3024,15 @@ When a user asks for a model by name, use this table to find the correct model I
 
 | User says...                              | Use this model ID              |
 |-------------------------------------------|--------------------------------|
-| "opus", "most powerful"                   | \`claude-opus-4-6\`              |
-| "opus 4.6"                                | \`claude-opus-4-6\`              |
+| "fable", "most capable"                   | \`claude-fable-5\`               |
+| "opus", "most powerful"                   | \`claude-opus-5\`                |
+| "opus 5"                                  | \`claude-opus-5\`                |
+| "opus 4.8"                                | \`claude-opus-4-8\`              |
 | "opus 4.5"                                | \`claude-opus-4-5\`              |
 | "opus 4.1"                                | \`claude-opus-4-1\`              |
 | "opus 4", "opus 4.0"                      | \`claude-opus-4-0\`              |
-| "sonnet", "balanced"                      | \`claude-sonnet-4-6\`            |
-| "sonnet 4.6"                              | \`claude-sonnet-4-6\`            |
+| "sonnet", "balanced"                      | \`claude-sonnet-5\`              |
+| "sonnet 5"                                | \`claude-sonnet-5\`              |
 | "sonnet 4.5"                              | \`claude-sonnet-4-5\`            |
 | "sonnet 4", "sonnet 4.0"                  | \`claude-sonnet-4-0\`            |
 | "sonnet 3.7"                              | Retired — suggest \`claude-sonnet-4-5\` |
@@ -3225,7 +3251,7 @@ if response.stop_reason == "pause_turn":
     ]
     # Make another API request — server resumes automatically
     response = client.messages.create(
-        model="claude-opus-4-6", messages=messages, tools=tools
+        model="claude-opus-5", messages=messages, tools=tools
     )
 \`\`\`
 
@@ -3479,7 +3505,7 @@ This skill helps you build LLM-powered applications with Claude. Choose the righ
 
 Unless the user requests otherwise:
 
-For the Claude model version, please use Claude Opus 4.6, which you can access via the exact model string \`claude-opus-4-6\`. Please default to using adaptive thinking (\`thinking: {type: "adaptive"}\`) for anything remotely complicated. And finally, please default to streaming for any request that may involve long input, long output, or high \`max_tokens\` — it prevents hitting request timeouts. Use the SDK's \`.get_final_message()\` / \`.finalMessage()\` helper to get the complete response if you don't need to handle individual stream events
+For the Claude model version, please use Claude Opus 5, which you can access via the exact model string \`claude-opus-5\`. Please default to using adaptive thinking (\`thinking: {type: "adaptive"}\`) for anything remotely complicated. And finally, please default to streaming for any request that may involve long input, long output, or high \`max_tokens\` — it prevents hitting request timeouts. Use the SDK's \`.get_final_message()\` / \`.finalMessage()\` helper to get the complete response if you don't need to handle individual stream events
 
 ---
 
@@ -3597,15 +3623,17 @@ Everything goes through \`POST /v1/messages\`. Tools and output constraints are 
 
 ---
 
-## Current Models (cached: 2026-02-17)
+## Current Models (cached: 2026-08-02)
 
 | Model             | Model ID            | Context        | Input \$/1M | Output \$/1M |
 | ----------------- | ------------------- | -------------- | ---------- | ----------- |
-| Claude Opus 4.6   | \`claude-opus-4-6\`   | 200K (1M beta) | \$5.00      | \$25.00      |
-| Claude Sonnet 4.6 | \`claude-sonnet-4-6\` | 200K (1M beta) | \$3.00      | \$15.00      |
+| Claude Fable 5    | \`claude-fable-5\`    | 1M             | \$10.00     | \$50.00      |
+| Claude Opus 5     | \`claude-opus-5\`     | 1M             | \$5.00      | \$25.00      |
+| Claude Opus 4.8   | \`claude-opus-4-8\`   | 1M             | \$5.00      | \$25.00      |
+| Claude Sonnet 5   | \`claude-sonnet-5\`   | 1M             | \$3.00      | \$15.00      |
 | Claude Haiku 4.5  | \`claude-haiku-4-5\`  | 200K           | \$1.00      | \$5.00       |
 
-**ALWAYS use \`claude-opus-4-6\` unless the user explicitly names a different model.** This is non-negotiable. Do not use \`claude-sonnet-4-6\`, \`claude-sonnet-4-5\`, or any other model unless the user literally says "use sonnet" or "use haiku". Never downgrade for cost — that's the user's decision, not yours.
+**ALWAYS use \`claude-opus-5\` unless the user explicitly names a different model.** This is non-negotiable. Do not use \`claude-sonnet-5\`, \`claude-opus-4-8\`, or any other model unless the user literally says "use sonnet" or "use haiku". Never downgrade for cost — that's the user's decision, not yours.
 
 **CRITICAL: Use only the exact model ID strings from the table above — they are complete as-is. Do not append date suffixes.** For example, use \`claude-sonnet-4-5\`, never \`claude-sonnet-4-5-20250514\` or any other date-suffixed variant you might recall from training data. If the user requests an older model not in the table (e.g., "opus 4.5", "sonnet 3.7"), read \`shared/models.md\` for the exact ID — do not construct one yourself.
 

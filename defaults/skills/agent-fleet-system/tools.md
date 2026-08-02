@@ -60,20 +60,25 @@ who it is, how it behaves, what it does.
 ### config.md — Runtime Configuration
 ```yaml
 ---
-model: opus                       # Claude aliases work everywhere: opus / sonnet / haiku / opusplan.
+model: opus                       # Claude aliases work everywhere: opus / sonnet / haiku / fable.
                                   # Or "default" (let CLI pick), or a pinned ID like
-                                  # "claude-opus-4-7" (direct), "us.anthropic.claude-opus-4-7" (Bedrock),
-                                  # "claude-opus-4-7@20251101" (Vertex). For Codex agents use slugs
-                                  # like "gpt-5.5". Backend-agnostic aliases are preferred.
+                                  # "claude-opus-5" (direct), "us.anthropic.claude-opus-5" (Bedrock).
+                                  # For Codex agents use slugs like "gpt-5.6-terra".
+                                  # Backend-agnostic aliases are preferred.
 adapter: claude-code              # "claude-code" (default) or "codex" (OpenAI Codex CLI)
 timeout: 300                      # Seconds before kill
 max_retries: 1
 cwd: ""                           # Working directory (empty = vault root)
-permission_mode: bypassPermissions # Claude: "bypassPermissions", "dontAsk", "acceptEdits", "plan".
+permission_mode: bypassPermissions # Claude: "bypassPermissions", "dontAsk", "acceptEdits", "auto", "plan".
                                   # Codex: "bypassPermissions" (no sandbox), "workspace-write", "read-only".
                                   # Claude-style values map to the nearest Codex sandbox automatically.
-effort: ""                        # Reasoning effort: "low", "medium", "high", "max", or "" for default
-                                  # (Codex maps "max" to its "xhigh" level)
+effort: ""                        # Claude scale: low / medium / high / xhigh / max / ultracode.
+                                  # Codex supports max on GPT-5.6; ultracode falls back to xhigh.
+max_budget_usd:                   # Per-run spend stop (Claude only). Blank = inherit fleet;
+                                  # 0 = explicitly uncapped even if fleet has a cap.
+                                  # Checked between API turns; an in-flight response can overshoot.
+max_turns:                        # Per-run agentic-turn cap. Same inherit/0 semantics.
+forward_subagent_text: false      # Claude only; include bounded nested subagent transcript.
 approval_required: []
 allowed_tools: []
 blocked_tools: []
@@ -256,11 +261,15 @@ enabled: true
 created: 2026-03-29T10:00:00
 run_count: 0
 catch_up: false               # Run missed executions on startup
-effort: ""                    # Override agent effort: "low", "medium", "high", "max", or "" for agent default
+effort: ""                    # Override agent effort: low / medium / high / xhigh / max / ultracode
 model: ""                     # Override agent model for this task only.
                               # Use aliases like "haiku" for cheap/simple tasks,
                               # or leave empty to inherit agent's model.
                               # Resolution order: task.model → agent.model → settings.defaultModel.
+max_budget_usd:              # Override spend stop. Blank = inherit agent/fleet; 0 = uncapped.
+                             # Claude checks between API turns, so final cost can overshoot.
+max_turns:                   # Override turn cap with the same semantics.
+output_schema: '{"type":"object"}' # Optional; validated JSON is stored in structured_output.
 channel: ""                   # Post this task's output to a channel (e.g. "my-discord").
                               # Empty = run log only. Lets scheduled tasks deliver to chat,
                               # not just the heartbeat.
@@ -381,11 +390,12 @@ Delete (or move to trash) the agent folder, task file, skill folder, or channel 
 ## Run Logs
 
 Run logs are auto-generated in `_fleet/runs/YYYY-MM-DD/`. Each run creates a markdown file with:
-- Frontmatter: run_id, agent, task, status, timestamps, tokens_used, cost_usd, model
+- Frontmatter: run_id, agent, task, status, timestamps, tokens_used, cost_usd, model,
+  model source/concrete model, enforced limits, MCP load errors, and optional `structured_output`
 - Body: prompt sent, output received, tools used, stderr
 - Heartbeat runs are tagged with `heartbeat`
 
-Status values: `success`, `failure`, `timeout`, `cancelled`, `pending_approval`
+Status values: `success`, `failure`, `timeout`, `cancelled`, `stopped` (configured limit), `pending_approval`
 
 ## Agent Memory
 
@@ -506,5 +516,8 @@ Set `auto_compact_threshold: 0` in `config.md` to disable. Users can also type `
 Every run log now carries these additional frontmatter fields:
 
 - `model_source` — one of `task` / `agent` / `settings` / `cli-default`, shows which layer the model came from.
-- `resolved_concrete_model` — the concrete model Claude Code routed to (e.g. we asked for `opus`, it resolved to `claude-opus-4-7`).
+- `resolved_concrete_model` — the concrete model Claude Code routed to (e.g. we asked for `opus`, it resolved to `claude-opus-5`).
+- `max_budget_usd` / `max_turns` / `limit_hit` — the configured guards and which one stopped the run.
+- `mcp_server_errors` — Claude MCP servers skipped during CLI initialization and their errors.
+- `structured_output` — provider-validated JSON for a task with `output_schema`; native YAML data, not prose.
 - `## Result` section — the final assistant answer, separate from the full narration in `## Output`. Run-detail panel leads with this and hides the full transcript behind a toggle.

@@ -23,6 +23,18 @@ export function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/** Like `asNumber` but with no fallback — absent or malformed values return
+ *  undefined so the caller can tell "not set" from "set to 0". Run limits rely
+ *  on that distinction: absent means inherit, 0 means explicitly uncapped. */
+export function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Like `asBoolean` but with no fallback, for tri-state frontmatter flags. */
+export function asOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
 export function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }

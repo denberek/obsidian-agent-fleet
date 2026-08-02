@@ -8,6 +8,7 @@ import { slugify } from "../utils/markdown";
 import { resolveModel, shouldPassModelFlag } from "./../utils/modelResolution";
 import { spawnCli, splitLines } from "../utils/platform";
 import { extractCaptures, redactRememberForDisplay, stripRememberTags } from "../utils/memoryFormat";
+import { isBelowMinimum, MIN_CLAUDE_CLI_VERSION } from "../utils/cliVersion";
 import { MemoryWriter } from "./memoryWriter";
 import type { McpAuthManager } from "./mcpAuth";
 import { buildAgentPromptSections } from "./promptAssembly";
@@ -189,6 +190,10 @@ export class ChatSession {
     onClose: (code: number | null) => void;
   } | null = null;
   private basePromptSent = false;
+  /** Content-block indexes that already emitted partial text. The terminal
+   *  `assistant` event repeats those blocks in full; tracking indexes avoids
+   *  both duplicate rendering and suppression of a second, non-streamed block. */
+  private partialTextBlockIndexes = new Set<number>();
 
   // Codex mode — agents with `adapter: codex` have no long-lived process.
   // Each turn spawns `codex exec --json [resume <thread_id>]`, the thread id
@@ -682,10 +687,14 @@ export class ChatSession {
     this.refreshAgent();
 
     const args = [
+      "-p",
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
     ];
+    if (!isBelowMinimum(this.settings.claudeCliVersion ?? null, MIN_CLAUDE_CLI_VERSION)) {
+      args.push("--include-partial-messages");
+    }
 
     if (this.claudeSessionId) {
       args.push("--resume", this.claudeSessionId);
@@ -729,6 +738,8 @@ export class ChatSession {
     // require per-call approval.
     this.settingsState = writeClaudeSettingsFile(cwd, this.agent, {
       mcpAllowServers: mcp.allowServers,
+      sandboxNetworkStrictAllowlist: this.settings.claudeSandboxNetworkStrictAllowlist,
+      sandboxFilesystemDisabled: this.settings.claudeSandboxFilesystemDisabled,
     });
 
     const proc = spawnCli(this.settings.claudeCliPath, args, {
@@ -1154,6 +1165,7 @@ export class ChatSession {
     // Reset per-turn state for the next turn
     this.turnResponseText = "";
     this.turnToolCalls = [];
+    this.partialTextBlockIndexes.clear();
 
     this.pendingTurns--;
 
@@ -1206,6 +1218,7 @@ export class ChatSession {
     this.pendingTurns = 0;
     this.turnResponseText = "";
     this.turnToolCalls = [];
+    this.partialTextBlockIndexes.clear();
     this.codexQueue = [];
     this.clearWatchdog();
     this.setStreaming(false);
@@ -1259,6 +1272,7 @@ export class ChatSession {
     this.pendingTurns = 0;
     this.turnResponseText = "";
     this.turnToolCalls = [];
+    this.partialTextBlockIndexes.clear();
     this.clearWatchdog();
     this.setStreaming(false);
 
@@ -1316,6 +1330,7 @@ export class ChatSession {
       this.activeOnEvent = onEvent;
       this.turnResponseText = "";
       this.turnToolCalls = [];
+      this.partialTextBlockIndexes.clear();
       this.pendingTurns = 1;
       this.setStreaming(true);
       this.armWatchdog();
@@ -1359,6 +1374,7 @@ export class ChatSession {
     this.activeOnEvent = onEvent;
     this.turnResponseText = "";
     this.turnToolCalls = [];
+    this.partialTextBlockIndexes.clear();
     this.pendingTurns = runningCompact ? 2 : 1;
     this.setStreaming(true);
     this.armWatchdog();
@@ -1579,6 +1595,7 @@ export class ChatSession {
     this.stdoutBuffer = "";
     this.turnResponseText = "";
     this.turnToolCalls = [];
+    this.partialTextBlockIndexes.clear();
     this.pendingTurns = 0;
     this.codexQueue = [];
     this.clearWatchdog();
@@ -1763,26 +1780,47 @@ export class ChatSession {
   // ═══════════════════════════════════════════════════════
 
   private parseStreamEvent(event: Record<string, unknown>): StreamEvent | null {
-    const type = event.type as string | undefined;
+    let type = event.type as string | undefined;
+
+    // `--include-partial-messages` wraps raw SSE deltas in a `stream_event`
+    // envelope. Unwrap it so the delta branch below sees the inner event.
+    //
+    if (type === "stream_event") {
+      const inner = event.event as Record<string, unknown> | undefined;
+      if (!inner) return null;
+      event = inner;
+      type = inner.type as string | undefined;
+    }
+
+    if (type === "message_start") {
+      this.partialTextBlockIndexes.clear();
+      return null;
+    }
 
     if (type === "assistant") {
       const msg = event.message as Record<string, unknown> | undefined;
       if (msg?.content && Array.isArray(msg.content)) {
-        for (const block of msg.content as Array<Record<string, unknown>>) {
+        const streamedBlocks = new Set(this.partialTextBlockIndexes);
+        this.partialTextBlockIndexes.clear();
+        let toolEvent: StreamEvent | null = null;
+        const textParts: string[] = [];
+        for (const [index, block] of (msg.content as Array<Record<string, unknown>>).entries()) {
           if (block.type === "text" && typeof block.text === "string") {
-            return { type: "text", content: block.text };
+            if (!streamedBlocks.has(index)) textParts.push(block.text);
           }
-          if (block.type === "tool_use") {
+          if (!toolEvent && block.type === "tool_use") {
             const name = String(block.name ?? "tool");
             const input = block.input as Record<string, unknown> | undefined;
             const cmd = input?.command ?? input?.content ?? input?.file_path ?? input?.path ?? "";
-            return {
+            toolEvent = {
               type: "tool_use",
               content: cmd ? String(cmd).slice(0, 150) : "",
               toolName: name,
             };
           }
         }
+        if (textParts.length > 0) return { type: "text", content: textParts.join("") };
+        return toolEvent;
       }
     }
 
@@ -1790,6 +1828,8 @@ export class ChatSession {
     if (type === "content_block_delta") {
       const delta = event.delta as Record<string, unknown> | undefined;
       if (delta?.type === "text_delta" && typeof delta.text === "string") {
+        const index = typeof event.index === "number" ? event.index : 0;
+        this.partialTextBlockIndexes.add(index);
         return { type: "text", content: delta.text };
       }
     }

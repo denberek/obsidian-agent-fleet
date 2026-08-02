@@ -6,6 +6,8 @@ import { slugify } from "../../utils/markdown";
 import { splitLines } from "../../utils/platform";
 import { createIcon } from "../../utils/icons";
 import { CODEX_MODEL_ALIASES, MODEL_ALIASES, renderModelPicker } from "../../components/modelPicker";
+import { EFFORT_HINT, effortOptions } from "../../utils/effort";
+import { DEFAULT_MEMORY_TOKEN_BUDGET } from "../../constants";
 import type { DashboardFormDeps } from "./shared";
 import { parseCronComponents } from "./shared";
 
@@ -26,9 +28,12 @@ const CLAUDE_PERM_MODE_OPTIONS: Array<[string, string, string]> = [
   ["bypassPermissions", "Bypass Permissions", "Auto-approve everything except deny list"],
   ["dontAsk", "Don’t Ask", "Auto-approve all tool calls"],
   ["acceptEdits", "Accept Edits", "Auto-approve file edits, block bash unless allowed"],
+  ["auto", "Auto", "Classifier decides per command; asks only when risky"],
   ["plan", "Plan", "Read-only mode, no writes or commands"],
   ["default", "Default", "Ask for each tool call"],
 ];
+const EFFORT_OPTIONS = effortOptions("Default");
+
 const CODEX_PERM_MODE_OPTIONS: Array<[string, string, string]> = [
   ["bypassPermissions", "Bypass (no sandbox)", "No sandbox, auto-approve everything"],
   ["workspace-write", "Workspace Write", "Sandboxed: writes only inside the working dir"],
@@ -50,6 +55,7 @@ function permModeForAdapter(value: string, adapter: string): string {
   if (isCodexAdapterValue(adapter)) {
     switch (value) {
       case "acceptEdits":
+      case "auto":
       case "default":
         return "workspace-write";
       case "plan":
@@ -233,6 +239,80 @@ function renderAgentMcpPicker(section: HTMLElement, deps: AgentFormDeps, selecte
 //  Create Agent Page
 // ═══════════════════════════════════════════════════════
 
+
+/**
+ * Render the three per-agent run-limit controls (spend cap, turn cap, subagent
+ * forwarding). Shared by the create and edit forms so the two can't drift.
+ *
+ * `state` is mutated in place, matching how the rest of these forms work.
+ */
+function renderRunLimitRows(
+  configGrid: HTMLElement,
+  deps: DashboardFormDeps,
+  state: { maxBudgetUsd: number | undefined; maxTurns: number | undefined; forwardSubagentText: boolean },
+): void {
+  const budgetRow = configGrid.createDiv({ cls: "af-form-row" });
+  const budgetLabel = budgetRow.createDiv({ cls: "af-form-label", text: "Spend limit" });
+  deps.addTooltip(
+    budgetLabel,
+    "Dollar stop threshold for one run by this agent; Claude checks it between API turns, so cost can overshoot. Overrides the fleet setting. " +
+      "0 means no cap — including when the fleet setting has one. " +
+      "Claude Code only; Codex has no spend cap.",
+  );
+  const budgetInput = budgetRow.createEl("input", {
+    cls: "af-form-input af-form-input-sm",
+    attr: { type: "number", min: "0", step: "0.01", value: state.maxBudgetUsd !== undefined ? String(state.maxBudgetUsd) : "" , placeholder: "inherit" },
+  });
+  budgetInput.addEventListener("input", () => {
+    if (!budgetInput.value.trim()) {
+      state.maxBudgetUsd = undefined;
+      return;
+    }
+    const n = parseFloat(budgetInput.value);
+    state.maxBudgetUsd = Number.isFinite(n) && n >= 0 ? n : undefined;
+  });
+  configGrid.createDiv({ cls: "af-form-hint", text: "Blank = inherit · 0 = explicitly uncapped" });
+
+  const turnsRow = configGrid.createDiv({ cls: "af-form-row" });
+  const turnsLabel = turnsRow.createDiv({ cls: "af-form-label", text: "Turn limit" });
+  deps.addTooltip(
+    turnsLabel,
+    "Maximum agentic turns in one run, as a runaway guard. Overrides the fleet setting. " +
+      "0 means no cap. Claude Code only.",
+  );
+  const turnsInput = turnsRow.createEl("input", {
+    cls: "af-form-input af-form-input-sm",
+    attr: { type: "number", min: "0", step: "1", value: state.maxTurns !== undefined ? String(state.maxTurns) : "", placeholder: "inherit" },
+  });
+  turnsInput.addEventListener("input", () => {
+    if (!turnsInput.value.trim()) {
+      state.maxTurns = undefined;
+      return;
+    }
+    const n = parseInt(turnsInput.value, 10);
+    state.maxTurns = Number.isFinite(n) && n >= 0 ? n : undefined;
+  });
+  configGrid.createDiv({ cls: "af-form-hint", text: "Blank = inherit · 0 = explicitly uncapped" });
+
+  const forwardRow = configGrid.createDiv({ cls: "af-form-row" });
+  const forwardLabel = forwardRow.createDiv({ cls: "af-form-label", text: "Subagent output" });
+  deps.addTooltip(
+    forwardLabel,
+    "Include subagent text and thinking in this agent's run logs. " +
+      "Off by default — Claude Code nests subagents up to three deep, so forwarding " +
+      "can multiply run-log volume. Claude Code only.",
+  );
+  const forwardInput = forwardRow.createEl("input", {
+    cls: "af-form-checkbox",
+    attr: { type: "checkbox" },
+  });
+  forwardInput.checked = state.forwardSubagentText;
+  forwardInput.addEventListener("change", () => {
+    state.forwardSubagentText = forwardInput.checked;
+  });
+  configGrid.createDiv({ cls: "af-form-hint", text: "Verbose — leave off unless debugging subagent work" });
+}
+
 export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): void {
   const { plugin } = deps;
 
@@ -265,6 +345,7 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
     contextBody: "",
     approvalRequired: "",
     memory: true,
+    memoryTokenBudget: DEFAULT_MEMORY_TOKEN_BUDGET,
     enabled: true,
     allowedCommands: "",
     blockedCommands: "",
@@ -275,6 +356,9 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
     heartbeatChannel: "",
     heartbeatChannelTarget: "",
     autoCompactThreshold: 85,
+    maxBudgetUsd: undefined as number | undefined,
+    maxTurns: undefined as number | undefined,
+    forwardSubagentText: false,
     wikiReferences: [] as string[],
   };
 
@@ -369,7 +453,7 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
   const modelLabel = modelRow.createDiv({ cls: "af-form-label", text: "Model" });
   deps.addTooltip(
     modelLabel,
-    `Aliases (opus/sonnet/haiku/opusplan) work on any backend. Choose Custom… for a pinned ID or Bedrock/Vertex/Foundry. Blank = use Settings default (${plugin.settings.defaultModel || "CLI default"}).`,
+    `Aliases (opus/sonnet/haiku/fable) work on any backend. Choose Custom… for a pinned ID or Bedrock/Vertex/Foundry. Blank = use Settings default (${plugin.settings.defaultModel || "CLI default"}).`,
   );
   const modelFieldWrap = modelRow.createDiv({ cls: "af-form-field-wrap" });
   const renderModelField = () => {
@@ -456,11 +540,11 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
   const effortRow = configGrid.createDiv({ cls: "af-form-row" });
   effortRow.createDiv({ cls: "af-form-label", text: "Effort Level" });
   const effortSelect = effortRow.createEl("select", { cls: "af-form-select" });
-  for (const [val, lbl] of [["", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]] as const) {
+  for (const [val, lbl] of EFFORT_OPTIONS) {
     effortSelect.createEl("option", { text: lbl, attr: { value: val } });
   }
   effortSelect.addEventListener("change", () => { state.effort = effortSelect.value; });
-  configGrid.createDiv({ cls: "af-form-hint", text: "Controls reasoning depth — low is fast, max is most thorough" });
+  configGrid.createDiv({ cls: "af-form-hint", text: EFFORT_HINT });
 
   // Auto-compact threshold
   const compactRow = configGrid.createDiv({ cls: "af-form-row" });
@@ -478,6 +562,8 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
     if (!isNaN(n) && n >= 0 && n <= 100) state.autoCompactThreshold = n;
   });
   configGrid.createDiv({ cls: "af-form-hint", text: "0 disables auto-compact" });
+
+  renderRunLimitRows(configGrid, deps, state);
 
   // Wiki references (consumer-mode read access to other keepers' scopes)
   {
@@ -711,7 +797,7 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
         effort: state.effort || undefined,
         approvalRequired: parseTags(state.approvalRequired),
         memory: state.memory,
-        memoryMaxEntries: 100,
+        memoryTokenBudget: state.memoryTokenBudget,
         skills: Array.from(state.selectedSkills),
         mcpServers: Array.from(state.selectedMcpServers),
         skillsBody: state.skillsBody.trim(),
@@ -722,6 +808,9 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
           deny: parseLines(state.blockedCommands),
         },
         autoCompactThreshold: state.autoCompactThreshold,
+        maxBudgetUsd: state.maxBudgetUsd,
+        maxTurns: state.maxTurns,
+        forwardSubagentText: state.forwardSubagentText,
         wikiReferences: state.wikiReferences,
       });
 
@@ -797,6 +886,9 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
     heartbeatChannel: agent.heartbeatChannel,
     heartbeatChannelTarget: agent.heartbeatChannelTarget,
     autoCompactThreshold: agent.autoCompactThreshold ?? 85,
+    maxBudgetUsd: agent.maxBudgetUsd,
+    maxTurns: agent.maxTurns,
+    forwardSubagentText: agent.forwardSubagentText === true,
     wikiReferences: (agent.wikiReferences ?? []).map((r) => r.agent),
   };
 
@@ -884,7 +976,7 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
   const modelLabel = modelRow.createDiv({ cls: "af-form-label", text: "Model" });
   deps.addTooltip(
     modelLabel,
-    `Aliases (opus/sonnet/haiku/opusplan) work on any backend. Choose Custom… for a pinned ID or Bedrock/Vertex/Foundry. Blank = use Settings default (${plugin.settings.defaultModel || "CLI default"}).`,
+    `Aliases (opus/sonnet/haiku/fable) work on any backend. Choose Custom… for a pinned ID or Bedrock/Vertex/Foundry. Blank = use Settings default (${plugin.settings.defaultModel || "CLI default"}).`,
   );
   const modelFieldWrap = modelRow.createDiv({ cls: "af-form-field-wrap" });
   const renderEditModelField = () => {
@@ -967,12 +1059,12 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
   const editEffortRow = configGrid.createDiv({ cls: "af-form-row" });
   editEffortRow.createDiv({ cls: "af-form-label", text: "Effort Level" });
   const editEffortSelect = editEffortRow.createEl("select", { cls: "af-form-select" });
-  for (const [val, lbl] of [["", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]] as const) {
+  for (const [val, lbl] of EFFORT_OPTIONS) {
     const opt = editEffortSelect.createEl("option", { text: lbl, attr: { value: val } });
     if (val === (agent.effort ?? "")) opt.selected = true;
   }
   editEffortSelect.addEventListener("change", () => { state.effort = editEffortSelect.value; });
-  configGrid.createDiv({ cls: "af-form-hint", text: "Controls reasoning depth — low is fast, max is most thorough" });
+  configGrid.createDiv({ cls: "af-form-hint", text: EFFORT_HINT });
 
   // Auto-compact threshold
   const editCompactRow = configGrid.createDiv({ cls: "af-form-row" });
@@ -990,6 +1082,8 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
     if (!isNaN(n) && n >= 0 && n <= 100) state.autoCompactThreshold = n;
   });
   configGrid.createDiv({ cls: "af-form-hint", text: "0 disables auto-compact" });
+
+  renderRunLimitRows(configGrid, deps, state);
 
   // Wiki references
   {
@@ -1273,6 +1367,9 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
           deny: parseLines(state.blockedCommands),
         },
         autoCompactThreshold: state.autoCompactThreshold,
+        maxBudgetUsd: state.maxBudgetUsd ?? null,
+        maxTurns: state.maxTurns ?? null,
+        forwardSubagentText: state.forwardSubagentText,
         wikiReferences: state.wikiReferences,
       });
       // Persist heartbeat separately (lives in HEARTBEAT.md, not agent.md/config.md)

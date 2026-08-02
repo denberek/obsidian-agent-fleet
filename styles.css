@@ -3866,6 +3866,39 @@
   font-size: 12px;
 }
 
+.af-run-mcp-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.af-run-mcp-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--background-modifier-error-hover, var(--background-secondary));
+  font-size: 12px;
+}
+
+.af-run-mcp-error-name {
+  font-weight: 600;
+  font-family: var(--font-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text-normal);
+}
+
+.af-run-mcp-error-msg {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.af-mp-retired-notice {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-warning);
+}
+
 /* ── Chat stats strip (terminal-style) ── */
 
 .af-chat-stats {

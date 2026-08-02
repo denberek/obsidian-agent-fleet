@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.18.0 — 2026-08-02
+
+Catches the plugin up to **Claude Code 2.1.220** and **Codex 0.146.0**. v0.16.0 shipped against 2.1.198 / 0.142.5, and both CLIs moved underneath us: Opus 5 became the default Opus, GPT-5.6 landed in Codex, and three of the four Codex model slugs we offered were deprecated or scheduled for retirement.
+
+**Recommended CLI versions** — Claude Code **2.1.219+**, Codex **0.146.0+**. Earlier Claude builds truncate streamed output when the reader is slow, which is precisely how run logs are consumed.
+
+**Models**
+- Codex model list replaced with the GPT-5.6 tiers (`gpt-5.6-sol` / `-terra` / `-luna`). `gpt-5.4` and `gpt-5.4-mini` **retire from Codex on 2026-08-31**, and `gpt-5.3-codex` is already deprecated for ChatGPT sign-in.
+- The model picker now warns when an agent or task still points at a retired slug. Your frontmatter is never rewritten — the switch stays your call.
+- Claude alias list gains `fable` and drops `opusplan` (no longer in the CLI's alias set). Agents already using `opusplan` keep working via Custom.
+- **Fixed:** a plugin-wide default model of `fable` leaked into Codex runs instead of being dropped by the cross-vendor guard.
+- Stale in-app advice corrected — Opus 5, Sonnet 5, and Fable 5 have 1M context by default, so the old `[1m]` suffix tip is gone. Built-in skills and the Fleet Orchestrator now document the current model catalog.
+
+**Effort**
+- Effort levels now cover the full Claude Code scale: **Extra High** (`xhigh`) and **Ultracode** join low/medium/high/max. `xhigh` is Claude Code's own default for coding and was previously unreachable.
+- Codex mapping updated for GPT-5.6: `max` passes through natively on 5.6 tiers and steps down to `xhigh` elsewhere; `ultracode` degrades to `xhigh` (no Codex analog).
+
+**Spend and turn limits** *(new)*
+- Set **spend and turn stop limits per run**, fleet-wide or overridden per agent and per task. Scheduled runs are unattended and previously had no cost guard at all. Claude checks the dollar threshold between API turns, so an in-flight response can overshoot it; a limit stop is recorded distinctly from a failure.
+- Off by default. A `0` at any layer means "explicitly uncapped", so one expensive task can opt out of a fleet-wide cap.
+- A run stopped by a cap is reported as such, not as a generic failure, and the cap is recorded in the run log.
+- Agent/task editors now preserve the distinction between blank (inherit) and explicit `0` (uncapped), including create/edit round trips.
+- Claude Code only — Codex exposes no spend or turn limit. The values are still recorded so the audit trail shows what was configured.
+
+**Other CLI capabilities**
+- New `auto` permission mode (Claude's classifier-driven mode), mapped to Codex's `workspace-write`.
+- **Subagent output** can now be forwarded into run logs, opt-in per agent. Parent tool IDs reconstruct readable nesting; depth is capped at three and forwarded transcript volume at 1 MB.
+- **MCP failures are visible.** A server the CLI refuses to load is reported in the run log and on the MCP page instead of its tools silently going missing.
+- **Structured output** — an optional JSON Schema per task, via `--json-schema` on Claude and `--output-schema` on Codex. Provider-validated JSON is persisted as native `structured_output` run frontmatter; invalid schemas, missing JSON, and schema-file failures fail closed.
+- Claude chat now enables partial message events for smoother token-level streaming without duplicating terminal assistant blocks.
+- CLI versions are detected and cached. Known-old Claude versions are blocked from unsupported safety/output flags with actionable errors; startup warnings are visible but non-blocking.
+- Added fleet-wide projection for Claude's `sandbox.network.strictAllowlist` and `sandbox.filesystem.disabled` settings.
+- Built-in defaults were regenerated with the current model/run-log guidance while hash-based upgrades continue to preserve user-edited files.
+- Test suite expanded to **404 tests**, including structured-output persistence, primary-model detection, nested transcripts, explicit-zero limits, partial-message reconciliation, and default-file preservation.
+
 ## 0.16.0 — 2026-07-01
 
 A hardening and quality release: a Windows fix, ~20 robustness fixes across process lifecycle and persistence, dashboard performance work, a batch of UX improvements, and a large internal restructuring — with 79 new tests (331 total).

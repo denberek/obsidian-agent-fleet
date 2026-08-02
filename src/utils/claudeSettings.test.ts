@@ -92,6 +92,20 @@ describe("claudeSettings — settings.local.json lifecycle", () => {
     expect(written.permissions.allow).toEqual(["mcp__remember"]);
   });
 
+  it("writes the supported Claude sandbox settings when enabled", () => {
+    const agent = makeAgent({ permissionMode: "default", permissionRules: { allow: [], deny: [] } });
+    const state = writeClaudeSettingsFile(cwd, agent, {
+      sandboxNetworkStrictAllowlist: true,
+      sandboxFilesystemDisabled: true,
+    });
+    expect(state).not.toBeNull();
+    const written = JSON.parse(readFileSync(state!.path, "utf-8"));
+    expect(written.sandbox).toEqual({
+      network: { strictAllowlist: true },
+      filesystem: { disabled: true },
+    });
+  });
+
   it("backs up an existing settings.local.json and restores it on cleanup", () => {
     const claudeDir = join(cwd, ".claude");
     mkdirSync(claudeDir, { recursive: true });

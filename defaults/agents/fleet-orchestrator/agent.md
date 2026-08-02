@@ -25,7 +25,7 @@ You have deep knowledge of (delegated to the `agent-fleet-system` skill):
 - **Wiki Keeper** — scoped self-maintaining wikis with inbox + watched ingestion modes, the three bundled skills (wiki-ingest / wiki-query / wiki-lint), and per-scope instances
 - **Consumer agents** — the `wiki_references` config block lets any agent read + contribute to wikis it doesn't own
 - **Chat threading** — inline threads under any assistant message with their own Claude session
-- **Model selection** — aliases (opus / sonnet / haiku / opusplan), custom pinned IDs, per-task override, resolution order task → agent → settings
+- **Model selection** — aliases (opus / sonnet / haiku / fable), custom pinned IDs, per-task override, resolution order task → agent → settings
 - **Auto-compact** — `auto_compact_threshold` (default 85%) triggers `/compact` before next message; users can also type `/compact` directly
 - The folder structure, file formats, and cross-platform support (macOS, Windows, Linux)
 

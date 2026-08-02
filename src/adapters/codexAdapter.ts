@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import type { AgentConfig, ExecutionToolUse, FleetSettings } from "../types";
 import { splitLines } from "../utils/platform";
+import { parseStructuredJsonText } from "../utils/structuredOutput";
 import { setupCodexPermissions } from "./codexPermissions";
 import { tryParseJson, warnJsonParseFailure } from "./parseHelpers";
 import type {
@@ -42,16 +46,38 @@ import type {
  *  stop a plugin-wide Claude default from leaking into a Codex invocation. */
 export function isClaudeShapedModel(value: string): boolean {
   const v = value.trim();
-  return /^(opus|sonnet|haiku|opusplan)$/i.test(v) || /claude|anthropic/i.test(v);
+  return /^(opus|sonnet|haiku|opusplan|fable)$/i.test(v) || /claude|anthropic/i.test(v);
 }
 
-/** Map the plugin's Claude-scale effort values onto Codex's
- *  model_reasoning_effort vocabulary (low|medium|high|xhigh). */
-export function mapCodexEffort(effort: string): string {
+/** Codex reasoning-effort levels that pass through unchanged. `minimal` has no
+ *  Claude equivalent and isn't offered in the UI, but is honored when written
+ *  straight into a Codex agent's frontmatter. */
+const CODEX_EFFORT_PASSTHROUGH = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+let warnedUltracodeFallback = false;
+
+/** True for Codex models that expose the `max` reasoning level. GPT-5.6
+ *  introduced it above `xhigh`; older slugs reject it, so we only emit `max`
+ *  when we can see a 5.6-family model on the invocation. */
+export function codexSupportsMaxEffort(model: string): boolean {
+  return /^gpt-5\.6\b/i.test(model.trim());
+}
+
+/**
+ * Map the plugin's Claude-scale effort values onto Codex's
+ * model_reasoning_effort vocabulary (minimal|low|medium|high|xhigh|max).
+ *
+ * `model` is the slug actually being passed to `codex -m`; pass "" when the
+ * run inherits Codex's own configured default, in which case we can't know
+ * whether `max` is available and conservatively step down to `xhigh`.
+ */
+export function mapCodexEffort(effort: string, model = ""): string {
   const e = effort.trim().toLowerCase();
   if (!e) return "";
-  if (e === "max") return "xhigh";
-  if (["low", "medium", "high", "xhigh"].includes(e)) return e;
+  if (CODEX_EFFORT_PASSTHROUGH.has(e)) return e;
+  if (e === "max") return codexSupportsMaxEffort(model) ? "max" : "xhigh";
+  // `ultracode` is a Claude Code concept — `xhigh` plus an agentic opt-in that
+  // has no Codex analog. Keep the reasoning depth, drop the opt-in.
+  if (e === "ultracode") return "xhigh";
   return "";
 }
 
@@ -61,8 +87,8 @@ export function mapCodexEffort(effort: string): string {
  * sandbox is the only enforcement axis:
  *
  *   - Claude's bypassPermissions/dontAsk → --dangerously-bypass-approvals-and-sandbox
- *   - acceptEdits / default → --sandbox workspace-write ("default" can't ask
- *     headlessly; workspace-write is the closest safe behavior)
+ *   - acceptEdits / auto / default → --sandbox workspace-write (none of the
+ *     three can ask headlessly; workspace-write is the closest safe behavior)
  *   - plan → --sandbox read-only
  *
  * Codex-native values (read-only / workspace-write / danger-full-access) are
@@ -75,6 +101,7 @@ export function codexSandboxArgs(permissionMode: string | undefined): string[] {
     case "read-only":
       return ["--sandbox", "read-only"];
     case "acceptEdits":
+    case "auto":
     case "default":
     case "workspace-write":
       return ["--sandbox", "workspace-write"];
@@ -95,18 +122,32 @@ export function codexSandboxArgs(permissionMode: string | undefined): string[] {
  * adapters by `services/mcpProjection.ts` (which appends `-c mcp_servers.*`
  * overrides to this argv at run time). This keeps a single source of truth for
  * what servers a run sees, instead of a separate `codex mcp list` enumeration.
+ *
+ * `opts.budgetUsd` and `opts.maxTurns` are deliberately ignored: Codex exposes
+ * no spend or turn ceiling. They're still recorded on the run log so the audit
+ * trail shows what was configured, but nothing enforces them on this backend.
  */
 export function buildCodexExecArgs(opts: ExecBuildOptions): { args: string[]; stdinPayload: string } {
   const args = ["exec", "--json", "--skip-git-repo-check"];
 
   const skipModel = opts.modelSource === "settings" && isClaudeShapedModel(opts.model);
-  if (opts.model && !skipModel) {
-    args.push("-m", opts.model);
+  const effectiveModel = opts.model && !skipModel ? opts.model : "";
+  if (effectiveModel) {
+    args.push("-m", effectiveModel);
   }
 
-  const effort = mapCodexEffort(opts.effort);
+  // Effort mapping depends on the model: `max` only exists on GPT-5.6 tiers.
+  // With no explicit model the run uses Codex's configured default, which we
+  // can't inspect — mapCodexEffort steps down to xhigh in that case.
+  const effort = mapCodexEffort(opts.effort, effectiveModel);
   if (effort) {
     args.push("-c", `model_reasoning_effort="${effort}"`);
+  }
+  if (opts.effort.trim().toLowerCase() === "ultracode" && !warnedUltracodeFallback) {
+    warnedUltracodeFallback = true;
+    console.info(
+      "Agent Fleet: Codex has no ultracode equivalent; using xhigh reasoning for this run.",
+    );
   }
 
   args.push(...codexSandboxArgs(opts.agent.permissionMode));
@@ -118,6 +159,43 @@ export function buildCodexExecArgs(opts: ExecBuildOptions): { args: string[]; st
 
   args.push("-"); // read the prompt from stdin
   return { args, stdinPayload: opts.prompt };
+}
+
+/**
+ * Materialize the output schema for `--output-schema`, which wants a file path.
+ * Fail closed: silently proceeding without a schema would make a run appear
+ * machine-readable while returning arbitrary prose.
+ */
+function writeOutputSchemaFile(schema: string): { path: string; cleanup: () => void } {
+  let dir: string | undefined;
+  try {
+    dir = mkdtempSync(join(tmpdir(), "agent-fleet-schema-"));
+    const schemaDir = dir;
+    const path = join(schemaDir, "output-schema.json");
+    writeFileSync(path, schema, "utf-8");
+    return {
+      path,
+      cleanup: () => {
+        try {
+          rmSync(schemaDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort — temp dir, the OS reclaims it */
+        }
+      },
+    };
+  } catch (err) {
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup after a failed write */
+      }
+    }
+    throw new Error(
+      "Couldn't write the Codex output schema to a temporary file: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -301,7 +379,26 @@ export const codexAdapter: CliAdapter = {
 
   buildExec(opts: ExecBuildOptions): Promise<ExecInvocation> {
     const { args, stdinPayload } = buildCodexExecArgs(opts);
-    return Promise.resolve({ cliPath: opts.settings.codexCliPath, args, stdinPayload });
+
+    // Codex takes --output-schema as a FILE path (Claude takes the schema
+    // inline via --json-schema), so the schema has to live on disk for the
+    // duration of the run. The returned cleanup removes it.
+    let cleanup: (() => void) | undefined;
+    if (opts.outputSchema) {
+      const schemaFile = writeOutputSchemaFile(opts.outputSchema);
+      // Insert before the trailing positional `-`. On a resume invocation
+      // this lands after `resume <id>`, which is where resume's own options
+      // belong; otherwise it lands among the exec options. Both are valid.
+      args.splice(args.length - 1, 0, "--output-schema", schemaFile.path);
+      cleanup = schemaFile.cleanup;
+    }
+
+    return Promise.resolve({
+      cliPath: opts.settings.codexCliPath,
+      args,
+      stdinPayload,
+      cleanup,
+    });
   },
 
   parseExecOutput(stdout: string, stderr: string, _streaming: boolean): ExecParseResult {
@@ -359,6 +456,7 @@ export const codexAdapter: CliAdapter = {
     return {
       outputText,
       finalResult: lastMessage?.trim() ? lastMessage : undefined,
+      structuredOutput: parseStructuredJsonText(lastMessage),
       tokensUsed: totalTokens > 0 ? totalTokens : undefined,
       // Codex emits no dollar-cost field — leave costUsd unset.
       costUsd: undefined,

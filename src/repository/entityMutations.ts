@@ -26,7 +26,7 @@ export interface CreateAgentFolderOptions {
   effort?: string;
   approvalRequired: string[];
   memory: boolean;
-  memoryMaxEntries: number;
+  memoryTokenBudget: number;
   skills: string[];
   mcpServers?: string[];
   skillsBody: string;
@@ -34,6 +34,12 @@ export interface CreateAgentFolderOptions {
   enabled?: boolean;
   permissionRules?: { allow: string[]; deny: string[] };
   autoCompactThreshold?: number;
+  /** Dollar stop threshold per run. Undefined = inherit; 0 = explicitly uncapped. */
+  maxBudgetUsd?: number;
+  /** Agentic-turn ceiling per run. Undefined = inherit; 0 = explicitly uncapped. */
+  maxTurns?: number;
+  /** Forward subagent transcripts into the run stream (Claude-only). */
+  forwardSubagentText?: boolean;
   wikiReferences?: string[];
 }
 
@@ -58,6 +64,12 @@ export interface AgentUpdates {
   timeout?: number;
   permissionMode?: string;
   effort?: string;
+  /** Dollar stop threshold per run. 0 = uncapped; null = inherit; undefined = leave as-is. */
+  maxBudgetUsd?: number | null;
+  /** Agentic-turn ceiling per run. Same semantics as maxBudgetUsd. */
+  maxTurns?: number | null;
+  /** Forward subagent transcripts into the run stream (Claude-only). */
+  forwardSubagentText?: boolean;
   permissionRules?: { allow: string[]; deny: string[] };
   approvalRequired?: string[];
   memory?: boolean;
@@ -86,6 +98,12 @@ export interface TaskUpdates {
   catch_up?: boolean;
   effort?: string;
   model?: string;
+  /** Per-task dollar stop threshold. 0 = uncapped; null = inherit; undefined = leave as-is. */
+  maxBudgetUsd?: number | null;
+  /** Per-task agentic-turn ceiling. Same semantics. */
+  maxTurns?: number | null;
+  /** JSON Schema the run's output must validate against. */
+  outputSchema?: string;
   channel?: string;
   channelTarget?: string;
   tags?: string[];
@@ -213,11 +231,17 @@ export class EntityMutations {
       effort: opts.effort || undefined,
       approval_required: opts.approvalRequired,
       memory: opts.memory,
-      memory_max_entries: opts.memoryMaxEntries,
+      memory_token_budget: opts.memoryTokenBudget,
     };
     if (typeof opts.autoCompactThreshold === "number") {
       configFm.auto_compact_threshold = opts.autoCompactThreshold;
     }
+    // Only write the limit keys when they're actually set — a `max_budget_usd: 0`
+    // in every new agent's config.md would read as "explicitly uncapped" and
+    // silently shadow the fleet setting.
+    if (opts.maxBudgetUsd !== undefined) configFm.max_budget_usd = opts.maxBudgetUsd;
+    if (opts.maxTurns !== undefined) configFm.max_turns = opts.maxTurns;
+    if (opts.forwardSubagentText) configFm.forward_subagent_text = true;
     if (opts.wikiReferences && opts.wikiReferences.length > 0) {
       configFm.wiki_references = opts.wikiReferences.map((agent) => ({ agent }));
     }
@@ -320,6 +344,17 @@ export class EntityMutations {
         if (updates.cwd !== undefined) frontmatter.cwd = updates.cwd;
         if (updates.permissionMode !== undefined) frontmatter.permission_mode = updates.permissionMode;
         if (updates.effort !== undefined) frontmatter.effort = updates.effort || undefined;
+        if (updates.maxBudgetUsd !== undefined) {
+          if (updates.maxBudgetUsd === null) delete frontmatter.max_budget_usd;
+          else frontmatter.max_budget_usd = updates.maxBudgetUsd;
+        }
+        if (updates.maxTurns !== undefined) {
+          if (updates.maxTurns === null) delete frontmatter.max_turns;
+          else frontmatter.max_turns = updates.maxTurns;
+        }
+        if (updates.forwardSubagentText !== undefined) {
+          frontmatter.forward_subagent_text = updates.forwardSubagentText || undefined;
+        }
         if (updates.approvalRequired !== undefined) frontmatter.approval_required = updates.approvalRequired;
         if (updates.memory !== undefined) frontmatter.memory = updates.memory;
         if (updates.memoryTokenBudget !== undefined) frontmatter.memory_token_budget = updates.memoryTokenBudget;
@@ -398,6 +433,17 @@ export class EntityMutations {
       if (updates.cwd !== undefined) frontmatter.cwd = updates.cwd;
       if (updates.permissionMode !== undefined) frontmatter.permission_mode = updates.permissionMode;
       if (updates.effort !== undefined) frontmatter.effort = updates.effort || undefined;
+      if (updates.maxBudgetUsd !== undefined) {
+        if (updates.maxBudgetUsd === null) delete frontmatter.max_budget_usd;
+        else frontmatter.max_budget_usd = updates.maxBudgetUsd;
+      }
+      if (updates.maxTurns !== undefined) {
+        if (updates.maxTurns === null) delete frontmatter.max_turns;
+        else frontmatter.max_turns = updates.maxTurns;
+      }
+      if (updates.forwardSubagentText !== undefined) {
+        frontmatter.forward_subagent_text = updates.forwardSubagentText || undefined;
+      }
       if (updates.approvalRequired !== undefined) frontmatter.approval_required = updates.approvalRequired;
       if (updates.memory !== undefined) frontmatter.memory = updates.memory;
       if (updates.autoCompactThreshold !== undefined) {
@@ -456,6 +502,15 @@ export class EntityMutations {
     if (updates.catch_up !== undefined) frontmatter.catch_up = updates.catch_up;
     if (updates.effort !== undefined) frontmatter.effort = updates.effort || undefined;
     if (updates.model !== undefined) frontmatter.model = updates.model || undefined;
+    if (updates.maxBudgetUsd !== undefined) {
+      if (updates.maxBudgetUsd === null) delete frontmatter.max_budget_usd;
+      else frontmatter.max_budget_usd = updates.maxBudgetUsd;
+    }
+    if (updates.maxTurns !== undefined) {
+      if (updates.maxTurns === null) delete frontmatter.max_turns;
+      else frontmatter.max_turns = updates.maxTurns;
+    }
+    if (updates.outputSchema !== undefined) frontmatter.output_schema = updates.outputSchema || undefined;
     if (updates.channel !== undefined) frontmatter.channel = updates.channel || undefined;
     if (updates.channelTarget !== undefined) frontmatter.channel_target = updates.channelTarget || undefined;
     if (updates.tags !== undefined) frontmatter.tags = updates.tags;

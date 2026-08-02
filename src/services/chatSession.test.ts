@@ -54,6 +54,10 @@ function makeSettings(overrides: Partial<FleetSettings> = {}): FleetSettings {
     defaultModel: "default",
     awsRegion: "us-east-1",
     maxConcurrentRuns: 2,
+    maxRunBudgetUsd: 0,
+    maxRunTurns: 0,
+    claudeSandboxNetworkStrictAllowlist: false,
+    claudeSandboxFilesystemDisabled: false,
     runLogRetentionDays: 30,
     catchUpMissedTasks: true,
     notificationLevel: "all",
@@ -769,5 +773,122 @@ describe("ChatSession.refreshAgent — picks up post-construction permission edi
     // Still the original — refresh is best-effort, not destructive
     expect(session.agent.permissionMode).toBe("acceptEdits");
     expect(session.agent.name).toBe("deleted-agent");
+  });
+});
+
+describe("ChatSession.parseStreamEvent — partial-message reconciliation", () => {
+  function parse(session: ChatSession, event: Record<string, unknown>) {
+    return (session as unknown as {
+      parseStreamEvent(ev: Record<string, unknown>): { type: string; content: string; toolName?: string } | null;
+    }).parseStreamEvent(event);
+  }
+
+  function newSession(): ChatSession {
+    return new ChatSession(makeAgent(), makeSettings(), makeRepositoryStub(), vaultStub);
+  }
+
+  it("emits assistant text when no deltas streamed", () => {
+    const session = newSession();
+    const out = parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello" }] },
+    });
+    expect(out).toEqual({ type: "text", content: "hello" });
+  });
+
+  it("unwraps stream_event and emits the inner text delta", () => {
+    const session = newSession();
+    const out = parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "par" } },
+    });
+    expect(out).toEqual({ type: "text", content: "par" });
+  });
+
+  it("does not render the reply twice when deltas already streamed it", () => {
+    const session = newSession();
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } },
+    })).toEqual({ type: "text", content: "hel" });
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } },
+    })).toEqual({ type: "text", content: "lo" });
+
+    // The terminal assistant event repeats the whole message — swallow it.
+    expect(parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello" }] },
+    })).toBeNull();
+  });
+
+  it("resumes emitting for the next message in the same turn", () => {
+    const session = newSession();
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "one" } },
+    });
+    parse(session, { type: "assistant", message: { content: [{ type: "text", text: "one" }] } });
+    // Second message streamed no deltas — it must render normally.
+    expect(parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "two" }] },
+    })).toEqual({ type: "text", content: "two" });
+  });
+
+  it("still reports a tool_use that shares a message with suppressed text", () => {
+    const session = newSession();
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text: "running" } },
+    });
+    const out = parse(session, {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "running" },
+          { type: "tool_use", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    });
+    expect(out).toEqual({ type: "tool_use", content: "ls", toolName: "Bash" });
+  });
+
+  it("suppresses only streamed text blocks, not a later unstreamed block", () => {
+    const session = newSession();
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "first" } },
+    });
+    expect(parse(session, {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "first" },
+          { type: "text", text: "second" },
+        ],
+      },
+    })).toEqual({ type: "text", content: "second" });
+  });
+
+  it("resets partial block tracking at message_start", () => {
+    const session = newSession();
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "old" } },
+    });
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "message_start" },
+    })).toBeNull();
+    expect(parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "new" }] },
+    })).toEqual({ type: "text", content: "new" });
+  });
+
+  it("ignores a stream_event with no inner event", () => {
+    expect(parse(newSession(), { type: "stream_event" })).toBeNull();
   });
 });

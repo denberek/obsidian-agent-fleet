@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, TextAreaComponent, TextComponent, ToggleCo
 import type { FleetSnapshot, SkillConfig } from "../types";
 import { slugify } from "../utils/markdown";
 import type { FleetRepository } from "../fleetRepository";
+import { DEFAULT_MEMORY_TOKEN_BUDGET } from "../constants";
 
 const TEMPLATE_PRESETS: Record<string, { label: string; prompt: string }> = {
   none: { label: "None", prompt: "" },
@@ -387,7 +388,7 @@ export class CreateAgentModal extends Modal {
         permissionMode: this.permissionMode,
         approvalRequired: parseTags(this.approvalRequired),
         memory: this.memoryEnabled,
-        memoryMaxEntries: 100,
+        memoryTokenBudget: DEFAULT_MEMORY_TOKEN_BUDGET,
         skills: Array.from(this.selectedSharedSkills),
         skillsBody: this.agentSkillsBody.trim(),
         contextBody: this.contextBody.trim(),

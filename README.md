@@ -35,7 +35,7 @@ Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI age
 
 📋 **Task Board** — Kanban view with scheduling, priority, real-time progress tracking, and abort. Tasks run on cron schedules or on-demand. Per-task model override lets you route a simple nightly summary to Haiku while keeping the agent on Opus, and per-task channel delivery posts the result straight to Slack/Telegram/Discord.
 
-🎛️ **Model picker** — Choose between aliases (`opus` / `sonnet` / `haiku` / `opusplan` — backend-agnostic), pinned IDs, or Bedrock/Vertex/Foundry formats. One place to configure: settings default, per-agent, or per-task override. Runs log both the requested alias and the concrete resolved model.
+🎛️ **Model picker** — Choose between Claude aliases (`opus` / `sonnet` / `haiku` / `fable`), current Codex GPT-5.6 tiers, pinned IDs, or Bedrock/Vertex/Foundry formats. One place to configure: settings default, per-agent, or per-task override. Runs log both the requested alias and the concrete resolved model.
 
 🔌 **MCP Integration** — Register an MCP server **once** and it's available to **any** agent on **either** adapter (Claude Code or Codex). Servers live in a fleet-owned registry (`_fleet/mcp/`) and are projected into each run; your native `~/.claude.json` and `~/.codex/config.toml` are never modified. One-click OAuth 2.1 (or a static bearer token), stored in your OS keychain and projected to both backends.
 
@@ -82,14 +82,19 @@ Agent Fleet runs on the subscriptions you already pay for — no separate API bi
     claude  # authenticate on first run
     ```
     Works with a **Claude Max or Pro subscription** or an **Anthropic API key** — no separate API costs if you already subscribe.
+    **Use 2.1.219 or newer.** Earlier builds truncate streamed output when the reader is slow, which is exactly how this plugin consumes run output — 2.1.216 and 2.1.219 fixed that, along with `claude -p` dropping the answer on a mid-stream API error.
   - **[OpenAI Codex CLI](https://github.com/openai/codex)** (optional, for `codex` agents):
     ```bash
     npm install -g @openai/codex
     codex login  # authenticate on first run
     ```
-    Works with a **ChatGPT Plus/Pro plan** or an **OpenAI API key**.
+    Works with a **ChatGPT Plus/Pro plan** or an **OpenAI API key**. **Use 0.146.0 or newer** — this release is validated against that JSONL/resume behavior and includes the current MCP reconnect fixes.
 
   You only need the backend(s) your agents are configured to use — Claude-only users never pay the Codex probe, and vice versa.
+
+  Both CLIs ship frequently and Agent Fleet tracks their current behavior rather than pinning a version. If a run starts failing in a way that looks like output-format drift, update the CLI first — the run log records the concrete model and the raw CLI event that failed to parse.
+
+  Agent Fleet detects both CLI versions at startup (Codex only when a Codex agent exists), caches them in plugin settings, and shows a dismissible notice when a detected version is below the recommendation. Version-sensitive flags fail with an actionable message instead of silently degrading a configured safety or output contract.
 
 ### First Launch
 
@@ -141,11 +146,14 @@ agents/my-agent/
 | **Name & Description** | Identity shown in the dashboard |
 | **Avatar** | Lucide icon picker (1,400+ icons) or emoji |
 | **System Prompt** | Core instructions that define the agent's behavior |
-| **Model** | Backend-aware picker — Claude aliases (`opus`/`sonnet`/`haiku`/`opusplan`), pinned IDs, Bedrock/Vertex/Foundry, or Codex slugs; free-text for anything else |
+| **Model** | Backend-aware picker — Claude aliases (`opus`/`sonnet`/`haiku`/`fable`), pinned IDs, Bedrock/Vertex/Foundry, or Codex slugs; free-text for anything else |
 | **Adapter** | Claude Code or OpenAI Codex — set per agent |
+| **Effort** | Low / Medium / High / Extra High / Max / Ultracode. Codex maps unsupported levels safely and reports the fallback once |
 | **Working Directory** | Where the agent operates (defaults to vault root) |
 | **Timeout** | Max execution time in seconds |
-| **Permission Mode** | bypassPermissions, dontAsk, acceptEdits, or plan |
+| **Permission Mode** | bypassPermissions, dontAsk, acceptEdits, auto, or plan |
+| **Spend / Turn Limits** | Optional per-run guard overriding fleet defaults; blank inherits and `0` explicitly opts out |
+| **Subagent Output** | Opt-in Claude subagent transcript forwarding, reconstructed and depth/size bounded in run logs |
 | **Allow/Deny Lists** | Fine-grained tool control (e.g., allow `Bash(curl *)`, deny `Bash(rm -rf *)`). Enforced on both backends — Claude Code natively, Codex via execpolicy command rules (see [Backends](#backends)) |
 | **Skills** | Shared skills from the skill library |
 | **MCP Servers** | Which MCP servers the agent can access |
@@ -159,6 +167,7 @@ agents/my-agent/
 | `bypassPermissions` | Auto-runs everything except deny list |
 | `dontAsk` | Only allow-listed commands run |
 | `acceptEdits` | File edits auto-approved, bash blocked unless allowed |
+| `auto` | Claude classifies commands and asks only when risky; maps to Codex `workspace-write` |
 | `plan` | Read-only — no writes, no commands |
 
 ---
@@ -171,10 +180,12 @@ Each agent runs on one of two CLI backends, selected by the **Adapter** field in
 |---|---|---|
 | Engine | `@anthropic-ai/claude-code` | `@openai/codex` (`codex exec`) |
 | Auth | Claude Max/Pro subscription or Anthropic API key | ChatGPT Plus/Pro plan or OpenAI API key |
-| Models | `opus` / `sonnet` / `haiku` / `opusplan` aliases, pinned IDs, Bedrock/Vertex/Foundry | Codex slugs (e.g. `gpt-5.5-codex`) + free-text |
+| Models | `opus` / `sonnet` / `haiku` / `fable` aliases, pinned IDs, Bedrock/Vertex/Foundry | GPT-5.6 tiers (e.g. `gpt-5.6-terra`) + free-text |
 | Permission rules | Native — `.claude/settings.local.json` | execpolicy command rules via per-agent `CODEX_HOME` overlay |
 | File/network sandbox | Permission Mode | Permission Mode (`workspace-write` / `read-only`); `codex exec` forces approval policy `never` |
 | MCP servers | Fleet registry (`_fleet/mcp/`), projected via `--mcp-config` | Fleet registry (`_fleet/mcp/`), projected via `-c mcp_servers.*` |
+| Spend / turn limits | Enforced by `--max-budget-usd` / `--max-turns` | Recorded for audit only; Codex exposes neither limit |
+| Structured task output | Inline `--json-schema`; validated JSON read from `structured_output` | Temporary `--output-schema` file; final JSON parsed from the agent message |
 
 Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run logs, model picker — works identically on both. The picker switches its alias list based on the selected adapter; free-text remains the escape hatch for any model ID.
 
@@ -184,7 +195,9 @@ Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run
 - There's no closed allow-list — Codex `allow` rules are additive, so "only the allow-list runs" (Claude's `dontAsk`) is **not** reproducible; the sandbox is the real boundary.
 - Requires a Codex build with execpolicy support. If it's missing (or `~/.codex` isn't set up, or symlinks are unavailable), the agent **falls back to sandbox-only enforcement** with a one-time console warning — the run never breaks.
 
-> Codex reports no per-run dollar cost, so `cost_usd` is blank on Codex runs. Compact/rate-limit telemetry is Claude-only.
+> Codex reports no per-run dollar cost and exposes no spend/turn cap, so `cost_usd` is blank and configured limits are audit-only on Codex runs. Compact/rate-limit telemetry is Claude-only.
+
+> Claude checks `--max-budget-usd` between API turns. A response already in flight can take the final cost above the configured threshold; the setting is a stop guard, not a prepaid hard ceiling. Agent Fleet records that terminal event as **stopped**, not failed.
 
 ---
 
@@ -349,6 +362,8 @@ A kanban view for managing agent tasks with five columns:
 - **Catch Up If Missed** — auto-run overdue tasks when Obsidian opens
 - **Run Now** — execute any task immediately regardless of schedule
 - **Channel delivery** — post a task's full output to a channel via `channel:` (broadcast or DM) and optionally `channel_target:` (a specific Slack/Discord channel id or Telegram chat id); works on every transport
+- **Spend and turn limits** — override the agent/fleet guard per task; blank inherits and `0` explicitly opts out
+- **Structured output** — provide `output_schema` as JSON Schema; validated JSON is stored under `structured_output` in the run note frontmatter for file-based workflows
 - **Drag & Drop** — move tasks between backlog and scheduled columns
 
 ---
@@ -508,9 +523,13 @@ Click any run in the dashboard to see full details in a slideover panel.
 | Fleet Folder | `_fleet` | Root folder for all fleet data |
 | Claude CLI Path | `claude` | Path to the Claude Code CLI |
 | Codex CLI Path | `codex` | Path to the OpenAI Codex CLI (used by `codex` agents) |
-| Default Model | `default` | Default model for new agents. Pick Default / Alias (opus/sonnet/haiku/opusplan) / Custom (manual ID for Bedrock/Vertex/etc.) |
+| Default Model | `default` | Default model for new agents. Pick Default / Alias (opus/sonnet/haiku/fable) / Custom (manual ID for Bedrock/Vertex/etc.) |
 | AWS Region | `us-east-1` | For AWS Bedrock model support |
 | Max Concurrent Runs | `2` | Parallel task execution limit |
+| Spend Limit per Run | `0` | Fleet-wide Claude dollar stop threshold; checked between API turns, so cost can overshoot. `0` disables it |
+| Turn Limit per Run | `0` | Fleet-wide Claude agentic-turn cap; `0` disables it. Agents/tasks can override |
+| Strict Claude Network Allowlist | `false` | Project `sandbox.network.strictAllowlist` into Claude run settings |
+| Disable Claude Filesystem Sandbox | `false` | Project `sandbox.filesystem.disabled` into Claude run settings |
 | Run Log Retention | `30` days | Auto-cleanup old logs |
 | Catch Up Missed Tasks | `true` | Run overdue tasks on startup |
 | Notification Level | `all` | `all`, `failures-only`, `none` |
@@ -564,7 +583,7 @@ Yes. Set an agent's **Adapter** to `OpenAI Codex` and it runs on the `@openai/co
 No — agents need their CLI backend (Claude Code or OpenAI Codex) to reach its API. But all your data (agents, tasks, skills, memory) is local markdown.
 
 **Q: Can I use different models per agent or per task?**
-Yes. Each agent has its own model setting, and you can override it per task (e.g. keep the agent on Opus but run a simple nightly summary task on Haiku to cut cost). Supports Anthropic direct, AWS Bedrock, Google Vertex, Foundry, and Mantle. Claude aliases `opus` / `sonnet` / `haiku` / `opusplan` cover the Claude backend; Codex agents use Codex slugs (a Claude-shaped default is ignored on Codex and vice-versa). Resolution order: task → agent → settings → the backend's own CLI default.
+Yes. Each agent has its own model setting, and you can override it per task (e.g. keep the agent on Opus but run a simple nightly summary task on Haiku to cut cost). Supports Anthropic direct, AWS Bedrock, Google Vertex, Foundry, and Mantle. Claude aliases `opus` / `sonnet` / `haiku` / `fable` cover the Claude backend; Codex agents use Codex slugs (a Claude-shaped default is ignored on Codex and vice-versa). Resolution order: task → agent → settings → the backend's own CLI default.
 
 **Q: What happens if I delete the plugin?**
 Your `_fleet/` folder stays. All agents, tasks, skills, run logs, and memory are plain markdown files in your vault.

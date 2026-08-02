@@ -6,7 +6,16 @@ import {
   DEFAULT_RECURRENCE_THRESHOLD,
 } from "../constants";
 import { parseMarkdownWithFrontmatter } from "../utils/markdown";
-import { asBoolean, asNumber, asString, asStringArray, isRecord } from "./shared";
+import { normalizeOutputSchema } from "../utils/structuredOutput";
+import {
+  asBoolean,
+  asNumber,
+  asOptionalBoolean,
+  asOptionalNumber,
+  asString,
+  asStringArray,
+  isRecord,
+} from "./shared";
 import type {
   AgentConfig,
   ChannelConfig,
@@ -194,6 +203,9 @@ export function parseAgent(ctx: ParserContext, path: string, content: string): A
     permissionMode: asString(frontmatter.permission_mode) ?? "bypassPermissions",
     effort: asString(frontmatter.effort),
     maxRetries: asNumber(frontmatter.max_retries, 1),
+    maxBudgetUsd: asOptionalNumber(frontmatter.max_budget_usd),
+    maxTurns: asOptionalNumber(frontmatter.max_turns),
+    forwardSubagentText: asOptionalBoolean(frontmatter.forward_subagent_text),
     skills: asStringArray(frontmatter.skills),
     mcpServers: asStringArray(frontmatter.mcp_servers),
     cwd: asString(frontmatter.cwd),
@@ -264,6 +276,20 @@ export function parseTask(ctx: ParserContext, path: string, content: string): Ta
   const rawPriority = asString(frontmatter.priority);
   const validPriorities = ["low", "medium", "high", "critical"];
   const priority = (rawPriority && validPriorities.includes(rawPriority) ? rawPriority : "medium") as TaskConfig["priority"];
+  const rawOutputSchema = frontmatter.output_schema;
+  const outputSchema = typeof rawOutputSchema === "string"
+    ? rawOutputSchema.trim() || undefined
+    : isRecord(rawOutputSchema)
+      ? JSON.stringify(rawOutputSchema)
+      : undefined;
+  if (rawOutputSchema !== undefined) {
+    try {
+      if (!outputSchema) throw new Error("Output schema must be a JSON object.");
+      normalizeOutputSchema(outputSchema);
+    } catch (err) {
+      ctx.reportIssue(path, err instanceof Error ? err.message : String(err));
+    }
+  }
 
   return {
     filePath: path,
@@ -281,6 +307,9 @@ export function parseTask(ctx: ParserContext, path: string, content: string): Ta
     catchUp: asBoolean(frontmatter.catch_up, ctx.settings.catchUpMissedTasks),
     effort: asString(frontmatter.effort),
     model: asString(frontmatter.model),
+    maxBudgetUsd: asOptionalNumber(frontmatter.max_budget_usd),
+    maxTurns: asOptionalNumber(frontmatter.max_turns),
+    outputSchema,
     channel: asString(frontmatter.channel),
     channelTarget: asString(frontmatter.channel_target),
     tags: asStringArray(frontmatter.tags),
@@ -522,6 +551,9 @@ export async function loadFolderAgent(
     permissionMode: asString(configFm.permission_mode) ?? "bypassPermissions",
     effort: asString(configFm.effort),
     maxRetries: asNumber(configFm.max_retries, 1),
+    maxBudgetUsd: asOptionalNumber(configFm.max_budget_usd),
+    maxTurns: asOptionalNumber(configFm.max_turns),
+    forwardSubagentText: asOptionalBoolean(configFm.forward_subagent_text),
     skills: asStringArray(agentFm.skills),
     mcpServers: asStringArray(agentFm.mcp_servers),
     cwd: asString(configFm.cwd) || asString(agentFm.cwd),

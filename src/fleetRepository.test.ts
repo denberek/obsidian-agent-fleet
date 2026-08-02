@@ -29,6 +29,7 @@ vi.mock("obsidian", async (importOriginal) => {
 import type { App } from "obsidian";
 import { TFile, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS } from "./constants";
+import { DEFAULT_FILES } from "./defaults";
 import { FleetRepository } from "./fleetRepository";
 
 /** Minimal in-memory vault: enough surface for the repository paths under test. */
@@ -133,6 +134,14 @@ function makeApp(vault: FakeVault): App {
       },
     },
   } as unknown as App;
+}
+
+function defaultHash(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return hash.toString(36);
 }
 
 describe("FleetRepository", () => {
@@ -254,6 +263,30 @@ describe("FleetRepository", () => {
       expect(third?.status).toBe("failure");
       expect(vault.cachedReadCalls).toBe(readsAfterFirst + 1);
     });
+
+    it("persists structured output as native frontmatter data", async () => {
+      const path = await repo.writeRunLog({
+        runId: "structured-1",
+        agent: "a",
+        task: "t",
+        status: "success",
+        started: "2026-08-02T12:00:00.000Z",
+        completed: "2026-08-02T12:00:01.000Z",
+        durationSeconds: 1,
+        model: "opus",
+        exitCode: 0,
+        tags: [],
+        prompt: "return json",
+        output: "done",
+        structuredOutput: { ok: true, values: [1, 2] },
+        toolsUsed: [],
+      });
+      const file = vault.getAbstractFileByPath(path);
+      expect(file).toBeInstanceOf(TFile);
+      expect(vault.contents.get(path)).toContain("structured_output:");
+      const parsed = await repo.readRunLog(file as TFile);
+      expect(parsed?.structuredOutput).toEqual({ ok: true, values: [1, 2] });
+    });
   });
 
   describe("reference validation re-runs after mutations", () => {
@@ -324,6 +357,84 @@ describe("FleetRepository", () => {
       await repo.updateHeartbeat("bot", { enabled: false });
 
       expect(count(repo.getSnapshot().validationIssues)).toEqual({ corrupt: 1, dangling: 1 });
+    });
+  });
+
+  describe("run-limit frontmatter semantics", () => {
+    it("round-trips explicit zero overrides and can clear them back to inheritance", async () => {
+      vault.addFile(
+        "_fleet/agents/foo.md",
+        "---\nname: foo\nmodel: sonnet\nmax_budget_usd: 4\nmax_turns: 20\n---\n\nBody\n",
+      );
+      vault.addFile(
+        "_fleet/tasks/t1.md",
+        "---\ntask_id: t1\nagent: foo\ntype: immediate\nmax_budget_usd: 2\nmax_turns: 10\n---\n\nDo\n",
+      );
+      await repo.loadAll();
+
+      await repo.updateAgent("foo", { maxBudgetUsd: 0, maxTurns: 0 });
+      await repo.updateTask("t1", { maxBudgetUsd: 0, maxTurns: 0 });
+      expect(repo.getAgentByName("foo")?.maxBudgetUsd).toBe(0);
+      expect(repo.getAgentByName("foo")?.maxTurns).toBe(0);
+      expect(repo.getTaskById("t1")?.maxBudgetUsd).toBe(0);
+      expect(repo.getTaskById("t1")?.maxTurns).toBe(0);
+      expect(vault.contents.get("_fleet/agents/foo.md")).toContain("max_budget_usd: 0");
+      expect(vault.contents.get("_fleet/tasks/t1.md")).toContain("max_turns: 0");
+
+      await repo.updateAgent("foo", { maxBudgetUsd: null, maxTurns: null });
+      await repo.updateTask("t1", { maxBudgetUsd: null, maxTurns: null });
+      expect(repo.getAgentByName("foo")?.maxBudgetUsd).toBeUndefined();
+      expect(repo.getTaskById("t1")?.maxTurns).toBeUndefined();
+      expect(vault.contents.get("_fleet/agents/foo.md")).not.toContain("max_budget_usd");
+      expect(vault.contents.get("_fleet/tasks/t1.md")).not.toContain("max_turns");
+    });
+
+    it("writes explicit zero overrides when creating a folder agent", async () => {
+      await repo.createAgentFolder({
+        name: "zero-agent",
+        description: "",
+        avatar: "",
+        tags: [],
+        systemPrompt: "Test",
+        model: "sonnet",
+        adapter: "claude-code",
+        cwd: "",
+        timeout: 300,
+        permissionMode: "bypassPermissions",
+        approvalRequired: [],
+        memory: false,
+        memoryTokenBudget: 1500,
+        skills: [],
+        skillsBody: "",
+        contextBody: "",
+        maxBudgetUsd: 0,
+        maxTurns: 0,
+      });
+
+      const config = vault.contents.get("_fleet/agents/zero-agent/config.md") ?? "";
+      expect(config).toContain("max_budget_usd: 0");
+      expect(config).toContain("max_turns: 0");
+    });
+  });
+
+  describe("default-file upgrades", () => {
+    it("updates an untouched default while preserving a user-edited one", async () => {
+      const edited = DEFAULT_FILES[0]!;
+      const untouched = DEFAULT_FILES[1]!;
+      const oldEdited = "old edited-file default\n";
+      const oldUntouched = "old untouched-file default\n";
+      vault.addFile(`_fleet/${edited.path}`, "user customization\n");
+      vault.addFile(`_fleet/${untouched.path}`, oldUntouched);
+
+      const hashes = await repo.updateDefaults({
+        [edited.path]: defaultHash(oldEdited),
+        [untouched.path]: defaultHash(oldUntouched),
+      });
+
+      expect(vault.contents.get(`_fleet/${edited.path}`)).toBe("user customization\n");
+      expect(hashes[edited.path]).toBe(defaultHash(oldEdited));
+      expect(vault.contents.get(`_fleet/${untouched.path}`)).toBe(untouched.content);
+      expect(hashes[untouched.path]).toBe(defaultHash(untouched.content));
     });
   });
 
