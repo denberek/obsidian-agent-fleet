@@ -605,6 +605,7 @@ export class ChannelManager {
     // Per-turn accumulation. Reset on each `result` event so an injected
     // follow-up's response doesn't blend into the previous turn's reply.
     let buf = "";
+    let separateNextMessage = false;
     let toolCalls: Array<{ name: string }> = [];
     const flush = () => {
       // Prefix reply with agent name when multiple agents are available so the
@@ -615,6 +616,7 @@ export class ChannelManager {
         if (toolSummary) reply += `${reply ? "\n\n" : ""}_${toolSummary}_`;
       }
       buf = "";
+      separateNextMessage = false;
       toolCalls = [];
       if (!reply) return;
       if (multiAgent) reply = `*[${agentName}]*\n${reply}`;
@@ -623,7 +625,11 @@ export class ChannelManager {
 
     try {
       await session.sendMessage(messageText, (event) => {
-        if (event.type === "text") {
+        if (event.type === "message_start") {
+          separateNextMessage = buf.length > 0;
+        } else if (event.type === "text") {
+          if (separateNextMessage && event.content) buf += "\n\n";
+          separateNextMessage = false;
           buf += event.content;
         } else if (event.type === "tool_use" && event.toolName) {
           toolCalls.push({ name: event.toolName });

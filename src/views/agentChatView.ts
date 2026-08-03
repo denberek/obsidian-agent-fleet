@@ -14,10 +14,111 @@ import type AgentFleetPlugin from "../main";
 import type { AgentConfig, ConversationMeta } from "../types";
 import { createIcon } from "../utils/icons";
 import { stripRememberTags } from "../utils/memoryFormat";
-import { ChatSession, type ChatSessionStats, type ToolCall } from "../services/chatSession";
+import {
+  ChatSession,
+  type ChatSessionStats,
+  type StreamEvent,
+  type ToolCall,
+} from "../services/chatSession";
 
 interface ManagedSession {
   session: ChatSession;
+}
+
+interface LiveAssistantMessage {
+  bubble: HTMLElement;
+  text: string;
+}
+
+/** UI-side consumer for the provider message lifecycle. Thinking and final
+ * text intentionally share a bubble; the first final-text delta replaces the
+ * gray draft, while message_stop commits that bubble and message_start opens
+ * the next logical message. */
+class AssistantMessageStreamRenderer {
+  readonly completed: LiveAssistantMessage[] = [];
+  private current: {
+    bubble: HTMLElement | null;
+    hasThinking: boolean;
+    thinking: string;
+    text: string;
+  } | null = null;
+
+  constructor(
+    private readonly createBubble: () => HTMLElement,
+    private readonly renderThinking: (bubble: HTMLElement, text: string) => void,
+    private readonly renderText: (bubble: HTMLElement, text: string) => void,
+    private readonly finalizeText: (bubble: HTMLElement, text: string) => void,
+  ) {}
+
+  handle(event: StreamEvent): void {
+    if (event.type === "message_start") {
+      // Claude can emit a private/encrypted thinking-only message, followed
+      // by tool calls and then a separate text message. Keep that preview
+      // alive so the eventual final text replaces it in the same bubble.
+      if (this.current?.text.trim()) this.finishCurrent();
+      if (this.current && !this.current.hasThinking) this.finishCurrent();
+      if (!this.current) {
+        this.current = { bubble: null, hasThinking: false, thinking: "", text: "" };
+      }
+      return;
+    }
+    if (event.type === "thinking") {
+      const current = this.ensureCurrent();
+      current.thinking = event.replace ? event.content : current.thinking + event.content;
+      // Only readable provider content belongs in the draft bubble. Empty or
+      // encrypted thinking stays represented by the existing three-dot/tool
+      // indicators instead of creating a redundant placeholder bubble.
+      if (current.thinking) {
+        current.hasThinking = true;
+        this.renderThinking(this.ensureBubble(current), current.thinking);
+      }
+      return;
+    }
+    if (event.type === "text") {
+      const current = this.ensureCurrent();
+      current.text = event.replace ? event.content : current.text + event.content;
+      if (current.text) this.renderText(this.ensureBubble(current), current.text);
+      return;
+    }
+    if (event.type === "message_stop") {
+      if (this.current?.text.trim()) this.finishCurrent();
+      return;
+    }
+    if (event.type === "result") {
+      this.finishCurrent();
+    }
+  }
+
+  takeCompleted(): LiveAssistantMessage[] {
+    return this.completed.splice(0, this.completed.length);
+  }
+
+  private ensureCurrent(): NonNullable<AssistantMessageStreamRenderer["current"]> {
+    if (!this.current) {
+      this.current = { bubble: null, hasThinking: false, thinking: "", text: "" };
+    }
+    return this.current;
+  }
+
+  private ensureBubble(current: NonNullable<AssistantMessageStreamRenderer["current"]>): HTMLElement {
+    if (!current.bubble || !current.bubble.isConnected) current.bubble = this.createBubble();
+    return current.bubble;
+  }
+
+  private finishCurrent(): void {
+    const current = this.current;
+    if (!current) return;
+    if (current.text.trim()) {
+      const bubble = this.ensureBubble(current);
+      this.finalizeText(bubble, current.text);
+      this.completed.push({ bubble, text: current.text });
+    } else {
+      // Thinking is ephemeral. If no final text arrived, remove the preview
+      // rather than persisting internal draft content as an assistant reply.
+      current.bubble?.remove();
+    }
+    this.current = null;
+  }
 }
 
 /** Compose the sessions-map key. Two parallel chats with the same agent share
@@ -1145,6 +1246,37 @@ export class AgentChatView extends ItemView {
     };
   }
 
+  /** Replace live bubble content without destroying its copy button. */
+  private clearLiveBubbleContent(bubble: HTMLElement): void {
+    for (const child of Array.from(bubble.children)) {
+      if (!child.classList.contains("af-chat-copy-btn")) child.remove();
+    }
+  }
+
+  private renderThinkingPreview(bubble: HTMLElement, text: string): void {
+    this.clearLiveBubbleContent(bubble);
+    bubble.removeClass("af-compact-md");
+    bubble.addClass("af-chat-bubble-thinking");
+    const preview = bubble.createDiv({ cls: "af-chat-thinking-preview" });
+    preview.createDiv({ cls: "af-chat-thinking-label", text: "Thinking" });
+    preview.createDiv({ cls: "af-chat-thinking-text", text });
+  }
+
+  private renderStreamingAssistantText(bubble: HTMLElement, text: string): void {
+    this.clearLiveBubbleContent(bubble);
+    bubble.removeClass("af-chat-bubble-thinking");
+    bubble.removeClass("af-compact-md");
+    bubble.createDiv({ cls: "af-chat-stream-text", text });
+    (bubble as HTMLElement & { _setRawText?: (value: string) => void })._setRawText?.(text);
+  }
+
+  private finalizeAssistantBubble(bubble: HTMLElement, rawText: string): void {
+    const cleaned = stripRememberTags(rawText);
+    bubble.removeClass("af-chat-bubble-thinking");
+    this.renderMarkdownBubble(bubble, cleaned);
+    (bubble as HTMLElement & { _setRawText?: (value: string) => void })._setRawText?.(cleaned);
+  }
+
   private addBubble(role: "user" | "assistant" | "error", text?: string, attachments?: string[]): HTMLElement {
     // If user bubble has attachments, render pills above the text
     if (role === "user" && attachments && attachments.length > 0) {
@@ -1496,30 +1628,28 @@ export class AgentChatView extends ItemView {
       appendBubble("user", text, attachedNames.length > 0 ? attachedNames : undefined);
       setThreadStreaming(true);
 
-      let assistantBubble: HTMLElement | null = null;
-      let accumulated = "";
+      const streamRenderer = new AssistantMessageStreamRenderer(
+        () => messages.createDiv({ cls: "af-thread-bubble af-thread-bubble-assistant" }),
+        (bubble, draft) => this.renderThinkingPreview(bubble, draft),
+        (bubble, partial) => this.renderStreamingAssistantText(bubble, partial),
+        (bubble, finalText) => this.finalizeAssistantBubble(bubble, finalText),
+      );
       try {
         await thread.sendMessage(text, (event) => {
-          if (event.type === "text") {
-            if (!assistantBubble) {
-              // First text chunk — swap dots for an in-progress bubble.
-              setThreadStreaming(false);
-              setThreadActivity();
-              assistantBubble = appendBubble("assistant", "");
-              assistantBubble.empty();
-            }
-            accumulated += event.content;
-            let streamText = assistantBubble.querySelector(".af-chat-stream-text");
-            if (!streamText) {
-              streamText = assistantBubble.createDiv({ cls: "af-chat-stream-text" });
-            }
-            streamText.setText(accumulated);
+          if (event.type === "message_start" || event.type === "message_stop") {
+            streamRenderer.handle(event);
+          } else if (event.type === "thinking" || event.type === "text") {
+            // The gray thinking preview and final answer occupy the same
+            // bubble; the renderer swaps phase on the first final-text delta.
+            setThreadStreaming(false);
+            setThreadActivity();
+            streamRenderer.handle(event);
           } else if (event.type === "tool_use") {
             setThreadActivity(event.toolName);
           } else if (event.type === "result") {
+            streamRenderer.handle(event);
             setThreadActivity();
             setThreadStreaming(false);
-            if (assistantBubble) this.renderMarkdownBubble(assistantBubble, stripRememberTags(accumulated));
           }
         }, fullText, attachedNames.length > 0 ? attachedNames : undefined);
         // Turn done — refresh badge counter on the parent. We don't
@@ -1593,7 +1723,9 @@ export class AgentChatView extends ItemView {
     // off). So we need a textual fallback to signal "agent is replying".
     // Detect the live-bubble case by looking for the streaming text
     // container handleSend creates on each chunk.
-    const hasLiveBubble = !!this.messagesInner.querySelector(".af-chat-stream-text");
+    const hasLiveBubble = !!this.messagesInner.querySelector(
+      ".af-chat-stream-text, .af-chat-thinking-preview",
+    );
 
     let activityLabel: string | null = null;
     if (streaming && tool) {
@@ -1620,7 +1752,7 @@ export class AgentChatView extends ItemView {
     // Streaming dot — "thinking" indicator shown only when the agent is
     // streaming, has no current tool, AND hasn't produced text yet. Once
     // the bubble starts filling (or the Replying… pill takes over), no dot.
-    const showDot = streaming && !tool && !hasText;
+    const showDot = streaming && !tool && !hasText && !hasLiveBubble;
     if (showDot) {
       if (!this.streamingDot) {
         this.streamingDot = this.messagesInner.createDiv({ cls: "af-chat-streaming-dot" });
@@ -1850,9 +1982,12 @@ export class AgentChatView extends ItemView {
     // Indicator DOM is now driven by the subscription in switchToAgent() that
     // re-renders from `session.isStreaming` + `session.currentToolName`.
     // We no longer flip them manually here — just handle bubble rendering.
-    let assistantBubble: HTMLElement | null = null;
-    let accumulated = "";
-    let hasText = false;
+    const streamRenderer = new AssistantMessageStreamRenderer(
+      () => this.addBubble("assistant"),
+      (bubble, draft) => this.renderThinkingPreview(bubble, draft),
+      (bubble, partial) => this.renderStreamingAssistantText(bubble, partial),
+      (bubble, finalText) => this.finalizeAssistantBubble(bubble, finalText),
+    );
     // Snapshot the session at send-time so the callbacks can check "am I still
     // writing into the DOM of the tab that submitted this?" — without this
     // guard, events from Agent A kept firing into Agent B's DOM after the
@@ -1868,27 +2003,15 @@ export class AgentChatView extends ItemView {
           // User is looking at a different tab. Do NOT touch the DOM —
           // that's what caused answers from Agent A to appear in Agent B.
           // Drop the event; history will re-render correctly on switch-back.
-          // Also clear stale references that belong to the now-wiped DOM.
-          assistantBubble = null;
-          hasText = false;
-          accumulated = "";
           return;
         }
-        if (event.type === "text") {
-          // The bubble we created earlier may have been wiped by a switch.
-          // `isConnected` is false for detached nodes, so recreate.
-          if (!hasText || !assistantBubble || !assistantBubble.isConnected) {
-            assistantBubble = this.addBubble("assistant");
-            hasText = true;
-          }
-          accumulated += event.content;
-          // Use a streaming text container instead of setText which destroys
-          // sibling elements (including the copy button)
-          let streamText = assistantBubble.querySelector(".af-chat-stream-text");
-          if (!streamText) {
-            streamText = assistantBubble.createDiv({ cls: "af-chat-stream-text" });
-          }
-          streamText.setText(accumulated);
+        if (
+          event.type === "message_start" ||
+          event.type === "thinking" ||
+          event.type === "text" ||
+          event.type === "message_stop"
+        ) {
+          streamRenderer.handle(event);
         } else if (event.type === "error") {
           // CLI reported an error (API error, context overflow, watchdog
           // timeout, etc). Render a red error bubble so the user knows
@@ -1901,30 +2024,26 @@ export class AgentChatView extends ItemView {
           // appears in the stats strip under the composer and self-clears
           // on the next user turn.
         } else if (event.type === "result") {
-          // Turn ended — finalize current assistant bubble
-          if (hasText && assistantBubble && assistantBubble.isConnected) {
-            const cleaned = stripRememberTags(accumulated);
-            this.renderMarkdownBubble(assistantBubble, cleaned);
-            (assistantBubble as HTMLElement & { _setRawText?: (t: string) => void })._setRawText?.(cleaned);
-            // Attach thread affordance first so the affordances row exists;
-            // the tool-calls summary (if any) joins it on the same row.
-            const lastMsg = managed.session.messages[managed.session.messages.length - 1];
-            if (lastMsg && lastMsg.role === "assistant") {
-              this.attachThreadAffordance(assistantBubble, lastMsg.id, managed.session);
-              if (event.toolCalls && event.toolCalls.length > 0) {
-                const row = this.getOrCreateAffordancesRow(assistantBubble);
-                this.buildToolSummary(event.toolCalls, row);
-              }
+          streamRenderer.handle(event);
+          const completed = streamRenderer.takeCompleted();
+          const ids = event.messageIds ?? [];
+          for (const [index, message] of completed.entries()) {
+            const id = ids[index];
+            if (id && message.bubble.isConnected) {
+              this.attachThreadAffordance(message.bubble, id, managed.session);
             }
+          }
+          const last = completed[completed.length - 1];
+          if (last && last.bubble.isConnected && event.toolCalls && event.toolCalls.length > 0) {
+            // Attach thread affordances first; the turn-scoped tool summary
+            // joins the final provider message on the same row.
+            const row = this.getOrCreateAffordancesRow(last.bubble);
+            this.buildToolSummary(event.toolCalls, row);
           } else if (event.toolCalls && event.toolCalls.length > 0) {
             // Tool-only turn with no text — drop the summary inline (no
             // affordances row possible because there's no anchor bubble).
             this.buildToolSummary(event.toolCalls);
           }
-          // Reset for next turn (if an injected message is queued)
-          accumulated = "";
-          hasText = false;
-          assistantBubble = null;
         }
       }, fullText, attachedNames.length > 0 ? attachedNames : undefined);
     } catch (err: unknown) {
@@ -1963,31 +2082,31 @@ export class AgentChatView extends ItemView {
 
   private startFreshIntro(session: ChatSession): void {
     // Indicator DOM is driven by the activity subscription — no manual flips.
-    let introAccumulated = "";
-    let introBubble: HTMLElement | null = null;
-    let introHasText = false;
+    const streamRenderer = new AssistantMessageStreamRenderer(
+      () => this.addBubble("assistant"),
+      (bubble, draft) => this.renderThinkingPreview(bubble, draft),
+      (bubble, partial) => this.renderStreamingAssistantText(bubble, partial),
+      (bubble, finalText) => this.finalizeAssistantBubble(bubble, finalText),
+    );
 
     void session.sendMessage(
       "Please introduce yourself and briefly describe your capabilities and what you can help with.",
       (event) => {
-        if (event.type === "text") {
-          if (!introHasText) {
-            introBubble = this.addBubble("assistant");
-            introHasText = true;
-          }
-          introAccumulated += event.content;
-          introBubble!.setText(introAccumulated);
+        if (
+          event.type === "message_start" ||
+          event.type === "thinking" ||
+          event.type === "text" ||
+          event.type === "message_stop" ||
+          event.type === "result"
+        ) {
+          streamRenderer.handle(event);
         }
-        // Ignore "result" here — the .then() handler finalizes
       },
     ).then((result) => {
-      if (introHasText && introBubble) {
-        this.renderMarkdownBubble(introBubble, introAccumulated);
-        (introBubble as HTMLElement & { _setRawText?: (t: string) => void })._setRawText?.(introAccumulated);
-      } else if (result.text.trim()) {
-        introBubble = this.addBubble("assistant");
-        this.renderMarkdownBubble(introBubble, result.text);
-        (introBubble as HTMLElement & { _setRawText?: (t: string) => void })._setRawText?.(result.text);
+      const completed = streamRenderer.takeCompleted();
+      if (completed.length === 0 && result.text.trim()) {
+        const introBubble = this.addBubble("assistant");
+        this.finalizeAssistantBubble(introBubble, result.text);
       }
 
       if (result.toolCalls.length > 0) {

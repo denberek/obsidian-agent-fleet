@@ -12,8 +12,10 @@ import { buildAgentPromptSections } from "./promptAssembly";
 import {
   installMcpProjection,
   resolveProjectedServers,
+  type McpProjection,
   uninstallMcpProjection,
 } from "./mcpProjection";
+import type { PermissionSetupState } from "../adapters/types";
 
 // Re-exported for existing consumers/tests — the implementations moved to the
 // Claude Code adapter when execution became adapter-dispatched.
@@ -106,40 +108,45 @@ export class ExecutionManager {
       outputSchema,
     });
 
-    // Empty-string cwd must fall back to the vault base (?? alone keeps "",
-    // which breaks the projection / settings file path resolution).
-    const cwd = agent.cwd?.trim() ? agent.cwd : (this.repository.getVaultBasePath() ?? ".");
-
-    // Resolve the effective MCP servers for this run (enabled fleet registry
-    // servers ∩ agent grants, plus the per-run `remember` capture tool for
-    // memory-enabled agents) and PROJECT them into the chosen adapter. The
-    // projection is adapter-agnostic: Claude gets a merged --mcp-config JSON,
-    // Codex gets -c mcp_servers.* overrides. Fail-soft — a null projection just
-    // means the run proceeds without fleet MCP (text-tag capture + reflection
-    // remain the memory fallback).
-    const pendingDir = memoryActive ? this.repository.getPendingDirAbsolutePath(agent.name) : null;
-    const projectedServers = resolveProjectedServers({
-      registry: this.repository.getMcpServers(),
-      agentGrants: agent.mcpServers ?? [],
-      getBearerToken: (name) => this.mcpAuth?.getToken(name),
-      remember: pendingDir ? { pendingDir, source: "mcp" } : null,
-    });
-    const projection = installMcpProjection(cwd, agent.adapter, projectedServers);
-    if (projection) {
-      invocation.args.push(...projection.args);
-    }
-
-    // Install adapter-specific permission config (Claude: a temporary
-    // .claude/settings.local.json at cwd, incl. mcp__<server> allow entries for
-    // every projected server; Codex: a per-agent CODEX_HOME overlay carrying
-    // execpolicy rules, returned as env). Always restored in the finally block.
-    const permissionState = await adapter.setupPermissions(cwd, agent, this.settings, {
-      mcpAllowServers: projectedServers.map((s) => s.def.name),
-    });
-
-    const startTime = Date.now();
-
+    // buildExec may allocate provider-specific resources (currently Codex's
+    // output-schema temp directory). Start the cleanup boundary immediately:
+    // MCP projection or permission setup can fail before the process spawns.
+    let projection: McpProjection | null = null;
+    let permissionState: PermissionSetupState | null = null;
     try {
+      // Empty-string cwd must fall back to the vault base (?? alone keeps "",
+      // which breaks the projection / settings file path resolution).
+      const cwd = agent.cwd?.trim() ? agent.cwd : (this.repository.getVaultBasePath() ?? ".");
+
+      // Resolve the effective MCP servers for this run (enabled fleet registry
+      // servers ∩ agent grants, plus the per-run `remember` capture tool for
+      // memory-enabled agents) and PROJECT them into the chosen adapter. The
+      // projection is adapter-agnostic: Claude gets a merged --mcp-config JSON,
+      // Codex gets -c mcp_servers.* overrides. Fail-soft — a null projection just
+      // means the run proceeds without fleet MCP (text-tag capture + reflection
+      // remain the memory fallback).
+      const pendingDir = memoryActive ? this.repository.getPendingDirAbsolutePath(agent.name) : null;
+      const projectedServers = resolveProjectedServers({
+        registry: this.repository.getMcpServers(),
+        agentGrants: agent.mcpServers ?? [],
+        getBearerToken: (name) => this.mcpAuth?.getToken(name),
+        remember: pendingDir ? { pendingDir, source: "mcp" } : null,
+      });
+      projection = installMcpProjection(cwd, agent.adapter, projectedServers);
+      if (projection) {
+        invocation.args.push(...projection.args);
+      }
+
+      // Install adapter-specific permission config (Claude: a temporary
+      // .claude/settings.local.json at cwd, incl. mcp__<server> allow entries for
+      // every projected server; Codex: a per-agent CODEX_HOME overlay carrying
+      // execpolicy rules, returned as env). Always restored in the finally block.
+      permissionState = await adapter.setupPermissions(cwd, agent, this.settings, {
+        mcpAllowServers: projectedServers.map((s) => s.def.name),
+      });
+
+      const startTime = Date.now();
+
       return await new Promise((resolve, reject) => {
         // Spawn through a login shell on macOS/Linux so ~/.zshenv is sourced.
         // On Windows, spawn directly (env vars are inherited from the system).
@@ -253,9 +260,12 @@ export class ExecutionManager {
         });
       });
     } finally {
-      permissionState?.restore();
-      uninstallMcpProjection(projection);
-      invocation.cleanup?.();
+      try {
+        permissionState?.restore();
+      } finally {
+        uninstallMcpProjection(projection);
+        invocation.cleanup?.();
+      }
     }
   }
 }

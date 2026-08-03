@@ -31,4 +31,3 @@ describe("structured output helpers", () => {
     expect(formatStructuredOutput({ ok: true })).toBe('{\n  "ok": true\n}');
   });
 });
-

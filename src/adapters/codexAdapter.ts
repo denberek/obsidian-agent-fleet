@@ -281,15 +281,26 @@ export function contextTokensFromTurnCompleted(event: JsonRecord): number {
  *  emitted and only forward the unseen suffix. */
 export interface CodexTurnParseState {
   emittedTextLengths: Map<string, number>;
+  emittedThinkingLengths: Map<string, number>;
+  completedMessageIds: Set<string>;
+  messageOpen: boolean;
 }
 
 export function newCodexTurnParseState(): CodexTurnParseState {
-  return { emittedTextLengths: new Map() };
+  return {
+    emittedTextLengths: new Map(),
+    emittedThinkingLengths: new Map(),
+    completedMessageIds: new Set(),
+    messageOpen: false,
+  };
 }
 
 export type CodexChatSignal =
   | { kind: "session"; sessionId: string }
+  | { kind: "message-start" }
+  | { kind: "thinking"; text: string }
   | { kind: "text"; text: string }
+  | { kind: "message-stop" }
   | { kind: "tool"; toolName: string; command?: string }
   | { kind: "usage"; contextTokens: number; totalTokens: number }
   | { kind: "turn-failed"; message: string }
@@ -309,6 +320,10 @@ export function parseCodexChatEvent(event: JsonRecord, state: CodexTurnParseStat
   }
 
   if (type === "turn.completed") {
+    if (state.messageOpen) {
+      signals.push({ kind: "message-stop" });
+      state.messageOpen = false;
+    }
     signals.push({
       kind: "usage",
       contextTokens: contextTokensFromTurnCompleted(event),
@@ -335,13 +350,38 @@ export function parseCodexChatEvent(event: JsonRecord, state: CodexTurnParseStat
     if (!item) return signals;
     const itemType = typeof item.type === "string" ? item.type : "";
 
-    if (itemType === "agent_message") {
+    if (itemType === "reasoning") {
+      if (!state.messageOpen) {
+        signals.push({ kind: "message-start" });
+        state.messageOpen = true;
+      }
       const text = typeof item.text === "string" ? item.text : "";
+      const id = typeof item.id === "string" ? item.id : "__reasoning__";
+      const already = state.emittedThinkingLengths.get(id) ?? 0;
+      if (text.length > already) {
+        signals.push({ kind: "thinking", text: text.slice(already) });
+        state.emittedThinkingLengths.set(id, text.length);
+      }
+      return signals;
+    }
+
+    if (itemType === "agent_message") {
       const id = typeof item.id === "string" ? item.id : "__single__";
+      if (type === "item.completed" && state.completedMessageIds.has(id)) return signals;
+      if (!state.messageOpen) {
+        signals.push({ kind: "message-start" });
+        state.messageOpen = true;
+      }
+      const text = typeof item.text === "string" ? item.text : "";
       const already = state.emittedTextLengths.get(id) ?? 0;
       if (text.length > already) {
         signals.push({ kind: "text", text: text.slice(already) });
         state.emittedTextLengths.set(id, text.length);
+      }
+      if (type === "item.completed" && !state.completedMessageIds.has(id)) {
+        signals.push({ kind: "message-stop" });
+        state.completedMessageIds.add(id);
+        state.messageOpen = false;
       }
       return signals;
     }

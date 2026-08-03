@@ -3011,6 +3011,40 @@
   border-bottom-left-radius: var(--af-radius-sm);
 }
 
+/* Transient provider thinking. It occupies the same assistant bubble as the
+ * final response, then disappears atomically on the first final-text delta. */
+.af-chat-bubble-thinking {
+  color: var(--af-text-muted) !important;
+  background: var(--af-bg-secondary) !important;
+  border-color: var(--af-border) !important;
+}
+
+.af-chat-bubble-thinking .af-chat-copy-btn {
+  display: none;
+}
+
+.af-chat-thinking-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--af-text-muted);
+}
+
+.af-chat-thinking-label {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.af-chat-thinking-text {
+  font-style: italic;
+  white-space: pre-wrap;
+  opacity: 0.82;
+}
+
 /* Compact markdown — shared by chat bubbles + run output */
 .af-compact-md {
   font-family: inherit;

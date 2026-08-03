@@ -29,11 +29,11 @@ Catches the plugin up to **Claude Code 2.1.220** and **Codex 0.146.0**. v0.16.0 
 - **Subagent output** can now be forwarded into run logs, opt-in per agent. Parent tool IDs reconstruct readable nesting; depth is capped at three and forwarded transcript volume at 1 MB.
 - **MCP failures are visible.** A server the CLI refuses to load is reported in the run log and on the MCP page instead of its tools silently going missing.
 - **Structured output** — an optional JSON Schema per task, via `--json-schema` on Claude and `--output-schema` on Codex. Provider-validated JSON is persisted as native `structured_output` run frontmatter; invalid schemas, missing JSON, and schema-file failures fail closed.
-- Claude chat now enables partial message events for smoother token-level streaming without duplicating terminal assistant blocks.
+- Claude chat now enables partial message events for smoother token-level streaming without duplicating terminal assistant blocks. Readable provider thinking appears transiently in gray inside the response bubble and is replaced by the final text; encrypted/empty thinking does not create a fabricated placeholder.
 - CLI versions are detected and cached. Known-old Claude versions are blocked from unsupported safety/output flags with actionable errors; startup warnings are visible but non-blocking.
 - Added fleet-wide projection for Claude's `sandbox.network.strictAllowlist` and `sandbox.filesystem.disabled` settings.
 - Built-in defaults were regenerated with the current model/run-log guidance while hash-based upgrades continue to preserve user-edited files.
-- Test suite expanded to **404 tests**, including structured-output persistence, primary-model detection, nested transcripts, explicit-zero limits, partial-message reconciliation, and default-file preservation.
+- Test suite expanded to **409 tests**, including structured-output persistence, primary-model detection, nested transcripts, explicit-zero limits, partial-message reconciliation, readable-thinking lifecycle handling, and default-file preservation.
 
 ## 0.16.0 — 2026-07-01
 

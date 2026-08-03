@@ -373,6 +373,12 @@ describe("parseCodexChatEvent", () => {
     expect(signals).toEqual([{ kind: "session", sessionId: "t-7" }]);
   });
 
+  it("does not fabricate thinking text when a Codex turn begins", () => {
+    const state = newCodexTurnParseState();
+    expect(parseCodexChatEvent({ type: "turn.started" }, state)).toEqual([]);
+    expect(state.messageOpen).toBe(false);
+  });
+
   it("emits only the unseen suffix when agent_message text grows across updates", () => {
     const state = newCodexTurnParseState();
     const first = parseCodexChatEvent(
@@ -383,14 +389,38 @@ describe("parseCodexChatEvent", () => {
       { type: "item.completed", item: { id: "m1", type: "agent_message", text: "Hello world" } },
       state,
     );
-    expect(first).toEqual([{ kind: "text", text: "Hello" }]);
-    expect(second).toEqual([{ kind: "text", text: " world" }]);
+    expect(first).toEqual([
+      { kind: "message-start" },
+      { kind: "text", text: "Hello" },
+    ]);
+    expect(second).toEqual([
+      { kind: "text", text: " world" },
+      { kind: "message-stop" },
+    ]);
     // Re-delivery of the same final text emits nothing further.
     const third = parseCodexChatEvent(
       { type: "item.completed", item: { id: "m1", type: "agent_message", text: "Hello world" } },
       state,
     );
     expect(third).toEqual([]);
+  });
+
+  it("surfaces reasoning as transient thinking in the same message lifecycle", () => {
+    const state = newCodexTurnParseState();
+    expect(parseCodexChatEvent(
+      { type: "item.updated", item: { id: "r1", type: "reasoning", text: "Checking files" } },
+      state,
+    )).toEqual([
+      { kind: "message-start" },
+      { kind: "thinking", text: "Checking files" },
+    ]);
+    expect(parseCodexChatEvent(
+      { type: "item.completed", item: { id: "m1", type: "agent_message", text: "Done" } },
+      state,
+    )).toEqual([
+      { kind: "text", text: "Done" },
+      { kind: "message-stop" },
+    ]);
   });
 
   it("emits tool signals only on item.started", () => {

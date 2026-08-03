@@ -73,14 +73,34 @@ export interface ToolCall {
 }
 
 export interface StreamEvent {
-  type: "text" | "tool_use" | "tool_result" | "result" | "error" | "compacted";
+  type:
+    | "message_start"
+    | "thinking"
+    | "text"
+    | "message_stop"
+    | "tool_use"
+    | "tool_result"
+    | "result"
+    | "error"
+    | "compacted";
   content: string;
+  /** Replace the current phase's content instead of appending. Used only
+   * when a terminal provider snapshot corrects streamed partial text. */
+  replace?: boolean;
   toolName?: string;
   toolCalls?: ToolCall[];
+  /** Persisted assistant message ids, in the same order as the message
+   * lifecycle events emitted during this turn. Present on `result`. */
+  messageIds?: string[];
   /** Human-readable error message for `type: "error"` events. */
   errorMessage?: string;
   /** Token stats for `type: "compacted"` events. */
   compact?: { preTokens: number; postTokens: number };
+}
+
+interface ClaudeContentBlockState {
+  type: string;
+  text: string;
 }
 
 export interface ChatRateLimit {
@@ -190,10 +210,12 @@ export class ChatSession {
     onClose: (code: number | null) => void;
   } | null = null;
   private basePromptSent = false;
-  /** Content-block indexes that already emitted partial text. The terminal
-   *  `assistant` event repeats those blocks in full; tracking indexes avoids
-   *  both duplicate rendering and suppression of a second, non-streamed block. */
-  private partialTextBlockIndexes = new Set<number>();
+  /** Blocks in the current Claude provider message. Claude's terminal
+   * `assistant` snapshot can omit thinking blocks and renumber the remaining
+   * text blocks, so reconciliation is by block type/order rather than by the
+   * snapshot array position. */
+  private claudeContentBlocks = new Map<number, ClaudeContentBlockState>();
+  private claudeMessageOpen = false;
 
   // Codex mode — agents with `adapter: codex` have no long-lived process.
   // Each turn spawns `codex exec --json [resume <thread_id>]`, the thread id
@@ -239,7 +261,11 @@ export class ChatSession {
   // Turn tracking
   private activeOnEvent: ((event: StreamEvent) => void) | null = null;
   private turnResponseText = "";
-  /** Chars of the redacted (tag-stripped) display already forwarded this turn. */
+  /** Final text for each provider assistant message in this turn. Thinking is
+   * deliberately absent: it is transient UI state, never history or memory. */
+  private turnAssistantMessages: string[] = [];
+  private currentAssistantMessageIndex: number | null = null;
+  /** Chars of the redacted current message already forwarded to the view. */
   private displayedLen = 0;
   private turnToolCalls: ToolCall[] = [];
   private pendingTurns = 0;
@@ -885,13 +911,21 @@ export class ChatSession {
           this.clearSessionId();
         }
       }
+      // Older/newer Claude CLI builds do not all agree on whether a final
+      // message_stop precedes result. Close the lifecycle here when needed so
+      // the UI always gets a deterministic bubble boundary.
+      if (this.claudeMessageOpen) {
+        this.dispatchStreamEvent({ type: "message_stop", content: "" });
+        this.claudeMessageOpen = false;
+      }
       this.handleTurnEnd();
       return;
     }
 
-    // Parse and forward stream event
-    const parsed = this.parseStreamEvent(event);
-    if (parsed) {
+    // Parse and forward stream events. A provider snapshot can reconcile text
+    // and report a tool use at once, hence the array rather than a single
+    // nullable event.
+    for (const parsed of this.parseStreamEvents(event)) {
       this.dispatchStreamEvent(parsed);
     }
   }
@@ -901,30 +935,67 @@ export class ChatSession {
    *  parser and the Codex event translator. */
   private dispatchStreamEvent(parsed: StreamEvent): void {
     let forwarded = parsed;
-    if (parsed.type === "text") {
-      const wasEmpty = this.turnResponseText.length === 0;
-      if (wasEmpty) this.displayedLen = 0; // new turn's text begins
-      this.turnResponseText += parsed.content;
+    if (parsed.type === "message_start") {
+      // A malformed/missing provider stop must not merge two messages.
+      if (this.currentAssistantMessageIndex !== null) {
+        this.activeOnEvent?.({ type: "message_stop", content: "" });
+      }
+      this.turnAssistantMessages.push("");
+      this.currentAssistantMessageIndex = this.turnAssistantMessages.length - 1;
+      this.displayedLen = 0;
+    } else if (parsed.type === "text") {
+      // Snapshot-only/legacy streams may omit message_start. Synthesize it so
+      // storage and every UI consumer still share the same lifecycle.
+      if (this.currentAssistantMessageIndex === null) {
+        this.dispatchStreamEvent({ type: "message_start", content: "" });
+      }
+      const index = this.currentAssistantMessageIndex!;
+      const previous = this.turnAssistantMessages[index] ?? "";
+      const next = parsed.replace ? parsed.content : previous + parsed.content;
+      this.turnAssistantMessages[index] = next;
+      this.turnResponseText = this.turnAssistantMessages.filter((text) => text.length > 0).join("\n\n");
       // Text starts arriving → agent is composing the reply, not tool-working.
       this.setCurrentTool(undefined);
       // First chunk of text in this turn — emit activity so the view can
       // hide the "thinking" dot (the filling bubble is now the indicator).
-      if (wasEmpty && this.turnResponseText.length > 0) this.emitActivity();
+      if (!previous && next) this.emitActivity();
       // Strip [REMEMBER] tags from the LIVE display so they never flash on
-      // screen (capture still reads the raw turnResponseText). Forward only the
-      // newly-revealed, redacted delta. §7.1.
+      // screen. Redact per message so boundaries never affect delta offsets.
       if (this.agent.memory) {
-        const safe = redactRememberForDisplay(this.turnResponseText);
-        const delta = safe.length > this.displayedLen ? safe.slice(this.displayedLen) : "";
+        const safe = redactRememberForDisplay(next);
+        const delta = parsed.replace
+          ? safe
+          : safe.length > this.displayedLen
+            ? safe.slice(this.displayedLen)
+            : "";
         this.displayedLen = safe.length;
-        forwarded = { ...parsed, content: delta };
+        forwarded = { ...parsed, content: delta, replace: parsed.replace };
       }
+    } else if (parsed.type === "message_stop") {
+      this.currentAssistantMessageIndex = null;
+      this.displayedLen = 0;
     } else if (parsed.type === "tool_use" && parsed.toolName) {
       this.turnToolCalls.push({ name: parsed.toolName, command: parsed.content || undefined });
       // Surface which tool is running so the view can say "Working… (Grep)".
       this.setCurrentTool(parsed.toolName);
     }
     this.activeOnEvent?.(forwarded);
+    // Thinking is intentionally excluded from hasCurrentTurnText, so notify
+    // indicator subscribers after the view has created/removed its transient
+    // preview and let them suppress or restore the legacy dot accordingly.
+    if (parsed.type === "thinking" || parsed.type === "message_stop") {
+      this.emitActivity();
+    }
+  }
+
+  private resetTurnOutputState(): void {
+    this.turnResponseText = "";
+    this.turnAssistantMessages = [];
+    this.currentAssistantMessageIndex = null;
+    this.displayedLen = 0;
+    this.turnToolCalls = [];
+    this.claudeContentBlocks.clear();
+    this.claudeMessageOpen = false;
   }
 
   /** Translate Codex JSONL events into the session's stream/stats flow.
@@ -938,8 +1009,17 @@ export class ChatSession {
         case "session":
           this.claudeSessionId = signal.sessionId;
           break;
+        case "message-start":
+          this.dispatchStreamEvent({ type: "message_start", content: "" });
+          break;
+        case "thinking":
+          this.dispatchStreamEvent({ type: "thinking", content: signal.text });
+          break;
         case "text":
           this.dispatchStreamEvent({ type: "text", content: signal.text });
+          break;
+        case "message-stop":
+          this.dispatchStreamEvent({ type: "message_stop", content: "" });
           break;
         case "tool":
           this.dispatchStreamEvent({
@@ -1127,14 +1207,16 @@ export class ChatSession {
   private handleTurnEnd(): void {
     this.lastActiveAt = Date.now();
 
+    if (this.currentAssistantMessageIndex !== null) {
+      this.dispatchStreamEvent({ type: "message_stop", content: "" });
+    }
+
     // Inline memory capture: scrape [REMEMBER] blocks, then strip them so they
     // never reach the stored/displayed message. Fire-and-forget into the locked
     // MemoryWriter (lands straight in working memory for the next turn). §7.2.
     const rawTurn = this.turnResponseText;
-    let storedContent = rawTurn;
     if (this.agent.memory) {
       const captures = extractCaptures(rawTurn);
-      storedContent = stripRememberTags(rawTurn);
       if (captures.length > 0) {
         void this.memoryWriter
           .capture(this.agent, captures, this.captureSource(), new Date().toISOString())
@@ -1146,26 +1228,41 @@ export class ChatSession {
         .catch((err) => console.warn(`Agent Fleet: chat pending drain failed for "${this.agent.name}"`, err));
     }
 
-    // Save assistant message to history
-    if (storedContent.trim()) {
+    // Preserve provider message boundaries in history. This makes a sequence
+    // of assistant messages remain separate bubbles after reload instead of
+    // collapsing the whole CLI turn into one message.
+    const messageIds: string[] = [];
+    const storedMessages = this.turnAssistantMessages
+      .map((content) => (this.agent.memory ? stripRememberTags(content) : content))
+      .filter((content) => content.trim().length > 0);
+    for (const [index, content] of storedMessages.entries()) {
+      const id = newMessageId();
+      messageIds.push(id);
       this.messages.push({
-        id: newMessageId(),
+        id,
         role: "assistant",
-        content: storedContent,
+        content,
         timestamp: new Date().toISOString(),
-        toolCalls: this.turnToolCalls.length > 0 ? [...this.turnToolCalls] : undefined,
+        // Tool summaries remain turn-scoped; attach them to the final bubble.
+        toolCalls:
+          index === storedMessages.length - 1 && this.turnToolCalls.length > 0
+            ? [...this.turnToolCalls]
+            : undefined,
       });
     }
 
     const turnResult = { text: this.turnResponseText, toolCalls: [...this.turnToolCalls] };
 
     // Notify the view so it can finalize the current assistant bubble
-    this.activeOnEvent?.({ type: "result", content: "", toolCalls: [...this.turnToolCalls] });
+    this.activeOnEvent?.({
+      type: "result",
+      content: "",
+      toolCalls: [...this.turnToolCalls],
+      messageIds,
+    });
 
     // Reset per-turn state for the next turn
-    this.turnResponseText = "";
-    this.turnToolCalls = [];
-    this.partialTextBlockIndexes.clear();
+    this.resetTurnOutputState();
 
     this.pendingTurns--;
 
@@ -1216,9 +1313,10 @@ export class ChatSession {
     this.isProcessAlive = false;
     this.process = null;
     this.pendingTurns = 0;
-    this.turnResponseText = "";
-    this.turnToolCalls = [];
-    this.partialTextBlockIndexes.clear();
+    if (this.currentAssistantMessageIndex !== null) {
+      this.dispatchStreamEvent({ type: "message_stop", content: "" });
+    }
+    this.resetTurnOutputState();
     this.codexQueue = [];
     this.clearWatchdog();
     this.setStreaming(false);
@@ -1247,6 +1345,9 @@ export class ChatSession {
     const resolve = this.turnResolve;
     let result: { text: string; toolCalls: ToolCall[] } | null = null;
     if (resolve) {
+      if (this.currentAssistantMessageIndex !== null) {
+        this.dispatchStreamEvent({ type: "message_stop", content: "" });
+      }
       // Resumed turn that produced nothing → the session is almost certainly
       // expired/missing. Drop the id so the next turn starts fresh instead of
       // re-resuming a dead session and staying silent.
@@ -1255,24 +1356,37 @@ export class ChatSession {
       }
       result = { text: this.turnResponseText, toolCalls: [...this.turnToolCalls] };
 
-      if (this.turnResponseText.trim()) {
+      const storedMessages = this.turnAssistantMessages
+        .map((content) => (this.agent.memory ? stripRememberTags(content) : content))
+        .filter((content) => content.trim().length > 0);
+      const messageIds: string[] = [];
+      for (const [index, content] of storedMessages.entries()) {
+        const id = newMessageId();
+        messageIds.push(id);
         this.messages.push({
-          id: newMessageId(),
+          id,
           role: "assistant",
-          content: this.turnResponseText,
+          content,
           timestamp: new Date().toISOString(),
-          toolCalls: this.turnToolCalls.length > 0 ? [...this.turnToolCalls] : undefined,
+          toolCalls:
+            index === storedMessages.length - 1 && this.turnToolCalls.length > 0
+              ? [...this.turnToolCalls]
+              : undefined,
         });
       }
+      this.activeOnEvent?.({
+        type: "result",
+        content: "",
+        toolCalls: [...this.turnToolCalls],
+        messageIds,
+      });
     }
 
     // Reset streaming state unconditionally — a process closing between turns
     // (no pending resolve) must still drop the spinner, otherwise isStreaming
     // wedges at true with no process left to end the turn.
     this.pendingTurns = 0;
-    this.turnResponseText = "";
-    this.turnToolCalls = [];
-    this.partialTextBlockIndexes.clear();
+    this.resetTurnOutputState();
     this.clearWatchdog();
     this.setStreaming(false);
 
@@ -1328,9 +1442,7 @@ export class ChatSession {
         this.emitStats();
       }
       this.activeOnEvent = onEvent;
-      this.turnResponseText = "";
-      this.turnToolCalls = [];
-      this.partialTextBlockIndexes.clear();
+      this.resetTurnOutputState();
       this.pendingTurns = 1;
       this.setStreaming(true);
       this.armWatchdog();
@@ -1372,9 +1484,7 @@ export class ChatSession {
 
     // Set up turn tracking
     this.activeOnEvent = onEvent;
-    this.turnResponseText = "";
-    this.turnToolCalls = [];
-    this.partialTextBlockIndexes.clear();
+    this.resetTurnOutputState();
     this.pendingTurns = runningCompact ? 2 : 1;
     this.setStreaming(true);
     this.armWatchdog();
@@ -1593,9 +1703,10 @@ export class ChatSession {
     }
     this.isProcessAlive = false;
     this.stdoutBuffer = "";
-    this.turnResponseText = "";
-    this.turnToolCalls = [];
-    this.partialTextBlockIndexes.clear();
+    if (this.currentAssistantMessageIndex !== null) {
+      this.dispatchStreamEvent({ type: "message_stop", content: "" });
+    }
+    this.resetTurnOutputState();
     this.pendingTurns = 0;
     this.codexQueue = [];
     this.clearWatchdog();
@@ -1779,7 +1890,7 @@ export class ChatSession {
   //  Stream event parsing
   // ═══════════════════════════════════════════════════════
 
-  private parseStreamEvent(event: Record<string, unknown>): StreamEvent | null {
+  private parseStreamEvents(event: Record<string, unknown>): StreamEvent[] {
     let type = event.type as string | undefined;
 
     // `--include-partial-messages` wraps raw SSE deltas in a `stream_event`
@@ -1787,53 +1898,136 @@ export class ChatSession {
     //
     if (type === "stream_event") {
       const inner = event.event as Record<string, unknown> | undefined;
-      if (!inner) return null;
+      if (!inner) return [];
       event = inner;
       type = inner.type as string | undefined;
     }
 
     if (type === "message_start") {
-      this.partialTextBlockIndexes.clear();
-      return null;
+      this.claudeContentBlocks.clear();
+      this.claudeMessageOpen = true;
+      return [{ type: "message_start", content: "" }];
+    }
+
+    if (type === "message_stop") {
+      if (!this.claudeMessageOpen) return [];
+      this.claudeMessageOpen = false;
+      this.claudeContentBlocks.clear();
+      return [{ type: "message_stop", content: "" }];
+    }
+
+    const beginImplicitMessage = (): StreamEvent[] => {
+      if (this.claudeMessageOpen) return [];
+      this.claudeContentBlocks.clear();
+      this.claudeMessageOpen = true;
+      return [{ type: "message_start", content: "" }];
+    };
+
+    if (type === "content_block_start") {
+      const out = beginImplicitMessage();
+      const index = typeof event.index === "number" ? event.index : 0;
+      const block = event.content_block as Record<string, unknown> | undefined;
+      const blockType = typeof block?.type === "string" ? block.type : "";
+      const initial =
+        blockType === "text" && typeof block?.text === "string"
+          ? block.text
+          : blockType === "thinking" && typeof block?.thinking === "string"
+            ? block.thinking
+            : "";
+      this.claudeContentBlocks.set(index, { type: blockType, text: initial });
+      if (initial) {
+        out.push({ type: blockType === "thinking" ? "thinking" : "text", content: initial });
+      }
+      return out;
     }
 
     if (type === "assistant") {
+      const wasImplicit = !this.claudeMessageOpen;
+      const out = beginImplicitMessage();
       const msg = event.message as Record<string, unknown> | undefined;
       if (msg?.content && Array.isArray(msg.content)) {
-        const streamedBlocks = new Set(this.partialTextBlockIndexes);
-        this.partialTextBlockIndexes.clear();
-        let toolEvent: StreamEvent | null = null;
-        const textParts: string[] = [];
-        for (const [index, block] of (msg.content as Array<Record<string, unknown>>).entries()) {
-          if (block.type === "text" && typeof block.text === "string") {
-            if (!streamedBlocks.has(index)) textParts.push(block.text);
+        const content = msg.content as Array<Record<string, unknown>>;
+        // Terminal snapshots may remove thinking blocks and renumber text
+        // from provider index 1 to snapshot position 0. Compare the complete
+        // content for each phase rather than comparing those unrelated indexes.
+        for (const phase of ["thinking", "text"] as const) {
+          const snapshot = content
+            .filter((block) => block.type === phase)
+            .map((block) =>
+              phase === "thinking"
+                ? (typeof block.thinking === "string" ? block.thinking : "")
+                : (typeof block.text === "string" ? block.text : ""),
+            )
+            .join("");
+          if (!snapshot) continue;
+          const streamed = [...this.claudeContentBlocks.entries()]
+            .sort(([a], [b]) => a - b)
+            .filter(([, block]) => block.type === phase)
+            .map(([, block]) => block.text)
+            .join("");
+          if (snapshot === streamed) continue;
+          if (snapshot.startsWith(streamed)) {
+            out.push({ type: phase, content: snapshot.slice(streamed.length) });
+          } else {
+            out.push({ type: phase, content: snapshot, replace: true });
           }
-          if (!toolEvent && block.type === "tool_use") {
+          const phaseIndexes = [...this.claudeContentBlocks.entries()]
+            .filter(([, block]) => block.type === phase)
+            .map(([index]) => index)
+            .sort((a, b) => a - b);
+          if (phaseIndexes.length > 0) {
+            this.claudeContentBlocks.set(phaseIndexes[0]!, { type: phase, text: snapshot });
+            for (const index of phaseIndexes.slice(1)) this.claudeContentBlocks.delete(index);
+          } else {
+            const nextIndex = Math.max(-1, ...this.claudeContentBlocks.keys()) + 1;
+            this.claudeContentBlocks.set(nextIndex, { type: phase, text: snapshot });
+          }
+        }
+
+        for (const block of content) {
+          if (block.type === "tool_use") {
             const name = String(block.name ?? "tool");
             const input = block.input as Record<string, unknown> | undefined;
             const cmd = input?.command ?? input?.content ?? input?.file_path ?? input?.path ?? "";
-            toolEvent = {
+            out.push({
               type: "tool_use",
               content: cmd ? String(cmd).slice(0, 150) : "",
               toolName: name,
-            };
+            });
           }
         }
-        if (textParts.length > 0) return { type: "text", content: textParts.join("") };
-        return toolEvent;
       }
+      // Without partial-message lifecycle events, `assistant` is itself a
+      // complete provider message. Emit both boundaries around the snapshot.
+      if (wasImplicit) {
+        this.claudeMessageOpen = false;
+        this.claudeContentBlocks.clear();
+        out.push({ type: "message_stop", content: "" });
+      }
+      return out;
     }
 
-    // content_block_delta — granular text streaming
+    // content_block_delta — granular thinking/final text streaming.
     if (type === "content_block_delta") {
+      const out = beginImplicitMessage();
       const delta = event.delta as Record<string, unknown> | undefined;
-      if (delta?.type === "text_delta" && typeof delta.text === "string") {
-        const index = typeof event.index === "number" ? event.index : 0;
-        this.partialTextBlockIndexes.add(index);
-        return { type: "text", content: delta.text };
+      const index = typeof event.index === "number" ? event.index : 0;
+      if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+        const block = this.claudeContentBlocks.get(index) ?? { type: "thinking", text: "" };
+        block.type = "thinking";
+        block.text += delta.thinking;
+        this.claudeContentBlocks.set(index, block);
+        out.push({ type: "thinking", content: delta.thinking });
+      } else if (delta?.type === "text_delta" && typeof delta.text === "string") {
+        const block = this.claudeContentBlocks.get(index) ?? { type: "text", text: "" };
+        block.type = "text";
+        block.text += delta.text;
+        this.claudeContentBlocks.set(index, block);
+        out.push({ type: "text", content: delta.text });
       }
+      return out;
     }
 
-    return null;
+    return [];
   }
 }

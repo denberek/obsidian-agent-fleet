@@ -776,11 +776,16 @@ describe("ChatSession.refreshAgent — picks up post-construction permission edi
   });
 });
 
-describe("ChatSession.parseStreamEvent — partial-message reconciliation", () => {
+describe("ChatSession.parseStreamEvents — message lifecycle and snapshot reconciliation", () => {
   function parse(session: ChatSession, event: Record<string, unknown>) {
     return (session as unknown as {
-      parseStreamEvent(ev: Record<string, unknown>): { type: string; content: string; toolName?: string } | null;
-    }).parseStreamEvent(event);
+      parseStreamEvents(ev: Record<string, unknown>): Array<{
+        type: string;
+        content: string;
+        toolName?: string;
+        replace?: boolean;
+      }>;
+    }).parseStreamEvents(event);
   }
 
   function newSession(): ChatSession {
@@ -793,7 +798,11 @@ describe("ChatSession.parseStreamEvent — partial-message reconciliation", () =
       type: "assistant",
       message: { content: [{ type: "text", text: "hello" }] },
     });
-    expect(out).toEqual({ type: "text", content: "hello" });
+    expect(out).toEqual([
+      { type: "message_start", content: "" },
+      { type: "text", content: "hello" },
+      { type: "message_stop", content: "" },
+    ]);
   });
 
   it("unwraps stream_event and emits the inner text delta", () => {
@@ -802,7 +811,10 @@ describe("ChatSession.parseStreamEvent — partial-message reconciliation", () =
       type: "stream_event",
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "par" } },
     });
-    expect(out).toEqual({ type: "text", content: "par" });
+    expect(out).toEqual([
+      { type: "message_start", content: "" },
+      { type: "text", content: "par" },
+    ]);
   });
 
   it("does not render the reply twice when deltas already streamed it", () => {
@@ -810,31 +822,39 @@ describe("ChatSession.parseStreamEvent — partial-message reconciliation", () =
     expect(parse(session, {
       type: "stream_event",
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } },
-    })).toEqual({ type: "text", content: "hel" });
+    })).toEqual([
+      { type: "message_start", content: "" },
+      { type: "text", content: "hel" },
+    ]);
     expect(parse(session, {
       type: "stream_event",
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } },
-    })).toEqual({ type: "text", content: "lo" });
+    })).toEqual([{ type: "text", content: "lo" }]);
 
     // The terminal assistant event repeats the whole message — swallow it.
     expect(parse(session, {
       type: "assistant",
       message: { content: [{ type: "text", text: "hello" }] },
-    })).toBeNull();
+    })).toEqual([]);
   });
 
-  it("resumes emitting for the next message in the same turn", () => {
+  it("uses provider lifecycle events to separate messages in the same turn", () => {
     const session = newSession();
     parse(session, {
       type: "stream_event",
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "one" } },
     });
     parse(session, { type: "assistant", message: { content: [{ type: "text", text: "one" }] } });
-    // Second message streamed no deltas — it must render normally.
+    parse(session, { type: "stream_event", event: { type: "message_stop" } });
+    // Second snapshot-only message must have its own boundaries.
     expect(parse(session, {
       type: "assistant",
       message: { content: [{ type: "text", text: "two" }] },
-    })).toEqual({ type: "text", content: "two" });
+    })).toEqual([
+      { type: "message_start", content: "" },
+      { type: "text", content: "two" },
+      { type: "message_stop", content: "" },
+    ]);
   });
 
   it("still reports a tool_use that shares a message with suppressed text", () => {
@@ -852,7 +872,7 @@ describe("ChatSession.parseStreamEvent — partial-message reconciliation", () =
         ],
       },
     });
-    expect(out).toEqual({ type: "tool_use", content: "ls", toolName: "Bash" });
+    expect(out).toEqual([{ type: "tool_use", content: "ls", toolName: "Bash" }]);
   });
 
   it("suppresses only streamed text blocks, not a later unstreamed block", () => {
@@ -869,26 +889,129 @@ describe("ChatSession.parseStreamEvent — partial-message reconciliation", () =
           { type: "text", text: "second" },
         ],
       },
-    })).toEqual({ type: "text", content: "second" });
+    })).toEqual([{ type: "text", content: "second" }]);
   });
 
-  it("resets partial block tracking at message_start", () => {
+  it("does not duplicate text when a thinking block shifts text from index 1 to snapshot position 0", () => {
     const session = newSession();
-    parse(session, {
-      type: "stream_event",
-      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "old" } },
-    });
     expect(parse(session, {
       type: "stream_event",
       event: { type: "message_start" },
-    })).toBeNull();
+    })).toEqual([{ type: "message_start", content: "" }]);
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+    })).toEqual([]);
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "draft" } },
+    })).toEqual([{ type: "thinking", content: "draft" }]);
     expect(parse(session, {
       type: "assistant",
-      message: { content: [{ type: "text", text: "new" }] },
-    })).toEqual({ type: "text", content: "new" });
+      message: { content: [{ type: "thinking", thinking: "draft" }] },
+    })).toEqual([]);
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+    });
+    expect(parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "OK" } },
+    })).toEqual([{ type: "text", content: "OK" }]);
+    // Claude omits thinking in this snapshot, so the text is now array
+    // position 0. It is still the already-streamed provider block at index 1.
+    expect(parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "OK" }] },
+    })).toEqual([]);
+  });
+
+  it("keeps thinking ephemeral and accumulates the live Claude trace exactly once", () => {
+    const session = newSession();
+    type Internals = {
+      turnResponseText: string;
+      turnAssistantMessages: string[];
+      activeOnEvent: ((event: { type: string; content: string }) => void) | null;
+      parseStreamEvents(event: Record<string, unknown>): Array<{ type: string; content: string }>;
+      dispatchStreamEvent(event: { type: string; content: string }): void;
+    };
+    const s = session as unknown as Internals;
+    const forwarded: Array<{ type: string; content: string }> = [];
+    s.activeOnEvent = (event) => forwarded.push(event);
+    const trace = [
+      { type: "stream_event", event: { type: "message_start" } },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "draft" } },
+      },
+      { type: "assistant", message: { content: [{ type: "thinking", thinking: "draft" }] } },
+      {
+        type: "stream_event",
+        event: { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "OK" } },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: "OK" }] } },
+      { type: "stream_event", event: { type: "message_stop" } },
+    ];
+    for (const event of trace) {
+      for (const parsed of s.parseStreamEvents(event)) s.dispatchStreamEvent(parsed);
+    }
+
+    expect(s.turnResponseText).toBe("OK");
+    expect(s.turnAssistantMessages).toEqual(["OK"]);
+    expect(forwarded.filter((event) => event.type === "thinking").map((event) => event.content)).toEqual(["draft"]);
+    expect(forwarded.filter((event) => event.type === "text").map((event) => event.content)).toEqual(["OK"]);
+  });
+
+  it("replaces partial text when the terminal snapshot corrects it", () => {
+    const session = newSession();
+    parse(session, {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "helo" } },
+    });
+    expect(parse(session, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello" }] },
+    })).toEqual([{ type: "text", content: "hello", replace: true }]);
   });
 
   it("ignores a stream_event with no inner event", () => {
-    expect(parse(newSession(), { type: "stream_event" })).toBeNull();
+    expect(parse(newSession(), { type: "stream_event" })).toEqual([]);
+  });
+
+  it("persists each provider message as a separate assistant history item", () => {
+    const session = newSession();
+    type Internals = {
+      pendingTurns: number;
+      activeOnEvent: ((event: { type: string; messageIds?: string[] }) => void) | null;
+      dispatchStreamEvent(event: { type: string; content: string }): void;
+      handleTurnEnd(): void;
+    };
+    const s = session as unknown as Internals;
+    const events: Array<{ type: string; messageIds?: string[] }> = [];
+    // Leave one pending turn so handleTurnEnd does not try to persist through
+    // this intentionally pathless unit-test session.
+    s.pendingTurns = 2;
+    s.activeOnEvent = (event) => events.push(event);
+    for (const content of ["first", "second"]) {
+      s.dispatchStreamEvent({ type: "message_start", content: "" });
+      s.dispatchStreamEvent({ type: "text", content });
+      s.dispatchStreamEvent({ type: "message_stop", content: "" });
+    }
+    s.handleTurnEnd();
+
+    expect(session.messages.filter((message) => message.role === "assistant").map((message) => message.content)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(events.at(-1)?.type).toBe("result");
+    expect(events.at(-1)?.messageIds).toHaveLength(2);
   });
 });

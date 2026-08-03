@@ -46,4 +46,3 @@ export function normalizeOutputSchema(schema: string): string {
 export function formatStructuredOutput(value: JsonValue): string {
   return JSON.stringify(value, null, 2);
 }
-
