@@ -709,9 +709,11 @@ export class FleetRuntime {
       // `finalResult` carries the consolidation outcome.
       const runStatus: RunStatus = result.limitHit
         ? "stopped"
-        : result.exitCode === 0 || result.exitCode === null
-          ? "success"
-          : "failure";
+        : result.errors?.length
+          ? "failure"
+          : result.exitCode === 0 || result.exitCode === null
+            ? "success"
+            : "failure";
       const run: RunLogData = {
         runId: result.runId,
         agent: agent.name,
@@ -994,7 +996,12 @@ export class FleetRuntime {
   }
 
   private resolveRunStatus(
-    result: { exitCode: number | null; timedOut: boolean; limitHit?: "budget" | "turns" },
+    result: {
+      exitCode: number | null;
+      timedOut: boolean;
+      limitHit?: "budget" | "turns";
+      errors?: string[];
+    },
     approvals?: ApprovalRecord[],
   ): RunStatus {
     if (approvals?.length) {
@@ -1005,6 +1012,11 @@ export class FleetRuntime {
     }
     if (result.limitHit) {
       return "stopped";
+    }
+    // In-band provider errors fail the run even on a clean exit — Pi can
+    // stream text, then end on stopReason "error" while the CLI exits 0.
+    if (result.errors?.length) {
+      return "failure";
     }
     return result.exitCode === 0 ? "success" : "failure";
   }

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "fs";
-import { readdir, rm, stat } from "fs/promises";
+import { readdir, readFile, rm, stat } from "fs/promises";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 import {
@@ -25,15 +25,18 @@ import { DiscordAdapter } from "./services/channels/discordAdapter";
 import type { ChannelAdapter } from "./services/channels/adapter";
 import type { ChannelConfig, ChannelCredentialEntry, FleetSettings } from "./types";
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
-import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, isAbsolutePath } from "./utils/platform";
+import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, resolvePiCliCandidates, isAbsolutePath } from "./utils/platform";
 import { normalizeAdapter } from "./adapters";
 import {
+  CLI_NPM_PACKAGES,
   cliVersionWarning,
   MIN_CLAUDE_CLI_VERSION,
   MIN_CODEX_CLI_VERSION,
+  MIN_PI_CLI_VERSION,
   parseCliVersion,
 } from "./utils/cliVersion";
 import { cleanupCodexOverlays, resetCodexPermissionCaches } from "./adapters/codexPermissions";
+import { PI_OVERLAY_PID_FILE, piOverlayRoot } from "./services/mcpProjection";
 import { SidebarView } from "./views/sidebarView";
 import { FleetDashboardView } from "./views/dashboardView";
 import { AgentChatView } from "./views/agentChatView";
@@ -115,9 +118,10 @@ export default class AgentFleetPlugin extends Plugin {
     // catch-up task runs. FleetRuntime.initialize() reloads after migrations;
     // the second pass is intentional and keeps its normal initialization API.
     await this.repository.loadAll();
-    // Codex path/version resolution is conditional — only agents with
-    // `adapter: codex` pay the probe cost.
+    // Codex/Pi path/version resolution is conditional — only agents that use
+    // the adapter pay the probe cost.
     await this.maybeResolveCodexCliPath(true);
+    await this.maybeResolvePiCliPath(true);
     await this.runtime.initialize();
 
     this.addRibbonIcon("bot", "Agent Fleet Dashboard", () => void this.activateDashboardView());
@@ -332,6 +336,7 @@ export default class AgentFleetPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     this.settings.claudeCliPath = await this.resolveClaudeCliPath(this.settings.claudeCliPath);
     await this.maybeResolveCodexCliPath();
+    await this.maybeResolvePiCliPath();
     // The codex path may have changed — drop cached execpolicy support/validation
     // so the next run re-probes against the new binary.
     resetCodexPermissionCaches();
@@ -464,31 +469,78 @@ export default class AgentFleetPlugin extends Plugin {
     return await this.verifyCliBinary(cliPath, "Codex", showNotice, showSuccessNotice);
   }
 
+  async verifyPiCli(showNotice = true, showSuccessNotice = showNotice): Promise<boolean> {
+    const cliPath = await this.resolveCliPathFrom(
+      resolvePiCliCandidates(this.settings.piCliPath),
+      this.settings.piCliPath,
+    );
+    this.settings.piCliPath = cliPath;
+    return await this.verifyCliBinary(cliPath, "Pi", showNotice, showSuccessNotice);
+  }
+
+  /** Per-label version bookkeeping for {@link verifyCliBinary}. */
+  private cliVersionSlot(label: "Claude" | "Codex" | "Pi"): {
+    get: () => string | null;
+    set: (version: string | null) => void;
+    minimum: string;
+    pkg: string;
+  } {
+    switch (label) {
+      case "Claude":
+        return {
+          get: () => this.settings.claudeCliVersion ?? null,
+          set: (v) => {
+            if (v) this.settings.claudeCliVersion = v;
+            else delete this.settings.claudeCliVersion;
+          },
+          minimum: MIN_CLAUDE_CLI_VERSION,
+          pkg: CLI_NPM_PACKAGES.Claude,
+        };
+      case "Codex":
+        return {
+          get: () => this.settings.codexCliVersion ?? null,
+          set: (v) => {
+            if (v) this.settings.codexCliVersion = v;
+            else delete this.settings.codexCliVersion;
+          },
+          minimum: MIN_CODEX_CLI_VERSION,
+          pkg: CLI_NPM_PACKAGES.Codex,
+        };
+      case "Pi":
+        return {
+          get: () => this.settings.piCliVersion ?? null,
+          set: (v) => {
+            if (v) this.settings.piCliVersion = v;
+            else delete this.settings.piCliVersion;
+          },
+          minimum: MIN_PI_CLI_VERSION,
+          pkg: CLI_NPM_PACKAGES.Pi,
+        };
+    }
+  }
+
   private async verifyCliBinary(
     cliPath: string,
-    label: "Claude" | "Codex",
+    label: "Claude" | "Codex" | "Pi",
     showNotice: boolean,
     showSuccessNotice = showNotice,
   ): Promise<boolean> {
+    const slot = this.cliVersionSlot(label);
     // Skip re-spawning `--version` if this exact binary verified successfully
     // recently — settings edits would otherwise probe on every save.
     const cacheKey = `${label}:${cliPath}`;
     const verifiedAt = this.cliVerifiedAt.get(cacheKey);
     if (verifiedAt !== undefined && Date.now() - verifiedAt < AgentFleetPlugin.CLI_VERIFY_TTL_MS) {
       if (showNotice) {
-        const version = label === "Claude" ? this.settings.claudeCliVersion ?? null : this.settings.codexCliVersion ?? null;
-        const minimum = label === "Claude" ? MIN_CLAUDE_CLI_VERSION : MIN_CODEX_CLI_VERSION;
-        const warning = cliVersionWarning(label, version, minimum);
+        const version = slot.get();
+        const warning = cliVersionWarning(label, version, slot.minimum);
         if (warning) new Notice(warning, 10000);
         else if (showSuccessNotice) new Notice(`${label} CLI ${version ?? "available"}.`, 5000);
       }
       return true;
     }
 
-    const installHint =
-      label === "Claude"
-        ? "install with: npm install -g @anthropic-ai/claude-code"
-        : "install with: npm install -g @openai/codex";
+    const installHint = `install with: npm install -g ${slot.pkg}`;
     const failureMessage =
       `${label} CLI verification failed (path: ${cliPath || "not set"}). ` +
       `Fix the ${label} CLI Path in settings, or ${installHint}`;
@@ -512,21 +564,13 @@ export default class AgentFleetPlugin extends Plugin {
           // The probe already ran, so reading the version off it is free.
           // Some builds print to stderr instead — check both.
           const version = parseCliVersion(stdout) ?? parseCliVersion(stderr);
-          if (label === "Claude") {
-            if (version) this.settings.claudeCliVersion = version;
-            else delete this.settings.claudeCliVersion;
-          } else if (version) {
-            this.settings.codexCliVersion = version;
-          } else {
-            delete this.settings.codexCliVersion;
-          }
+          slot.set(version);
           // Persist only the detection result. Clearing a stale value when a
           // future CLI prints an unparseable version is as important as caching
           // a known one: unknown versions deliberately pass feature gates.
           // Calling saveSettings() here would rebuild the runtime mid-startup.
           void this.saveData(this.settings);
-          const minimum = label === "Claude" ? MIN_CLAUDE_CLI_VERSION : MIN_CODEX_CLI_VERSION;
-          const warning = cliVersionWarning(label, version, minimum);
+          const warning = cliVersionWarning(label, version, slot.minimum);
           if (warning) {
             console.warn(`Agent Fleet: ${warning}`);
             if (showNotice) new Notice(warning, 10000);
@@ -554,13 +598,19 @@ export default class AgentFleetPlugin extends Plugin {
    * MCP projection files under `<vaultBase>/.claude/` — `af-mcp.<token>.json`
    * and `af-mcp-<slug>.<token>.cjs` (mcpProjection.ts) plus
    * `af-remember-mcp.<token>.{json,cjs}` (rememberMcpServer.ts) — older than
-   * 24h, and per-agent CODEX_HOME overlay dirs under the OS temp dir
-   * (codexPermissions.ts OVERLAY_ROOT) older than 7 days. Conservative: only
-   * names matching the plugin's own prefixes are touched.
+   * 24h, per-agent CODEX_HOME overlay dirs under the OS temp dir
+   * (codexPermissions.ts OVERLAY_ROOT) older than 7 days, and per-run Pi
+   * overlay/extension dirs older than 7 days whose owning process is gone.
+   * Conservative: only names matching the plugin's own prefixes are touched.
    */
   private async cleanupStaleTempFiles(): Promise<void> {
     const now = Date.now();
-    const sweep = async (dir: string, matches: (name: string) => boolean, maxAgeMs: number) => {
+    const sweep = async (
+      dir: string,
+      matches: (name: string) => boolean,
+      maxAgeMs: number,
+      isLive?: (fullPath: string) => Promise<boolean>,
+    ) => {
       let entries: string[];
       try {
         entries = await readdir(dir);
@@ -573,6 +623,7 @@ export default class AgentFleetPlugin extends Plugin {
         try {
           const info = await stat(fullPath);
           if (now - info.mtimeMs > maxAgeMs) {
+            if (isLive && (await isLive(fullPath))) continue;
             await rm(fullPath, { recursive: true, force: true });
           }
         } catch {
@@ -592,6 +643,48 @@ export default class AgentFleetPlugin extends Plugin {
     // Overlays are keyed by agent and rebuilt on demand, so removing old ones
     // is safe even if the agent still exists.
     await sweep(join(tmpdir(), "agent-fleet-codex"), () => true, 7 * 24 * 60 * 60 * 1000);
+    // Pi MCP overlays are NOT rebuildable — one holds live symlinks into
+    // ~/.pi/agent for the whole life of a chat session, its mtime frozen at
+    // spawn, and it may belong to a different Obsidian instance on this
+    // machine. Age alone is not proof of death: each overlay carries the
+    // owning process's pid, and anything whose owner is still running is
+    // skipped no matter how old it is.
+    await sweep(
+      piOverlayRoot(),
+      () => true,
+      7 * 24 * 60 * 60 * 1000,
+      (fullPath) => this.isTempDirOwnerAlive(fullPath),
+    );
+    // Legacy pre-namespace Pi dirs in the shared tmpdir, plus the generated
+    // extension dirs piExtensions.ts still creates there. Normally removed by
+    // their cleanup handles; the sweep catches force-quit leftovers. Kept at
+    // the conservative 7-day window because a live chat session's dirs sit
+    // here with frozen mtimes too.
+    await sweep(
+      tmpdir(),
+      (name) => /^agent-fleet-pi-(mcp|ext)-/.test(name),
+      7 * 24 * 60 * 60 * 1000,
+    );
+  }
+
+  /** True when a swept temp dir's pid marker names a process that is still
+   *  running (possibly another Obsidian instance). Unreadable/absent markers
+   *  and dead pids report false; a pid we can't signal (EPERM) reports true —
+   *  when in doubt, don't delete. */
+  private async isTempDirOwnerAlive(dirPath: string): Promise<boolean> {
+    let pid: number;
+    try {
+      pid = Number.parseInt((await readFile(join(dirPath, PI_OVERLAY_PID_FILE), "utf-8")).trim(), 10);
+    } catch {
+      return false;
+    }
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
   }
 
   async openPath(path: string): Promise<void> {
@@ -842,6 +935,25 @@ export default class AgentFleetPlugin extends Plugin {
     );
     if (verifyVersion) {
       await this.verifyCliBinary(this.settings.codexCliPath, "Codex", true, false);
+    }
+  }
+
+  /** Resolve the Pi CLI path, but only when some agent actually uses the pi
+   *  adapter — same conditional-probe rationale as Codex. `verifyPiCli`
+   *  resolves unconditionally. */
+  private async maybeResolvePiCliPath(verifyVersion = false): Promise<void> {
+    const runtimeAgents = this.runtime?.getSnapshot().agents ?? [];
+    const agents = runtimeAgents.length > 0
+      ? runtimeAgents
+      : (this.repository?.getSnapshot().agents ?? []);
+    const hasPiAgent = agents.some((a) => normalizeAdapter(a.adapter) === "pi");
+    if (!hasPiAgent) return;
+    this.settings.piCliPath = await this.resolveCliPathFrom(
+      resolvePiCliCandidates(this.settings.piCliPath),
+      this.settings.piCliPath,
+    );
+    if (verifyVersion) {
+      await this.verifyCliBinary(this.settings.piCliPath, "Pi", true, false);
     }
   }
 

@@ -12,7 +12,7 @@ export type { McpServerError };
 
 /** Canonical adapter ids. Anything unknown in agent frontmatter normalizes
  *  to "claude-code" (see `normalizeAdapter`). */
-export type AdapterId = "claude-code" | "codex";
+export type AdapterId = "claude-code" | "codex" | "pi";
 
 export interface ExecBuildOptions {
   prompt: string;
@@ -73,6 +73,10 @@ export interface ExecParseResult {
   /** Provider session/thread id parsed from the output, when the adapter
    *  emits one (Codex: thread.started). Unused by one-shot task runs. */
   sessionId?: string;
+  /** Provider-reported errors that ended the run. When set, the run FAILED
+   *  even if the CLI exited 0 — Pi can stream normal text and then report the
+   *  failure in-band (stopReason "error") while still exiting cleanly. */
+  errors?: string[];
   /** Set when a configured run limit ended the run rather than an error. */
   limitHit?: RunLimitKind;
   /** MCP servers the CLI reported as unusable for this run, with the reason.

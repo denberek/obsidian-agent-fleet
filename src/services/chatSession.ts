@@ -31,6 +31,8 @@ import {
   parseCodexChatEvent,
   type CodexTurnParseState,
 } from "../adapters/codexAdapter";
+import { buildPiCommonArgs, warnDroppedRulesOnce } from "../adapters/piAdapter";
+import { writePiExtensions } from "../adapters/piExtensions";
 
 /** Generate a fresh message id (uuid v4). */
 function newMessageId(): string {
@@ -231,6 +233,27 @@ export class ChatSession {
   private codexPermState: PermissionSetupState | null = null;
 
   /** True when this session's agent runs on the Codex CLI adapter. */
+  // ── Pi (RPC mode: one persistent `pi --mode rpc` process per session) ──
+  /** Assistant-bubble bookkeeping for the Pi event stream. */
+  private piMessageOpen = false;
+  private piStderr = "";
+  /** Cleanup handle for the generated gate extension loaded into the live
+   *  process (`--extension`). Removed when the process dies. */
+  private piExtCleanup: (() => void) | null = null;
+  /** Per-turn usage accumulated across the turn's assistant message_end
+   *  events; ledgered + folded into stats at agent_end. */
+  private piTurnUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  /** Monotonic id source for RPC prompt commands, so a command rejection can
+   *  be correlated to the prompt that caused it ("turn-N" opens a turn,
+   *  "steer-N" folds into the running one, "follow-N" is a between-turn
+   *  inject). Without ids, a rejected steer would settle the ACTIVE turn. */
+  private piCommandSeq = 0;
+  private warnedPiUiRequest = false;
+
+  private get isPi(): boolean {
+    return normalizeAdapter(this.agent.adapter) === "pi";
+  }
+
   private get isCodex(): boolean {
     return normalizeAdapter(this.agent.adapter) === "codex";
   }
@@ -303,9 +326,15 @@ export class ChatSession {
         content: "",
         errorMessage: `no response from the CLI for ${Math.round(watchdogMs / 60000)} minutes — giving up`,
       });
-      const err = new Error("Watchdog timeout");
-      this.handleProcessError(err);
+      // Detach + kill BEFORE handleProcessError: it nulls this.process, so a
+      // kill after it would no-op — orphaning the hung process with its close
+      // handler still attached, ready to tear down the NEXT spawn's state
+      // (extension cleanup, MCP overlay, turn settlement) when it finally
+      // exits. Especially bad for Pi, where the replacement would share the
+      // orphan's --session-id.
+      this.detachProcessListeners();
       try { this.process?.kill(); } catch { /* ignore */ }
+      this.handleProcessError(new Error("Watchdog timeout"));
     }, watchdogMs);
   }
   private clearWatchdog(): void {
@@ -786,17 +815,134 @@ export class ChatSession {
     this.lastResultCostUsd = 0;
 
     // Create bound handlers so we can remove them later (avoids listener leaks
-    // when the process is killed and a new one is spawned).
+    // when the process is killed and a new one is spawned). Each handler
+    // checks that `proc` is still the CURRENT process: if a process gets
+    // abandoned without a detach (any path that nulls this.process first),
+    // its late events must not tear down a replacement process's state.
     this.processListeners = {
-      onStdout: (chunk: Buffer | string) => this.handleStdout(chunk),
+      onStdout: (chunk: Buffer | string) => {
+        if (this.process === proc) this.handleStdout(chunk);
+      },
       onStderr: () => { /* ignore stderr */ },
-      onError: (err: Error) => this.handleProcessError(err),
-      onClose: () => this.handleProcessClose(),
+      onError: (err: Error) => {
+        if (this.process === proc) this.handleProcessError(err);
+      },
+      onClose: () => {
+        if (this.process === proc) this.handleProcessClose();
+      },
     };
     proc.stdout!.on("data", this.processListeners.onStdout);
     proc.stderr!.on("data", this.processListeners.onStderr);
     proc.on("error", this.processListeners.onError);
     proc.on("close", this.processListeners.onClose);
+  }
+
+  /**
+   * Spawn (or reuse) the persistent `pi --mode rpc` process for this session.
+   *
+   * Unlike Claude, Pi doesn't hand us a session id from the stream in RPC
+   * mode — instead `--session-id <id>` creates-or-resumes an exact id, so we
+   * mint a UUID up front and keep it in the same slot Claude/Codex use.
+   * Resume-failure recovery is unnecessary: a missing id is simply created
+   * fresh by the CLI rather than erroring.
+   */
+  private async ensurePiProcess(): Promise<void> {
+    if (this.process && this.isProcessAlive) return;
+
+    this.refreshAgent();
+
+    if (!this.claudeSessionId) {
+      this.claudeSessionId = randomUUID();
+    } else {
+      // Resuming an existing Pi session — the base prompt is already in its
+      // history.
+      this.basePromptSent = true;
+    }
+
+    const args = ["--mode", "rpc", "--no-approve", "--session-id", this.claudeSessionId];
+
+    const resolved = resolveModel(null, this.agent, this.settings);
+    args.push(
+      ...buildPiCommonArgs(
+        shouldPassModelFlag(resolved.value) ? resolved.value : "",
+        this.agent.effort ?? "",
+        this.agent.permissionMode,
+      ),
+    );
+
+    // Load the generated bash deny-gate for the lifetime of this process so
+    // permissionRules apply during chat, matching the Claude settings file and
+    // the Codex execpolicy overlay. (No output schema in chat.) Rules the
+    // gate can't express get the same one-time warning as one-shot runs — a
+    // chat-only agent must not silently lose its deny list.
+    const generated = writePiExtensions({ agent: this.agent });
+    this.piExtCleanup = generated?.cleanup ?? null;
+    if (generated && generated.droppedRules.length > 0) {
+      warnDroppedRulesOnce(this.agent.name, generated.droppedRules);
+    }
+    for (const path of generated?.paths ?? []) {
+      args.push("--extension", path);
+    }
+
+    const cwd = this.agent.cwd?.trim() ? this.agent.cwd : (this.repository.getVaultBasePath() ?? ".");
+
+    // Project the fleet MCP registry (+ the `remember` capture tool) into this
+    // process for its lifetime — for Pi that's a PI_CODING_AGENT_DIR overlay
+    // env, no argv.
+    const mcp = this.buildMcpProjection(cwd);
+    args.push(...mcp.args);
+
+    const proc = spawnCli(this.settings.piCliPath, args, {
+      cwd,
+      env: {
+        ...process.env,
+        AWS_REGION: this.settings.awsRegion,
+        ...mcp.env,
+      },
+    });
+
+    this.process = proc;
+    this.isProcessAlive = true;
+    this.stdoutBuffer = "";
+    this.piStderr = "";
+
+    // Stale-process guard — see the Claude spawn site for rationale.
+    this.processListeners = {
+      onStdout: (chunk: Buffer | string) => {
+        if (this.process === proc) this.handleStdout(chunk);
+      },
+      onStderr: (chunk: Buffer | string) => {
+        if (this.process !== proc) return;
+        this.piStderr += chunk.toString();
+        if (this.piStderr.length > 64_000) this.piStderr = this.piStderr.slice(-32_000);
+      },
+      onError: (err: Error) => {
+        if (this.process === proc) this.handleProcessError(err);
+      },
+      onClose: () => {
+        if (this.process === proc) this.handlePiProcessClose();
+      },
+    };
+    proc.stdout!.on("data", this.processListeners.onStdout);
+    proc.stderr!.on("data", this.processListeners.onStderr);
+    proc.on("error", this.processListeners.onError);
+    proc.on("close", this.processListeners.onClose);
+  }
+
+  /** The persistent Pi RPC process exited (expected on hibernate/abort — those
+   *  detach first — so reaching here means it died underneath us). */
+  private handlePiProcessClose(): void {
+    this.piExtCleanup?.();
+    this.piExtCleanup = null;
+    if (this.pendingTurns > 0 && !this.turnResponseText.trim()) {
+      const detail = this.piStderr.trim().slice(-500);
+      this.activeOnEvent?.({
+        type: "error",
+        content: "",
+        errorMessage: detail || "Pi process exited unexpectedly",
+      });
+    }
+    this.handleProcessClose();
   }
 
   /** Detach event listeners from the current process to prevent leaks. */
@@ -844,6 +990,10 @@ export class ChatSession {
   }
 
   private handleEvent(event: Record<string, unknown>): void {
+    if (this.isPi) {
+      this.handlePiEvent(event);
+      return;
+    }
     if (this.isCodex) {
       this.handleCodexEvent(event);
       return;
@@ -996,6 +1146,174 @@ export class ChatSession {
     this.turnToolCalls = [];
     this.claudeContentBlocks.clear();
     this.claudeMessageOpen = false;
+    this.piMessageOpen = false;
+  }
+
+  /**
+   * Translate Pi RPC events into the session's stream/stats flow. The process
+   * persists across turns; the turn boundary is the `agent_end` event.
+   *
+   * Event families handled:
+   *   - `response` — command acks; a failed `prompt` means no run started.
+   *   - `message_start`/`message_update`/`message_end` — assistant streaming
+   *     (text/thinking deltas, tool calls, per-message usage + model).
+   *   - `tool_execution_start` — live tool markers.
+   *   - `agent_end` — turn boundary: ledger usage, bump stats, settle.
+   *   - `extension_ui_request` — dialog requests from extensions. Chat has no
+   *     approval surface wired yet, so dialogs are answered `cancelled` to
+   *     keep headless determinism (our generated gate never asks — it blocks
+   *     directly).
+   */
+  private handlePiEvent(event: Record<string, unknown>): void {
+    const type = typeof event.type === "string" ? event.type : "";
+    const message = event.message as Record<string, unknown> | undefined;
+    const isAssistant = !!message && message.role === "assistant";
+
+    if (type === "response") {
+      if (event.success === false && event.command === "prompt") {
+        const detail = typeof event.error === "string" && event.error ? event.error : "prompt rejected";
+        const id = typeof event.id === "string" ? event.id : "";
+        this.activeOnEvent?.({ type: "error", content: "", errorMessage: detail });
+        if (id.startsWith("turn-")) {
+          // The turn-opening prompt never became an agent run — there will be
+          // no agent_end, so settle the turn here.
+          this.handleTurnEnd();
+        } else if (id.startsWith("follow-")) {
+          // A between-turn inject was rejected: its run won't happen, undo its
+          // pendingTurns increment. The active turn (if any) keeps streaming.
+          this.pendingTurns = Math.max(0, this.pendingTurns - 1);
+        }
+        // "steer-" rejections drop only the steered message — the running
+        // turn still ends with its own agent_end; nothing to settle.
+      }
+      return;
+    }
+
+    if (type === "extension_ui_request") {
+      const method = typeof event.method === "string" ? event.method : "";
+      const id = typeof event.id === "string" ? event.id : "";
+      if (id && ["select", "confirm", "input", "editor"].includes(method)) {
+        if (!this.warnedPiUiRequest) {
+          this.warnedPiUiRequest = true;
+          console.warn(
+            `Agent Fleet: a Pi extension asked for interactive input (${method}) during chat with ` +
+              `"${this.agent.name}"; answering "cancelled" — chat has no extension dialog surface.`,
+          );
+        }
+        try {
+          this.process?.stdin?.write(
+            JSON.stringify({ type: "extension_ui_response", id, cancelled: true }) + "\n",
+          );
+        } catch {
+          /* process going away — close handler settles the turn */
+        }
+      }
+      return;
+    }
+
+    if (type === "message_start" && isAssistant) {
+      if (!this.piMessageOpen) {
+        this.dispatchStreamEvent({ type: "message_start", content: "" });
+        this.piMessageOpen = true;
+      }
+      return;
+    }
+
+    if (type === "message_update") {
+      const inner = event.assistantMessageEvent as Record<string, unknown> | undefined;
+      if (!inner) return;
+      if (!this.piMessageOpen) {
+        this.dispatchStreamEvent({ type: "message_start", content: "" });
+        this.piMessageOpen = true;
+      }
+      if (inner.type === "text_delta" && typeof inner.delta === "string") {
+        this.dispatchStreamEvent({ type: "text", content: inner.delta });
+      } else if (inner.type === "thinking_delta" && typeof inner.delta === "string") {
+        this.dispatchStreamEvent({ type: "thinking", content: inner.delta });
+      }
+      return;
+    }
+
+    if (type === "tool_execution_start") {
+      const name = typeof event.toolName === "string" ? event.toolName : "tool";
+      const args = event.args as Record<string, unknown> | undefined;
+      const cmd =
+        (typeof args?.command === "string" && args.command) ||
+        (typeof args?.path === "string" && args.path) ||
+        "";
+      this.dispatchStreamEvent({
+        type: "tool_use",
+        content: cmd.slice(0, 150),
+        toolName: name,
+      });
+      return;
+    }
+
+    if (type === "message_end" && isAssistant) {
+      // Per-message usage + model. Usage is per assistant message (one API
+      // call), so summing across the turn's message_end events gives the turn
+      // total. Cost is Pi's catalog-priced estimate.
+      const usage = message.usage as Record<string, unknown> | undefined;
+      const num = (v: unknown) => (typeof v === "number" ? v : 0);
+      if (usage) {
+        this.piTurnUsage.input += num(usage.input);
+        this.piTurnUsage.output += num(usage.output);
+        this.piTurnUsage.cacheRead += num(usage.cacheRead);
+        this.piTurnUsage.cacheWrite += num(usage.cacheWrite);
+        const cost = usage.cost as Record<string, unknown> | undefined;
+        this.piTurnUsage.cost += num(cost?.total);
+        // Context proxy: the latest message's prompt-side tokens.
+        const context = num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite);
+        if (context > 0 && context !== this.stats.contextTokensUsed) {
+          this.stats.contextTokensUsed = context;
+          this.emitStats();
+        }
+      }
+      const model = typeof message.model === "string" ? message.model : "";
+      if (model && model !== this.stats.concreteModel) {
+        this.stats.concreteModel = model;
+        this.emitStats();
+      }
+      if (message.stopReason === "error") {
+        const detail =
+          typeof message.errorMessage === "string" && message.errorMessage
+            ? message.errorMessage
+            : "provider error";
+        this.activeOnEvent?.({ type: "error", content: "", errorMessage: detail });
+      }
+      if (this.piMessageOpen) {
+        this.dispatchStreamEvent({ type: "message_stop", content: "" });
+        this.piMessageOpen = false;
+      }
+      return;
+    }
+
+    if (type === "agent_end") {
+      const u = this.piTurnUsage;
+      const totalTokens = u.input + u.output + u.cacheRead + u.cacheWrite;
+      if (u.cost > 0) {
+        this.stats.costTotalUsd += u.cost;
+      }
+      this.stats.turnCount += 1;
+      this.emitStats();
+      if (this.usageRecorder && (totalTokens > 0 || u.cost > 0)) {
+        this.usageRecorder({
+          ts: new Date().toISOString(),
+          agent: this.agent.name,
+          source: this.channelName ? "channel" : "chat",
+          model: this.stats.concreteModel ?? this.agent.model,
+          inputTokens: u.input,
+          outputTokens: u.output,
+          cacheReadTokens: u.cacheRead,
+          cacheCreateTokens: u.cacheWrite,
+          totalTokens,
+          ...(u.cost > 0 ? { costUsd: u.cost } : {}),
+        });
+      }
+      this.piTurnUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      this.handleTurnEnd();
+      return;
+    }
   }
 
   /** Translate Codex JSONL events into the session's stream/stats flow.
@@ -1324,6 +1642,8 @@ export class ChatSession {
     this.settingsState = null;
     this.codexPermState?.restore();
     this.codexPermState = null;
+    this.piExtCleanup?.();
+    this.piExtCleanup = null;
     uninstallMcpProjection(this.mcpProjection);
     this.mcpProjection = null;
 
@@ -1434,6 +1754,40 @@ export class ChatSession {
       this.basePromptSent = true;
     }
 
+    // Pi: one persistent `--mode rpc` process; a turn is one `prompt` command
+    // settled by its `agent_end` event. Pi manages its own compaction.
+    if (this.isPi) {
+      if (this.stats.lastCompact) {
+        this.stats.lastCompact = undefined;
+        this.emitStats();
+      }
+      try {
+        await this.ensurePiProcess();
+      } catch (err) {
+        throw new Error(`Failed to start Pi process: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.activeOnEvent = onEvent;
+      this.resetTurnOutputState();
+      this.piTurnUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+      this.pendingTurns = 1;
+      this.setStreaming(true);
+      this.armWatchdog();
+      try {
+        this.process!.stdin!.write(
+          JSON.stringify({ id: `turn-${++this.piCommandSeq}`, type: "prompt", message: messageText }) + "\n",
+        );
+      } catch (err) {
+        this.pendingTurns = 0;
+        this.clearWatchdog();
+        this.setStreaming(false);
+        throw new Error(`Failed to write to Pi process stdin: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return new Promise((resolve, reject) => {
+        this.turnResolve = resolve;
+        this.turnReject = reject;
+      });
+    }
+
     // Codex: one process per turn, thread continuity via `exec resume`.
     // No compact handling — codex manages its own context.
     if (this.isCodex) {
@@ -1519,7 +1873,9 @@ export class ChatSession {
    *  so the next sendMessage prepends a compact command; call this from the
    *  UI's "Compact now" affordance. No-op for Codex agents (no /compact). */
   scheduleCompact(): void {
-    if (this.isCodex) return;
+    // Codex and Pi manage their own context; the /compact injection is a
+    // Claude-stream mechanism.
+    if (this.isCodex || this.isPi) return;
     this.needsCompactBeforeNextTurn = true;
   }
 
@@ -1587,13 +1943,20 @@ export class ChatSession {
     this.isProcessAlive = true;
     this.stdoutBuffer = "";
 
+    // Stale-process guard — see the Claude spawn site for rationale.
     this.processListeners = {
-      onStdout: (chunk: Buffer | string) => this.handleStdout(chunk),
-      onStderr: (chunk: Buffer | string) => {
-        this.codexStderr += chunk.toString();
+      onStdout: (chunk: Buffer | string) => {
+        if (this.process === proc) this.handleStdout(chunk);
       },
-      onError: (err: Error) => this.handleProcessError(err),
-      onClose: (code: number | null) => this.handleCodexProcessClose(code),
+      onStderr: (chunk: Buffer | string) => {
+        if (this.process === proc) this.codexStderr += chunk.toString();
+      },
+      onError: (err: Error) => {
+        if (this.process === proc) this.handleProcessError(err);
+      },
+      onClose: (code: number | null) => {
+        if (this.process === proc) this.handleCodexProcessClose(code);
+      },
     };
     proc.stdout!.on("data", this.processListeners.onStdout);
     proc.stderr!.on("data", this.processListeners.onStderr);
@@ -1653,6 +2016,36 @@ export class ChatSession {
    * Does NOT spawn a new process — writes to existing stdin.
    */
   injectMessage(text: string, fullText?: string, attachments?: string[]): void {
+    // Pi: the RPC protocol takes mid-turn prompts natively. While streaming,
+    // "steer" folds the message into the CURRENT run (delivered before the
+    // next LLM call, settled by the same agent_end) — pendingTurns unchanged.
+    // Between turns a plain prompt starts its own run, so it counts.
+    if (this.isPi) {
+      if (!this.process || !this.isProcessAlive) return;
+      this.messages.push({
+        id: newMessageId(),
+        role: "user",
+        content: text,
+        timestamp: new Date().toISOString(),
+        attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      });
+      const steering = this.isStreaming || this.pendingTurns > 0;
+      const command: Record<string, unknown> = {
+        id: `${steering ? "steer" : "follow"}-${++this.piCommandSeq}`,
+        type: "prompt",
+        message: fullText ?? text,
+      };
+      if (steering) command.streamingBehavior = "steer";
+      try {
+        this.process.stdin!.write(JSON.stringify(command) + "\n");
+      } catch (err) {
+        console.warn("Agent Fleet: Pi injectMessage stdin write failed", err);
+        return;
+      }
+      if (!steering) this.pendingTurns++;
+      return;
+    }
+
     // Codex can't take mid-turn stdin — queue the message; it runs as its
     // own follow-up turn when the current process exits (handleTurnEnd).
     if (this.isCodex) {
@@ -1715,6 +2108,8 @@ export class ChatSession {
     this.settingsState = null;
     this.codexPermState?.restore();
     this.codexPermState = null;
+    this.piExtCleanup?.();
+    this.piExtCleanup = null;
     uninstallMcpProjection(this.mcpProjection);
     this.mcpProjection = null;
 
@@ -1763,6 +2158,8 @@ export class ChatSession {
     this.stdoutBuffer = "";
     restoreClaudeSettingsFile(this.settingsState);
     this.settingsState = null;
+    this.piExtCleanup?.();
+    this.piExtCleanup = null;
     uninstallMcpProjection(this.mcpProjection);
     this.mcpProjection = null;
     // DO NOT reset claudeSessionId, messages, basePromptSent — these are the

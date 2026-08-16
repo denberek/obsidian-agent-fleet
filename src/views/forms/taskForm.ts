@@ -4,6 +4,7 @@ import type { ChannelConfig, TaskConfig } from "../../types";
 import { slugify, stringifyMarkdownWithFrontmatter } from "../../utils/markdown";
 import { createIcon } from "../../utils/icons";
 import { renderModelPicker } from "../../components/modelPicker";
+import { listPiModels } from "../../utils/piModels";
 import { effortOptions } from "../../utils/effort";
 import { normalizeOutputSchema } from "../../utils/structuredOutput";
 import type { DashboardFormDeps } from "./shared";
@@ -487,6 +488,7 @@ export function renderCreateTaskForm(page: HTMLElement, deps: TaskFormDeps): voi
       value: state.model,
       adapter: selAgent?.adapter,
       onChange: (value) => { state.model = value; },
+      loadPiModels: () => listPiModels(plugin.settings.piCliPath),
       allowInherit: true,
       inheritPlaceholder: selAgent
         ? `Inherit from ${selAgent.name}${selAgent.model ? ` (${selAgent.model})` : ""}`
@@ -801,6 +803,7 @@ export function renderEditTaskForm(page: HTMLElement, deps: TaskFormDeps, task: 
       value: state.model,
       adapter: selAgent?.adapter,
       onChange: (value) => { state.model = value; },
+      loadPiModels: () => listPiModels(plugin.settings.piCliPath),
       allowInherit: true,
       inheritPlaceholder: selAgent
         ? `Inherit from ${selAgent.name}${selAgent.model ? ` (${selAgent.model})` : ""}`

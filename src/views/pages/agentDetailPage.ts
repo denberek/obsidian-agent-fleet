@@ -1,4 +1,5 @@
 import { Notice, setIcon } from "obsidian";
+import { getAdapter } from "../../adapters";
 import type { AgentConfig, AgentHealth, RunLogData, UsageRecord } from "../../types";
 import { truncate } from "../../utils/markdown";
 import { createIcon } from "../../utils/icons";
@@ -279,7 +280,7 @@ function renderAgentConfigTab(container: HTMLElement, deps: AgentDetailPageDeps,
   deps.renderConfigRow(form, "Name", agent.name);
   deps.renderConfigRow(form, "Description", agent.description ?? "");
   deps.renderConfigRow(form, "Model", agent.model);
-  deps.renderConfigRow(form, "Adapter", agent.adapter === "codex" ? "OpenAI Codex" : "Claude Code");
+  deps.renderConfigRow(form, "Adapter", getAdapter(agent.adapter).label);
   deps.renderConfigRow(form, "Effort", agent.effort || "backend default");
   deps.renderConfigRow(
     form,

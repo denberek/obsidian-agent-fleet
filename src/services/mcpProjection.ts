@@ -24,7 +24,21 @@
 // aborting, and one bad server is dropped (logged) without poisoning the rest.
 
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import type { McpServer, McpTransport } from "../types";
 import { normalizeAdapter } from "../adapters";
@@ -55,6 +69,9 @@ export interface McpProjection {
   args: string[];
   env: Record<string, string>;
   tempFiles: string[];
+  /** Extra teardown beyond file deletion (the Pi overlay removes a whole
+   *  per-run directory of symlinks). Called by {@link uninstallMcpProjection}. */
+  restore?: () => void;
 }
 
 /**
@@ -199,6 +216,201 @@ function claudeEntry(p: Prepared): Record<string, unknown> {
   return entry;
 }
 
+/** Build the pi-mcp-adapter `mcp.json` entry for one prepared server. The
+ *  adapter reads the standard `.mcp.json` shape; bearer tokens travel via
+ *  `bearerTokenEnv` pointing at a spawn-env var, never written to disk. */
+function piEntry(p: Prepared): { entry: Record<string, unknown>; env: Record<string, string> } {
+  const env: Record<string, string> = {};
+  if (p.type === "stdio") {
+    const entry: Record<string, unknown> = { command: p.command, args: p.args ?? [] };
+    if (p.env && Object.keys(p.env).length > 0) entry.env = p.env;
+    return { entry, env };
+  }
+  const entry: Record<string, unknown> = { url: p.url };
+  if (p.headers && Object.keys(p.headers).length > 0) entry.headers = p.headers;
+  if (p.bearerToken) {
+    const envVar = tokenEnvVar(p.name);
+    env[envVar] = p.bearerToken;
+    entry.bearerTokenEnv = envVar;
+    // pi-mcp-adapter only attaches bearerTokenEnv when auth is explicitly
+    // "bearer" (its auto-default covers codex-style bearer_token_env_var
+    // imports, not the native shape) — without this the header is never sent
+    // and the adapter falls back to interactive OAuth, which headless runs
+    // can't complete.
+    entry.auth = "bearer";
+  }
+  return { entry, env };
+}
+
+/** The real Pi agent config dir — honors an explicit parent-env
+ *  PI_CODING_AGENT_DIR, else `~/.pi/agent`. Never mutates `process.env`. */
+export function realPiAgentDir(): string {
+  const fromEnv = process.env.PI_CODING_AGENT_DIR?.trim();
+  return fromEnv ? fromEnv : join(homedir(), ".pi", "agent");
+}
+
+/** Dedicated root for per-run Pi overlays (mirrors the Codex OVERLAY_ROOT
+ *  convention) so the stale-temp sweep never has to pattern-match the shared
+ *  OS tmpdir. */
+export function piOverlayRoot(): string {
+  return join(tmpdir(), "agent-fleet-pi");
+}
+
+/** Liveness marker written into each overlay: the owning plugin process's pid.
+ *  Overlays hold live symlinks for the whole life of a chat session and their
+ *  mtime freezes at spawn, so the sweep checks this instead of trusting age. */
+export const PI_OVERLAY_PID_FILE = ".af-pid";
+
+const warned = new Set<string>();
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(`Agent Fleet: ${message}`);
+}
+
+/** Test hook — clears the one-time warning dedup set. */
+export function resetMcpProjectionWarnings(): void {
+  warned.clear();
+}
+
+/**
+ * Build a per-run PI_CODING_AGENT_DIR overlay carrying the projected servers
+ * as `<agent dir>/mcp.json` (a config location the pi-mcp-adapter reads).
+ *
+ * Same mechanism as the Codex CODEX_HOME overlay: symlink every real
+ * `~/.pi/agent` entry (auth.json, settings.json with its installed packages,
+ * sessions/, extensions/, model caches) EXCEPT `mcp.json`, which we own for
+ * this run. Auth and the installed pi-mcp-adapter stay shared through the
+ * links; only the MCP server set differs per run. The overlay is a fresh
+ * mkdtemp dir per spawn, so concurrent runs never collide.
+ *
+ * The servers are only reachable when the user has installed the community
+ * `pi-mcp-adapter` package (`pi install npm:pi-mcp-adapter`) — without it the
+ * written config is inert and the run proceeds tool-less on the MCP front.
+ */
+function buildPiOverlay(prepared: Prepared[]): {
+  env: Record<string, string>;
+  restore: () => void;
+} {
+  const realDir = realPiAgentDir();
+  mkdirSync(piOverlayRoot(), { recursive: true });
+  const overlay = mkdtempSync(join(piOverlayRoot(), "mcp-"));
+  try {
+    writeFileSync(join(overlay, PI_OVERLAY_PID_FILE), String(process.pid), "utf-8");
+    if (existsSync(realDir)) {
+      // Make sure the sessions dir exists in the REAL home before linking, so
+      // session files written during the run land in the shared store rather
+      // than dying with the overlay.
+      const realSessions = join(realDir, "sessions");
+      if (!existsSync(realSessions)) mkdirSync(realSessions, { recursive: true });
+      for (const entry of readdirSync(realDir)) {
+        if (entry === "mcp.json") continue;
+        const target = join(realDir, entry);
+        const dest = join(overlay, entry);
+        try {
+          symlinkSync(target, dest);
+        } catch (linkErr) {
+          // Symlinks can be unavailable (Windows without Developer Mode throws
+          // EPERM). Degrade per entry instead of letting the whole projection
+          // abort — an abort silently drops every fleet MCP server plus the
+          // `remember` tool. Directories become junctions (no elevation
+          // needed on Windows) or deep copies; files become copies. Copies
+          // lose live sharing with ~/.pi/agent, but restore() copies changed
+          // state back at cleanup.
+          const st = statSync(target);
+          if (st.isDirectory()) {
+            try {
+              if (process.platform !== "win32") throw linkErr;
+              symlinkSync(target, dest, "junction");
+            } catch {
+              cpSync(target, dest, { recursive: true, force: true });
+            }
+          } else {
+            copyFileSync(target, dest);
+          }
+          warnOnce(
+            "pi-overlay-degraded",
+            "couldn't symlink ~/.pi/agent entries into the per-run Pi overlay " +
+              "(symlinks may be unavailable on this platform); falling back to copies. " +
+              "State Pi writes during the run is copied back on cleanup.",
+          );
+        }
+      }
+    }
+
+    const mcpServers: Record<string, unknown> = {};
+    const env: Record<string, string> = {};
+    for (const p of prepared) {
+      const out = piEntry(p);
+      mcpServers[p.name] = out.entry;
+      Object.assign(env, out.env);
+    }
+    writeFileSync(join(overlay, "mcp.json"), JSON.stringify({ mcpServers }, null, 2), "utf-8");
+
+    env.PI_CODING_AGENT_DIR = overlay;
+    return {
+      env,
+      restore: () => {
+        // Heal before removal: anything that is a REAL file or dir in the
+        // overlay (not a still-valid symlink/junction) holds state only the
+        // overlay has — either Pi rewrote a linked file atomically (write
+        // temp + rename, the usual pattern for auth.json token refreshes,
+        // which replaces our symlink with a real file), or Pi created it
+        // fresh during the run (the whole sessions/ history when ~/.pi/agent
+        // didn't exist at spawn, new caches, first-time credentials). Copy
+        // all of it back so deleting the overlay can't destroy rotated
+        // credentials or the session history a later resume depends on.
+        // mcp.json and the pid marker are plugin-owned and never copied back.
+        try {
+          for (const entry of readdirSync(overlay)) {
+            if (entry === "mcp.json" || entry === PI_OVERLAY_PID_FILE) continue;
+            const overlayPath = join(overlay, entry);
+            const realPath = join(realDir, entry);
+            try {
+              const st = lstatSync(overlayPath);
+              if (st.isSymbolicLink()) continue; // still points into the real dir
+              if (st.isFile()) {
+                // Skip when the real copy is at least as new — in degraded
+                // copy mode (no symlinks) this keeps an unchanged spawn-time
+                // copy from clobbering a token another pi process rotated
+                // mid-run.
+                let realMtimeMs = -Infinity;
+                try {
+                  realMtimeMs = statSync(realPath).mtimeMs;
+                } catch {
+                  // no real counterpart — always copy back
+                }
+                if (realMtimeMs >= st.mtimeMs) continue;
+                mkdirSync(realDir, { recursive: true });
+                copyFileSync(overlayPath, realPath);
+              } else if (st.isDirectory()) {
+                mkdirSync(realDir, { recursive: true });
+                cpSync(overlayPath, realPath, { recursive: true, force: true });
+              }
+            } catch {
+              // entry gone or unreadable — nothing to heal
+            }
+          }
+        } catch {
+          // overlay already gone — nothing to heal
+        }
+        try {
+          rmSync(overlay, { recursive: true, force: true });
+        } catch {
+          // best-effort — temp dir, the OS reclaims it
+        }
+      },
+    };
+  } catch (err) {
+    try {
+      rmSync(overlay, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup after a failed build
+    }
+    throw err;
+  }
+}
+
 /** Build the Codex `-c mcp_servers.<name>.*` overrides for one prepared server.
  *  Returns the args plus any spawn env (the bearer token, kept out of argv). */
 function codexArgs(p: Prepared): { args: string[]; env: Record<string, string> } {
@@ -246,7 +458,8 @@ export function installMcpProjection(
   servers: ProjectedMcpServer[],
 ): McpProjection | null {
   if (servers.length === 0) return null;
-  const isCodex = normalizeAdapter(adapter) === "codex";
+  const adapterId = normalizeAdapter(adapter);
+  const isCodex = adapterId === "codex";
 
   const tempFiles: string[] = [];
   const claudeDir = join(cwd, ".claude");
@@ -290,6 +503,13 @@ export function installMcpProjection(
       return { args, env, tempFiles };
     }
 
+    if (adapterId === "pi") {
+      // Pi: a per-run PI_CODING_AGENT_DIR overlay whose mcp.json carries the
+      // servers. No argv — everything travels via env.
+      const overlay = buildPiOverlay(prepared);
+      return { args: [], env: overlay.env, tempFiles, restore: overlay.restore };
+    }
+
     // Claude: one merged config file.
     const mcpServers: Record<string, unknown> = {};
     for (const p of prepared) {
@@ -310,6 +530,11 @@ export function installMcpProjection(
 export function uninstallMcpProjection(projection: McpProjection | null): void {
   if (!projection) return;
   cleanup(projection.tempFiles);
+  try {
+    projection.restore?.();
+  } catch {
+    // best-effort
+  }
 }
 
 function cleanup(files: string[]): void {

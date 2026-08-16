@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { McpServer } from "../types";
 import {
+  PI_OVERLAY_PID_FILE,
   installMcpProjection,
+  piOverlayRoot,
   resolveProjectedServers,
   syntheticRememberServer,
   uninstallMcpProjection,
@@ -164,5 +166,149 @@ describe("installMcpProjection — fail-soft", () => {
     const cfg = JSON.parse(readFileSync(proj!.args[1]!, "utf-8")) as { mcpServers: Record<string, unknown> };
     expect(Object.keys(cfg.mcpServers)).toEqual(["good"]);
     uninstallMcpProjection(proj);
+  });
+});
+
+describe("installMcpProjection — Pi", () => {
+  it("builds a PI_CODING_AGENT_DIR overlay carrying mcp.json, and restores it", () => {
+    // Point the "real" pi agent dir at a temp fixture so the overlay symlinks
+    // from a controlled location rather than the machine's ~/.pi/agent.
+    const realDir = tmpCwd();
+    const prevEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = realDir;
+    try {
+      const { writeFileSync } = require("fs") as typeof import("fs");
+      writeFileSync(join(realDir, "auth.json"), "{}", "utf-8");
+      writeFileSync(join(realDir, "settings.json"), "{}", "utf-8");
+
+      const proj = installMcpProjection(tmpCwd(), "pi", [
+        { def: makeServer({ name: "pencil", type: "stdio", command: "node", args: ["x.js"], env: { A: "1" } }) },
+        {
+          def: makeServer({ name: "linear", type: "http", url: "https://mcp.linear.app/mcp", auth: "oauth" }),
+          secrets: { bearerToken: "tok-123" },
+        },
+      ]);
+      expect(proj).not.toBeNull();
+      expect(proj!.args).toEqual([]);
+
+      const overlay = proj!.env.PI_CODING_AGENT_DIR;
+      expect(overlay).toBeTruthy();
+      expect(existsSync(join(overlay!, "auth.json"))).toBe(true); // symlinked through
+      expect(existsSync(join(overlay!, "sessions"))).toBe(true); // created in real dir + linked
+
+      const config = JSON.parse(readFileSync(join(overlay!, "mcp.json"), "utf-8")) as {
+        mcpServers: Record<string, Record<string, unknown>>;
+      };
+      expect(config.mcpServers.pencil).toEqual({ command: "node", args: ["x.js"], env: { A: "1" } });
+      expect(config.mcpServers.linear!.url).toBe("https://mcp.linear.app/mcp");
+      // The token itself must be in spawn env, not on disk.
+      const envVar = config.mcpServers.linear!.bearerTokenEnv as string;
+      expect(envVar).toBe("AF_MCP_LINEAR_TOKEN");
+      expect(proj!.env[envVar]).toBe("tok-123");
+      // Without explicit auth:"bearer" pi-mcp-adapter never sends the token.
+      expect(config.mcpServers.linear!.auth).toBe("bearer");
+      expect(readFileSync(join(overlay!, "mcp.json"), "utf-8")).not.toContain("tok-123");
+
+      uninstallMcpProjection(proj);
+      expect(existsSync(overlay!)).toBe(false);
+      // The real dir survives cleanup untouched.
+      expect(existsSync(join(realDir, "auth.json"))).toBe(true);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevEnv;
+    }
+  });
+
+  it("still writes mcp.json when pi has never been initialized", () => {
+    const missing = join(tmpCwd(), "does-not-exist");
+    const prevEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = missing;
+    try {
+      const proj = installMcpProjection(tmpCwd(), "pi", [
+        { def: makeServer({ name: "pencil", type: "stdio", command: "node" }) },
+      ]);
+      expect(proj).not.toBeNull();
+      const overlay = proj!.env.PI_CODING_AGENT_DIR!;
+      expect(existsSync(join(overlay, "mcp.json"))).toBe(true);
+      uninstallMcpProjection(proj);
+      expect(existsSync(overlay)).toBe(false);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevEnv;
+    }
+  });
+
+  it("namespaces overlays under the dedicated root with a live pid marker", () => {
+    const realDir = tmpCwd();
+    const prevEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = realDir;
+    try {
+      const proj = installMcpProjection(tmpCwd(), "pi", [
+        { def: makeServer({ name: "pencil", type: "stdio", command: "node" }) },
+      ]);
+      const overlay = proj!.env.PI_CODING_AGENT_DIR!;
+      expect(overlay.startsWith(piOverlayRoot())).toBe(true);
+      expect(readFileSync(join(overlay, PI_OVERLAY_PID_FILE), "utf-8")).toBe(String(process.pid));
+      uninstallMcpProjection(proj);
+      // The plugin-owned marker must not be copied into the real dir.
+      expect(existsSync(join(realDir, PI_OVERLAY_PID_FILE))).toBe(false);
+      expect(existsSync(join(realDir, "mcp.json"))).toBe(false);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevEnv;
+    }
+  });
+
+  it("restore copies state Pi created in the overlay back to an uninitialized real dir", () => {
+    const missing = join(tmpCwd(), "never-initialized");
+    const prevEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = missing;
+    try {
+      const proj = installMcpProjection(tmpCwd(), "pi", [
+        { def: makeServer({ name: "pencil", type: "stdio", command: "node" }) },
+      ]);
+      const overlay = proj!.env.PI_CODING_AGENT_DIR!;
+      // Simulate Pi running against the overlay: fresh credentials plus a
+      // session history that only exists here.
+      writeFileSync(join(overlay, "auth.json"), '{"fresh":true}', "utf-8");
+      mkdirSync(join(overlay, "sessions"), { recursive: true });
+      writeFileSync(join(overlay, "sessions", "s1.jsonl"), "{}", "utf-8");
+
+      uninstallMcpProjection(proj);
+      expect(existsSync(overlay)).toBe(false);
+      expect(readFileSync(join(missing, "auth.json"), "utf-8")).toBe('{"fresh":true}');
+      expect(readFileSync(join(missing, "sessions", "s1.jsonl"), "utf-8")).toBe("{}");
+      expect(existsSync(join(missing, "mcp.json"))).toBe(false);
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevEnv;
+    }
+  });
+
+  it("restore heals a linked file Pi replaced via rename-over-symlink", () => {
+    const realDir = tmpCwd();
+    const prevEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = realDir;
+    try {
+      writeFileSync(join(realDir, "auth.json"), '{"old":true}', "utf-8");
+      // Backdate the real file so the mtime freshness guard can't tie with the
+      // rotated overlay copy written milliseconds later.
+      const past = (Date.now() - 60_000) / 1000;
+      utimesSync(join(realDir, "auth.json"), past, past);
+      const proj = installMcpProjection(tmpCwd(), "pi", [
+        { def: makeServer({ name: "pencil", type: "stdio", command: "node" }) },
+      ]);
+      const overlay = proj!.env.PI_CODING_AGENT_DIR!;
+      // Simulate an atomic token refresh: the symlink is replaced by a real
+      // file holding the only copy of the rotated credentials.
+      unlinkSync(join(overlay, "auth.json"));
+      writeFileSync(join(overlay, "auth.json"), '{"rotated":true}', "utf-8");
+
+      uninstallMcpProjection(proj);
+      expect(readFileSync(join(realDir, "auth.json"), "utf-8")).toBe('{"rotated":true}');
+    } finally {
+      if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = prevEnv;
+    }
   });
 });

@@ -56,3 +56,4 @@ describe("retiredModelNotice", () => {
     expect(retiredModelNotice("some-vendor/gpt-5.4-custom")).toBeNull();
   });
 });
+

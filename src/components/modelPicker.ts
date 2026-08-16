@@ -1,3 +1,5 @@
+import type { PiModelCatalog } from "../utils/piModels";
+
 export interface ModelPickerProps {
   /** Current value; empty string = Default/Inherit (no --model passed). */
   value: string;
@@ -14,10 +16,17 @@ export interface ModelPickerProps {
    */
   inheritPlaceholder?: string;
   /**
-   * Which backend the agent runs on ("claude-code" | "codex"). Controls the
-   * alias list and labels. Defaults to claude-code.
+   * Which backend the agent runs on ("claude-code" | "codex" | "pi").
+   * Controls the alias list and labels. Defaults to claude-code.
    */
   adapter?: string;
+  /**
+   * Pi only: async source for the dual-vendor model catalog (backed by
+   * `pi --list-models`, credential-gated). The picker renders immediately and
+   * fills the Anthropic/OpenAI groups when the catalog arrives; without this
+   * prop (or on an unavailable catalog) it degrades to free text.
+   */
+  loadPiModels?: () => Promise<PiModelCatalog>;
 }
 
 /** Aliases supported by Claude Code across all backends (direct/Bedrock/Vertex/Foundry).
@@ -82,6 +91,11 @@ function isCodexAdapter(adapter: string | undefined): boolean {
   return v === "codex" || v === "openai-codex";
 }
 
+function isPiAdapter(adapter: string | undefined): boolean {
+  const v = (adapter ?? "").trim().toLowerCase();
+  return v === "pi" || v === "pi-coding-agent";
+}
+
 function aliasesFor(adapter: string | undefined): ReadonlyArray<{ value: string; label: string }> {
   return isCodexAdapter(adapter) ? CODEX_MODEL_ALIASES : MODEL_ALIASES;
 }
@@ -93,15 +107,53 @@ function classify(value: string, adapter: string | undefined): Mode {
   return "custom";
 }
 
+/** Wire the select ↔ custom-input pair shared by both pickers: Custom… reveals
+ *  the input and emits its (possibly prefilled) value; any other option hides
+ *  it and emits the option value. `sync` refreshes the notice/hint strip. */
+function wireCustomModelInput(
+  select: HTMLSelectElement,
+  customInput: HTMLInputElement,
+  sync: (value: string) => void,
+  onChange: ModelPickerProps["onChange"],
+): void {
+  select.addEventListener("change", () => {
+    if (select.value === CUSTOM_SENTINEL) {
+      customInput.setCssStyles({ display: "" });
+      customInput.focus();
+      sync(customInput.value);
+      void onChange(customInput.value.trim());
+    } else {
+      customInput.setCssStyles({ display: "none" });
+      sync(select.value);
+      void onChange(select.value);
+    }
+  });
+  customInput.addEventListener("input", () => {
+    if (select.value === CUSTOM_SENTINEL) {
+      sync(customInput.value);
+      void onChange(customInput.value.trim());
+    }
+  });
+}
+
 /**
  * Render a compact model picker: a single select, plus an inline text input
  * that only appears when the user picks "Custom…". Callers render their own
  * label and tooltip (via the existing `addTooltip` pattern) — this component
  * only owns the control widgets.
+ *
+ * For `adapter: "pi"` the alias groups are DYNAMIC: the union of Anthropic and
+ * OpenAI models Pi's credential-gated catalog exposes on this machine
+ * (§10.3 of PI_HARNESS_FEASIBILITY.md), loaded async via `loadPiModels`.
  */
 export function renderModelPicker(container: HTMLElement, props: ModelPickerProps): void {
   container.empty();
   container.addClass("af-model-picker");
+
+  if (isPiAdapter(props.adapter)) {
+    renderPiModelPicker(container, props);
+    return;
+  }
 
   const codex = isCodexAdapter(props.adapter);
   const aliases = aliasesFor(props.adapter);
@@ -160,23 +212,112 @@ export function renderModelPicker(container: HTMLElement, props: ModelPickerProp
   }
   syncNotice(props.value);
 
-  select.addEventListener("change", () => {
-    if (select.value === CUSTOM_SENTINEL) {
-      customInput.setCssStyles({ display: "" });
-      customInput.focus();
-      syncNotice(customInput.value);
-      void props.onChange(customInput.value.trim());
-    } else {
-      customInput.setCssStyles({ display: "none" });
-      syncNotice(select.value);
-      void props.onChange(select.value);
-    }
-  });
+  wireCustomModelInput(select, customInput, syncNotice, props.onChange);
+}
 
-  customInput.addEventListener("input", () => {
-    if (select.value === CUSTOM_SENTINEL) {
-      syncNotice(customInput.value);
-      void props.onChange(customInput.value.trim());
+/**
+ * Pi variant: Default + two dynamic vendor groups + Custom. Renders
+ * immediately with the saved value selectable, then fills the groups when the
+ * catalog arrives. An unavailable catalog (Pi missing, no providers
+ * authenticated) degrades to free text with a connect hint — the form never
+ * blocks on discovery.
+ */
+function renderPiModelPicker(container: HTMLElement, props: ModelPickerProps): void {
+  const saved = props.value.trim();
+  const select = container.createEl("select", { cls: "af-form-select af-mp-select" });
+  const inheritLabel = props.allowInherit
+    ? (props.inheritPlaceholder ?? "Inherit from agent")
+    : "Default (let Pi pick)";
+  select.createEl("option", { text: inheritLabel, attr: { value: "" } });
+
+  // The saved value stays selectable before (and independent of) discovery, so
+  // opening the form never silently reclassifies an existing agent's model.
+  let savedOption: HTMLOptionElement | null = null;
+  if (saved && saved !== "default" && saved !== "subscription") {
+    savedOption = select.createEl("option", { text: saved, attr: { value: saved } });
+  }
+  select.createEl("option", { text: "Custom…", attr: { value: CUSTOM_SENTINEL } });
+
+  const customInput = container.createEl("input", {
+    cls: "af-form-input af-mp-custom-input",
+    attr: {
+      type: "text",
+      placeholder: "e.g. anthropic/claude-opus-5  ·  openai-codex/gpt-5.6-terra  ·  opus",
+      spellcheck: "false",
+    },
+  });
+  // Prefill with the saved value: picking Custom… means "tweak this", and the
+  // sentinel's change event emits the input's content — an empty input would
+  // silently wipe the saved model (warn-never-rewrite applies here too).
+  if (saved && saved !== "default" && saved !== "subscription") {
+    customInput.value = saved;
+  }
+  customInput.setCssStyles({ display: "none" });
+
+  // Shared strip for the retired-model warning and the connect hint. Retired
+  // slugs are just as reachable through Pi as through Codex, so the
+  // warn-never-rewrite notice applies here too.
+  const hint = container.createDiv({ cls: "af-mp-retired-notice" });
+  let connectHint = "";
+  const syncHint = (value: string): void => {
+    const retired = retiredModelNotice(value);
+    const text = [retired, connectHint].filter(Boolean).join(" ");
+    hint.setText(text);
+    hint.setCssStyles({ display: text ? "" : "none" });
+  };
+
+  if (saved && saved !== "default" && saved !== "subscription") {
+    select.value = saved;
+  } else {
+    select.value = "";
+  }
+  syncHint(saved);
+
+  wireCustomModelInput(select, customInput, syncHint, props.onChange);
+
+  if (!props.loadPiModels) return;
+
+  void props.loadPiModels().then((catalog) => {
+    // The form may have re-rendered while discovery ran — never touch a
+    // detached select.
+    if (!select.isConnected) return;
+
+    if (catalog.unavailable) {
+      connectHint =
+        "No models listed — connect a provider by running `pi` in a terminal and using /login " +
+        "(Claude Pro/Max or ChatGPT), or type a model manually via Custom…";
+      syncHint(select.value === CUSTOM_SENTINEL ? customInput.value : select.value);
+      return;
+    }
+
+    const insertBefore = select.querySelector(`option[value="${CUSTOM_SENTINEL}"]`);
+    const addGroup = (label: string, entries: PiModelCatalog["anthropic"]) => {
+      if (entries.length === 0) return;
+      const group = select.createEl("optgroup", { attr: { label } });
+      for (const entry of entries) {
+        group.createEl("option", {
+          text: entry.context ? `${entry.id} — ${entry.context} context` : entry.id,
+          attr: { value: entry.value },
+        });
+      }
+      // createEl appends; reposition the group above the Custom… option.
+      select.insertBefore(group, insertBefore);
+    };
+    addGroup("Anthropic", catalog.anthropic);
+    addGroup("OpenAI", catalog.openai);
+
+    // If the saved value IS a discovered entry (exact provider/id form), the
+    // placeholder option is now a duplicate — drop it regardless of what's
+    // currently selected, folding the selection onto the catalog entry when
+    // the placeholder held it. A bare saved value ("opus") stays on its own
+    // option untouched: warn-never-rewrite applies to model values.
+    const all = [...catalog.anthropic, ...catalog.openai];
+    const exact = all.find((e) => e.value === saved);
+    if (exact && savedOption) {
+      const wasSelected = select.value === saved;
+      savedOption.remove();
+      savedOption = null;
+      if (wasSelected) select.value = exact.value;
     }
   });
 }

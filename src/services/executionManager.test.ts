@@ -121,6 +121,7 @@ function makeSettings(overrides: Partial<FleetSettings> = {}): FleetSettings {
     fleetFolder: "_fleet",
     claudeCliPath: "claude",
     codexCliPath: "codex",
+    piCliPath: "pi",
     defaultModel: "default",
     awsRegion: "us-east-1",
     maxConcurrentRuns: 2,

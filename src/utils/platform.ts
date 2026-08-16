@@ -77,6 +77,55 @@ export function spawnCli(
 }
 
 /**
+ * Spawn a CLI probe and collect its stdout under a timeout guard. Never
+ * rejects: spawn failure or timeout resolves `{ ok: false }` so probe-style
+ * callers (auth status, model listing) fail soft without their own
+ * settled-flag/timer boilerplate. `ok: true` means the process closed on its
+ * own — callers decide how much the exit `code` matters (Pi's `auth check`
+ * prints its JSON status even on non-zero exits; `--list-models` output is
+ * only trusted on code 0).
+ */
+export function captureCli(
+  command: string,
+  args: string[],
+  opts: { timeoutMs: number },
+): Promise<{ ok: boolean; stdout: string; code: number | null }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result: { ok: boolean; stdout: string; code: number | null }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    try {
+      const proc = spawnCli(command, args);
+      let stdout = "";
+      const timer = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          /* ignore */
+        }
+        done({ ok: false, stdout, code: null });
+      }, opts.timeoutMs);
+      proc.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      });
+      proc.on("error", () => {
+        clearTimeout(timer);
+        done({ ok: false, stdout, code: null });
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        done({ ok: true, stdout, code });
+      });
+    } catch {
+      done({ ok: false, stdout: "", code: null });
+    }
+  });
+}
+
+/**
  * Spawn a raw shell command string cross-platform.
  * Used when the command is already a complete string (e.g. MCP stdio probe commands).
  *
@@ -143,36 +192,50 @@ export function splitLines(text: string): string[] {
 // ═══════════════════════════════════════════════════════
 
 /**
+ * Shared shape of every CLI's candidate list: the configured path first, then
+ * installer-specific dirs, then the platform-standard locations, then bare
+ * PATH resolution. Filters out empty/invalid entries.
+ *
+ * `winExtra`/`unixExtra` are the installer-specific absolute paths that differ
+ * per CLI (e.g. `~/.pi/bin/pi` for the pi.dev install script).
+ */
+function resolveCliCandidates(
+  configuredPath: string,
+  bin: string,
+  extra: { win: string[]; unix: string[] },
+): string[] {
+  if (process.platform === "win32") {
+    return [configuredPath, ...extra.win, `${bin}.exe`, bin].filter(
+      (c) => !!c && isValidCliPath(c),
+    );
+  }
+
+  // macOS + Linux
+  const candidates = [configuredPath, ...extra.unix];
+
+  if (process.platform === "darwin") {
+    candidates.push(`/opt/homebrew/bin/${bin}`);
+  }
+
+  candidates.push(`/usr/local/bin/${bin}`, `/usr/bin/${bin}`, bin);
+
+  return candidates.filter((c) => !!c && isValidCliPath(c));
+}
+
+/**
  * Return platform-appropriate candidate paths for the Claude CLI.
  * Filters out empty/invalid entries.
  */
 export function resolveClaudeCliCandidates(configuredPath: string): string[] {
   const home = homedir();
-
-  if (process.platform === "win32") {
-    return [
-      configuredPath,
+  return resolveCliCandidates(configuredPath, "claude", {
+    win: [
       join(process.env.APPDATA ?? "", "Claude", "claude.exe"),
       join(process.env.LOCALAPPDATA ?? "", "Claude", "claude.exe"),
       join(home, ".local", "bin", "claude.exe"),
-      "claude.exe",
-      "claude",
-    ].filter((c) => !!c && isValidCliPath(c));
-  }
-
-  // macOS + Linux
-  const candidates = [
-    configuredPath,
-    join(home, ".local", "bin", "claude"),
-  ];
-
-  if (process.platform === "darwin") {
-    candidates.push("/opt/homebrew/bin/claude");
-  }
-
-  candidates.push("/usr/local/bin/claude", "/usr/bin/claude", "claude");
-
-  return candidates.filter((c) => !!c && isValidCliPath(c));
+    ],
+    unix: [join(home, ".local", "bin", "claude")],
+  });
 }
 
 /**
@@ -182,29 +245,23 @@ export function resolveClaudeCliCandidates(configuredPath: string): string[] {
  */
 export function resolveCodexCliCandidates(configuredPath: string): string[] {
   const home = homedir();
+  return resolveCliCandidates(configuredPath, "codex", {
+    win: [join(home, ".local", "bin", "codex.exe")],
+    unix: [join(home, ".local", "bin", "codex")],
+  });
+}
 
-  if (process.platform === "win32") {
-    return [
-      configuredPath,
-      join(home, ".local", "bin", "codex.exe"),
-      "codex.exe",
-      "codex",
-    ].filter((c) => !!c && isValidCliPath(c));
-  }
-
-  // macOS + Linux
-  const candidates = [
-    configuredPath,
-    join(home, ".local", "bin", "codex"),
-  ];
-
-  if (process.platform === "darwin") {
-    candidates.push("/opt/homebrew/bin/codex");
-  }
-
-  candidates.push("/usr/local/bin/codex", "/usr/bin/codex", "codex");
-
-  return candidates.filter((c) => !!c && isValidCliPath(c));
+/**
+ * Return platform-appropriate candidate paths for the Pi coding-agent CLI.
+ * Covers the pi.dev install script (~/.pi/bin), npm global installs, and bare
+ * PATH resolution. Filters out empty/invalid entries.
+ */
+export function resolvePiCliCandidates(configuredPath: string): string[] {
+  const home = homedir();
+  return resolveCliCandidates(configuredPath, "pi", {
+    win: [join(home, ".pi", "bin", "pi.exe"), join(home, ".local", "bin", "pi.exe")],
+    unix: [join(home, ".pi", "bin", "pi"), join(home, ".local", "bin", "pi")],
+  });
 }
 
 /** Reject paths containing newlines, null bytes, or unexpected shell metacharacters. */

@@ -1,6 +1,7 @@
 import { Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import { ConfirmModal } from "./modals/confirmModal";
 import { renderModelPicker } from "./components/modelPicker";
+import { checkPiAuth, describePiAuthStatus, PI_AUTH_PROVIDERS } from "./utils/piAuth";
 import { DEFAULT_SETTINGS } from "./constants";
 import type AgentFleetPlugin from "./main";
 import type { AgentConfig, ChannelCredentialEntry } from "./types";
@@ -53,6 +54,23 @@ export class AgentFleetSettingTab extends PluginSettingTab {
         text.setValue(this.plugin.settings.codexCliPath).onChange(async (value) => {
           this.plugin.settings.codexCliPath = value.trim() || DEFAULT_SETTINGS.codexCliPath;
           this.plugin.settings.codexCliVersion = undefined;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Pi CLI path")
+      .setDesc(
+        "Used by agents with adapter “pi” (multi-provider: Anthropic + OpenAI and more). " +
+        "Install via `npm i -g --ignore-scripts @earendil-works/pi-coding-agent`, then run `pi` " +
+        "in a terminal and use /login to connect Claude Pro/Max or ChatGPT. " +
+        "Note: Anthropic bills third-party harness usage per token (extra usage), not " +
+        "against Claude plan limits.",
+      )
+      .addText((text) =>
+        text.setValue(this.plugin.settings.piCliPath).onChange(async (value) => {
+          this.plugin.settings.piCliPath = value.trim() || DEFAULT_SETTINGS.piCliPath;
+          this.plugin.settings.piCliVersion = undefined;
           await this.plugin.saveSettings();
         }),
       );
@@ -232,6 +250,34 @@ export class AgentFleetSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Verify").onClick(async () => {
           await this.plugin.verifyCodexCli();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Verify Pi CLI")
+      .setDesc("Checks that the configured Pi binary is reachable.")
+      .addButton((button) =>
+        button.setButtonText("Verify").onClick(async () => {
+          await this.plugin.verifyPiCli();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("Pi provider status")
+      .setDesc(
+        "Checks which providers Pi is authenticated with (status only — credentials are never read).",
+      )
+      .addButton((button) =>
+        button.setButtonText("Check").onClick(async () => {
+          button.setDisabled(true);
+          try {
+            const results = await Promise.all(
+              PI_AUTH_PROVIDERS.map((p) => checkPiAuth(this.plugin.settings.piCliPath, p)),
+            );
+            new Notice(results.map(describePiAuthStatus).join("\n"), 10000);
+          } finally {
+            button.setDisabled(false);
+          }
         }),
       );
 

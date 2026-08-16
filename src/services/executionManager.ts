@@ -254,6 +254,7 @@ export class ExecutionManager {
             structuredOutput: outputSchema ? parsed.structuredOutput : undefined,
             maxBudgetUsd: budget.value,
             maxTurns: turns.value,
+            errors: parsed.errors,
             limitHit: parsed.limitHit,
             mcpServerErrors: parsed.mcpServerErrors,
           });

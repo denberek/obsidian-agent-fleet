@@ -5,17 +5,26 @@ import type { AgentConfig } from "../../types";
 import { slugify } from "../../utils/markdown";
 import { splitLines } from "../../utils/platform";
 import { createIcon } from "../../utils/icons";
-import { CODEX_MODEL_ALIASES, MODEL_ALIASES, renderModelPicker } from "../../components/modelPicker";
+import { renderModelPicker } from "../../components/modelPicker";
+import { listPiModels } from "../../utils/piModels";
 import { EFFORT_HINT, effortOptions } from "../../utils/effort";
 import { DEFAULT_MEMORY_TOKEN_BUDGET } from "../../constants";
+import { normalizeAdapter } from "../../adapters";
 import type { DashboardFormDeps } from "./shared";
-import { parseCronComponents } from "./shared";
+import {
+  isCodexAdapterValue,
+  isPiAdapterValue,
+  keptModeCaption,
+  modelAfterAdapterSwitch,
+  parseCronComponents,
+} from "./shared";
 
 // Adapter choices in the agent forms. "process"/"http" stay greyed out until
 // those backends exist.
 const ADAPTER_FORM_OPTIONS: Array<[string, string, boolean]> = [
   ["claude-code", "Claude Code", false],
   ["codex", "Codex", false],
+  ["pi", "Pi (multi-provider)", false],
   ["process", "Process (coming soon)", true],
   ["http", "HTTP (coming soon)", true],
 ];
@@ -40,18 +49,29 @@ const CODEX_PERM_MODE_OPTIONS: Array<[string, string, string]> = [
   ["read-only", "Read Only", "Sandboxed: no writes or side-effect commands"],
 ];
 
-function isCodexAdapterValue(adapter: string): boolean {
-  const v = adapter.trim().toLowerCase();
-  return v === "codex" || v === "openai-codex";
-}
+// Pi has no sandbox and no prompts; the tool set is the enforcement axis, plus
+// a generated gate extension for deny rules. Only two modes actually differ.
+const PI_PERM_MODE_OPTIONS: Array<[string, string, string]> = [
+  ["bypassPermissions", "Full Access", "All tools; deny rules still enforced via the gate extension"],
+  ["plan", "Read Only", "Read-only tools (read/grep/find/ls) — no writes or commands"],
+];
 
 function permModeOptionsFor(adapter: string): Array<[string, string, string]> {
+  if (isPiAdapterValue(adapter)) return PI_PERM_MODE_OPTIONS;
   return isCodexAdapterValue(adapter) ? CODEX_PERM_MODE_OPTIONS : CLAUDE_PERM_MODE_OPTIONS;
 }
 
 /** Translate a permission-mode value to the nearest equivalent when the user
  *  switches the form's adapter, so the dropdown always shows a valid choice. */
 function permModeForAdapter(value: string, adapter: string): string {
+  if (isPiAdapterValue(adapter)) {
+    // Pi has no mode-specific enforcement beyond the read-only tool set, so
+    // every stored value is kept AS-IS: rewriting (e.g. acceptEdits →
+    // bypassPermissions) would survive a switch back to Claude Code as a
+    // silent privilege escalation the user never chose. The select shows the
+    // kept value with its effective Pi behavior.
+    return value.trim() ? value : "bypassPermissions";
+  }
   if (isCodexAdapterValue(adapter)) {
     switch (value) {
       case "acceptEdits":
@@ -78,10 +98,29 @@ function permModeForAdapter(value: string, adapter: string): string {
   }
 }
 
+/** Pi keeps foreign-family modes verbatim (no destructive remap) — surface the
+ *  kept value with its effective behavior instead of hiding it. Shared by the
+ *  create and edit forms so the caption can't drift between them. */
+function appendKeptModeOption(
+  permSelect: HTMLSelectElement,
+  options: Array<[string, string, string]>,
+  state: { adapter: string; permissionMode: string },
+): void {
+  if (options.some(([v]) => v === state.permissionMode)) return;
+  const kept = permSelect.createEl("option", {
+    text: `${state.permissionMode} — ${keptModeCaption(state.permissionMode, state.adapter)}`,
+    attr: { value: state.permissionMode },
+  });
+  kept.selected = true;
+}
+
 /** One-line explanation of how permission modes map across adapter families.
  *  Shown under the permission-mode field after the user switches adapters, so
  *  the vocabulary swap (and the automatic remapping) isn't silent. */
 function adapterMappingHintText(adapter: string): string {
+  if (isPiAdapterValue(adapter)) {
+    return "Pi has no sandbox — Plan/Read Only restrict the agent to read-only tools; every other mode keeps its saved value and runs as Full Access, with your deny rules enforced by a generated gate extension.";
+  }
   return isCodexAdapterValue(adapter)
     ? "Codex enforces permissions via sandbox modes — your Claude mode was mapped: Accept Edits/Default ≈ Workspace Write, Plan ≈ Read Only, Don’t Ask ≈ Bypass."
     : "Claude Code uses permission modes — your Codex sandbox was mapped: Workspace Write ≈ Accept Edits, Read Only ≈ Plan.";
@@ -461,6 +500,7 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
       value: state.model,
       adapter: state.adapter,
       onChange: (value) => { state.model = value; },
+      loadPiModels: () => listPiModels(plugin.settings.piCliPath),
     });
   };
   renderModelField();
@@ -472,12 +512,9 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
 
   adapterSelect.addEventListener("change", () => {
     state.adapter = adapterSelect.value;
-    // A model alias from the other vendor would be passed verbatim and
-    // rejected by the CLI — reset to "use default" on family switch.
-    const otherAliases = isCodexAdapterValue(state.adapter) ? MODEL_ALIASES : CODEX_MODEL_ALIASES;
-    if (otherAliases.some((a) => a.value === state.model.trim())) {
-      state.model = "";
-    }
+    // A model the target CLI rejects (other vendor's alias, Pi's
+    // provider-qualified catalog values) resets to "use default" on switch.
+    state.model = modelAfterAdapterSwitch(state.model, state.adapter);
     renderModelField();
     state.permissionMode = permModeForAdapter(state.permissionMode, state.adapter);
     repopulatePermModeSelect();
@@ -520,6 +557,7 @@ export function renderCreateAgentForm(page: HTMLElement, deps: AgentFormDeps): v
       const opt = permSelect.createEl("option", { text: lbl, attr: { value: val } });
       if (val === state.permissionMode) opt.selected = true;
     }
+    appendKeptModeOption(permSelect, options, state);
     permDescEl.textContent = options.find(([v]) => v === permSelect.value)?.[2] ?? "";
   };
   repopulatePermModeSelect();
@@ -968,7 +1006,10 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
   const adapterSelect = adapterRow.createEl("select", { cls: "af-form-select" });
   for (const [val, lbl, disabled] of ADAPTER_FORM_OPTIONS) {
     const opt = adapterSelect.createEl("option", { text: lbl, attr: { value: val, ...(disabled ? { disabled: "true" } : {}) } });
-    if (val === agent.adapter || (isCodexAdapterValue(agent.adapter) && val === "codex")) opt.selected = true;
+    // Compare normalized so accepted alternate spellings ("openai-codex",
+    // "pi-coding-agent") select their canonical option instead of silently
+    // falling back to the first one.
+    if (val === normalizeAdapter(agent.adapter)) opt.selected = true;
   }
 
   // Model
@@ -984,6 +1025,7 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
       value: state.model,
       adapter: state.adapter,
       onChange: (value) => { state.model = value; },
+      loadPiModels: () => listPiModels(plugin.settings.piCliPath),
     });
   };
   renderEditModelField();
@@ -993,10 +1035,9 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
 
   adapterSelect.addEventListener("change", () => {
     state.adapter = adapterSelect.value;
-    const otherAliases = isCodexAdapterValue(state.adapter) ? MODEL_ALIASES : CODEX_MODEL_ALIASES;
-    if (otherAliases.some((a) => a.value === state.model.trim())) {
-      state.model = "";
-    }
+    // A model the target CLI rejects (other vendor's alias, Pi's
+    // provider-qualified catalog values) resets to "use default" on switch.
+    state.model = modelAfterAdapterSwitch(state.model, state.adapter);
     renderEditModelField();
     state.permissionMode = permModeForAdapter(state.permissionMode, state.adapter);
     repopulateEditPermModeSelect();
@@ -1039,6 +1080,7 @@ export function renderEditAgentForm(page: HTMLElement, deps: AgentFormDeps, agen
       const opt = permSelect.createEl("option", { text: lbl, attr: { value: val } });
       if (val === state.permissionMode) opt.selected = true;
     }
+    appendKeptModeOption(permSelect, options, state);
     editPermDescEl.textContent = options.find(([v]) => v === permSelect.value)?.[2] ?? "";
   };
   repopulateEditPermModeSelect();

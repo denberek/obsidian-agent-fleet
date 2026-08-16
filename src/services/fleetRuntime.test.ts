@@ -28,7 +28,12 @@ interface RuntimeInternals {
   clearRunOutput(agentName: string): void;
   notify(run: RunLogData, capturedCount?: number): void;
   resolveRunStatus(
-    result: { exitCode: number | null; timedOut: boolean; limitHit?: "budget" | "turns" },
+    result: {
+      exitCode: number | null;
+      timedOut: boolean;
+      limitHit?: "budget" | "turns";
+      errors?: string[];
+    },
     approvals?: RunLogData["approvals"],
   ): RunLogData["status"];
   recentRuns: RunLogData[];
@@ -218,6 +223,16 @@ describe("run-limit status", () => {
     const { internals } = makeRuntime();
     expect(internals.resolveRunStatus({ exitCode: 1, timedOut: false, limitHit: "budget" })).toBe("stopped");
     expect(internals.resolveRunStatus({ exitCode: 1, timedOut: false })).toBe("failure");
+  });
+
+  it("fails a run with in-band provider errors even on a clean exit", () => {
+    const { internals } = makeRuntime();
+    // Pi can stream text, then end on stopReason "error" while exiting 0.
+    expect(
+      internals.resolveRunStatus({ exitCode: 0, timedOut: false, errors: ["rate limit exceeded"] }),
+    ).toBe("failure");
+    expect(internals.resolveRunStatus({ exitCode: 0, timedOut: false, errors: [] })).toBe("success");
+    expect(internals.resolveRunStatus({ exitCode: 0, timedOut: false })).toBe("success");
   });
 });
 

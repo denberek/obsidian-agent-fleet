@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.19.0 — 2026-08-14
+
+**New backend: Pi (multi-provider).** Agents can now run on the open-source [Pi coding agent](https://github.com/earendil-works/pi) (`adapter: pi`) alongside Claude Code and Codex. One Pi agent reaches **both Anthropic and OpenAI models** — the model picker becomes a live dual-vendor list discovered from `pi --list-models` (credential-gated: it shows exactly what your connected providers expose), with free text for everything else Pi supports. Recommended CLI: **Pi 0.84.2+**. See `PI_SETUP.md`.
+
+- **Full contract parity**: scheduled tasks, chat, heartbeat, channels, memory, run logs, structured output, effort, and permission rules all work on Pi, following the existing cross-adapter semantics.
+- **Chat over RPC** — one persistent `pi --mode rpc` process per session (no respawn per turn), with a genuinely new capability: messages sent while the agent is working **steer the current run** instead of queueing behind it.
+- **Permissions**: Pi ships no permission system, so `Bash(...)` deny rules are compiled into a generated gate extension per run (same prefix semantics and dropped shapes as the Codex execpolicy translation). Permission modes map to tool sets — Read Only restricts to `read`/`grep`/`find`/`ls`.
+- **Structured output** via a generated terminating-tool extension carrying the task's JSON schema; fail-closed like the other backends.
+- **MCP** through the community `pi-mcp-adapter` package: the fleet registry is projected via a per-run `PI_CODING_AGENT_DIR` overlay, bearer tokens delivered by env and never written to disk.
+- **Auth status** (Settings → Pi provider status) via `pi auth check --json` — status only, credentials are never read.
+- **Costs** on Pi runs are Pi's catalog-priced estimates; spend/turn limits are recorded but unenforced (the Codex precedent).
+- ⚠️ **Billing**: Anthropic bills third-party harness usage per token from *extra usage*, not plan limits — unlike the first-party Claude Code backend. The setup guide and settings copy call this out; keep Anthropic-subscription agents on `claude-code` and use Pi to reach OpenAI models, API-key providers, or both vendors at once.
+
+**Hardening from the pre-release review** (all found and fixed before this shipped):
+
+- Pi temp state (MCP overlay + gate extensions) now lives under a dedicated `agent-fleet-pi/` tmpdir root with a pid liveness marker — the startup sweep can no longer delete the live overlay of a Pi session running in another Obsidian instance, and the window widened from 24h to 7 days.
+- Overlay teardown now heals everything Pi actually wrote back into `~/.pi/agent` (creating it if it never existed) — previously a fresh Pi setup lost its entire session history on cleanup. An mtime guard prevents clobbering credentials another process rotated mid-run.
+- On Windows without Developer Mode, the MCP projection degrades per entry (junctions, then copies) instead of silently disabling all MCP servers and the `remember` tool for Pi agents.
+- A hung Pi chat process is now actually killed by the watchdog (the kill ran after the process handle was cleared), and late events from a stale process can no longer tear down its replacement's state mid-turn — the same identity guard now protects all three backends' chat processes.
+- Deny rules the Pi gate can't express now warn in chat sessions too, not just one-shot runs.
+- A Pi run that streamed text and then hit a provider error (rate limit, auth) is now recorded as failed instead of a clean success, with the error appended to the transcript.
+- Form fixes: switching a Pi agent to Claude/Codex clears provider-qualified models that the target CLI would reject; selecting **Custom…** in the Pi model picker prefills the saved value instead of wiping it; the edit form's adapter dropdown recognizes the `pi-coding-agent` spelling; and the kept-permission-mode caption now tells the truth (`read-only` runs with read-only tools on Pi, not Full Access).
+- Cleanups: the generated Pi extensions are strictly typed (a Pi schema change now fails loudly instead of the deny-gate silently matching nothing), shared argv/model/tools policy between one-shot and chat, deduplicated adapter predicates, CLI-candidate resolvers, spawn-capture helpers, npm package maps, and dead state removed.
+
 ## 0.18.0 — 2026-08-02
 
 Catches the plugin up to **Claude Code 2.1.220** and **Codex 0.146.0**. v0.16.0 shipped against 2.1.198 / 0.142.5, and both CLIs moved underneath us: Opus 5 became the default Opus, GPT-5.6 landed in Codex, and three of the four Codex model slugs we offered were deprecated or scheduled for retirement.

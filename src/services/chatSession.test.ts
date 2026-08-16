@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChatSession } from "./chatSession";
+import { resetPiAdapterWarnings } from "../adapters/piAdapter";
 import { ExecutionManager } from "./executionManager";
 import type { AgentConfig, FleetSettings, SkillConfig, TaskConfig, WorkingMemory } from "../types";
 import type { FleetRepository } from "../fleetRepository";
@@ -9,6 +10,48 @@ import { MEMORY_CAPTURE_INSTRUCTION } from "../utils/memoryFormat";
 // uses TFile/normalizePath which the test stub provides. We don't drive any
 // network/process code here — only exercise getChatFilePath and buildBasePrompt
 // via bracket access since both are private.
+
+// Fake ChildProcess factory for the spawnCli mock below (Pi RPC lifecycle
+// tests). Hoisted because vi.mock factories run before module init.
+const fakeSpawn = vi.hoisted(() => {
+  type Listener = (...args: unknown[]) => void;
+  interface FakeProc {
+    listeners: Record<string, Listener>;
+    written: string[];
+    killed: boolean;
+    stdout: { on(ev: string, fn: Listener): void; removeListener(ev: string, fn: Listener): void };
+    stderr: { on(ev: string, fn: Listener): void; removeListener(ev: string, fn: Listener): void };
+    stdin: { write(s: string): boolean };
+    on(ev: string, fn: Listener): void;
+    removeListener(ev: string, fn: Listener): void;
+    kill(): boolean;
+  }
+  const procs: FakeProc[] = [];
+  function make(): FakeProc {
+    const proc: FakeProc = {
+      listeners: {},
+      written: [],
+      killed: false,
+      stdout: { on: () => undefined, removeListener: () => undefined },
+      stderr: { on: () => undefined, removeListener: () => undefined },
+      stdin: { write: (s: string) => (proc.written.push(s), true) },
+      on: (ev, fn) => {
+        proc.listeners[ev] = fn;
+      },
+      removeListener: () => undefined,
+      kill: () => ((proc.killed = true), true),
+    };
+    procs.push(proc);
+    return proc;
+  }
+  return { procs, make };
+});
+
+vi.mock("../utils/platform", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../utils/platform")>();
+  const spawnCli = (() => fakeSpawn.make()) as unknown as typeof mod.spawnCli;
+  return { ...mod, spawnCli };
+});
 
 function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -51,6 +94,7 @@ function makeSettings(overrides: Partial<FleetSettings> = {}): FleetSettings {
     fleetFolder: "_fleet",
     claudeCliPath: "claude",
     codexCliPath: "codex",
+    piCliPath: "pi",
     defaultModel: "default",
     awsRegion: "us-east-1",
     maxConcurrentRuns: 2,
@@ -1013,5 +1057,276 @@ describe("ChatSession.parseStreamEvents — message lifecycle and snapshot recon
     ]);
     expect(events.at(-1)?.type).toBe("result");
     expect(events.at(-1)?.messageIds).toHaveLength(2);
+  });
+});
+
+describe("ChatSession Pi RPC — event translation and turn lifecycle", () => {
+  type PiInternals = {
+    handleStdout(chunk: string): void;
+    activeOnEvent: ((ev: { type: string; content: string; toolName?: string; errorMessage?: string }) => void) | null;
+    pendingTurns: number;
+    setStreaming(active: boolean): void;
+    turnResolve: ((r: { text: string; toolCalls: unknown[] }) => void) | null;
+    process: { stdin: { write: (s: string) => boolean } } | null;
+    isProcessAlive: boolean;
+    stats: { costTotalUsd: number; turnCount: number; concreteModel?: string; contextTokensUsed?: number };
+  };
+
+  function makePiSession(): { session: ChatSession; s: PiInternals; events: Array<{ type: string; content: string; toolName?: string; errorMessage?: string }> } {
+    // A minimally-persistable vault so the fire-and-forget persist() on turn
+    // end doesn't produce unhandled rejections.
+    const piVault = {
+      getAbstractFileByPath: () => null,
+      create: () => Promise.resolve(),
+      modify: () => Promise.resolve(),
+      createFolder: () => Promise.resolve(),
+    } as never;
+    const session = new ChatSession(
+      makeAgent({ adapter: "pi" }),
+      makeSettings(),
+      makeRepositoryStub(),
+      piVault,
+      { inAppConversationId: "pi-test-conv" },
+    );
+    const s = session as unknown as PiInternals;
+    const events: Array<{ type: string; content: string; toolName?: string; errorMessage?: string }> = [];
+    s.activeOnEvent = (ev) => events.push(ev);
+    return { session, s, events };
+  }
+
+  const assistantEndLine = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        model: "claude-opus-5",
+        provider: "anthropic",
+        usage: {
+          input: 100,
+          output: 20,
+          cacheRead: 50,
+          cacheWrite: 10,
+          totalTokens: 180,
+          cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+        },
+        stopReason: "stop",
+        ...over,
+      },
+    }) + "\n";
+
+  it("streams deltas, tools, and message boundaries, and settles the turn on agent_end", async () => {
+    const { session, s, events } = makePiSession();
+    s.pendingTurns = 1;
+    s.setStreaming(true);
+    const settled: Array<{ text: string }> = [];
+    s.turnResolve = (r) => settled.push(r as { text: string });
+
+    s.handleStdout(
+      JSON.stringify({ type: "message_start", message: { role: "assistant", content: [] } }) + "\n" +
+      JSON.stringify({ type: "message_update", usage: {}, assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } }) + "\n" +
+      JSON.stringify({ type: "message_update", usage: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "hel" } }) + "\n" +
+      JSON.stringify({ type: "message_update", usage: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "lo" } }) + "\n" +
+      JSON.stringify({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } }) + "\n" +
+      assistantEndLine() +
+      JSON.stringify({ type: "agent_end", messages: [] }) + "\n",
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(events.map((e) => e.type)).toContain("message_start");
+    expect(events.filter((e) => e.type === "text").map((e) => e.content).join("")).toBe("hello");
+    expect(events.find((e) => e.type === "thinking")?.content).toBe("hmm");
+    expect(events.find((e) => e.type === "tool_use")?.toolName).toBe("bash");
+    expect(events.map((e) => e.type)).toContain("message_stop");
+    expect(settled).toHaveLength(1);
+    expect(session.isStreaming).toBe(false);
+    // Stats: model, context proxy, catalog cost, turn count.
+    expect(s.stats.concreteModel).toBe("claude-opus-5");
+    expect(s.stats.contextTokensUsed).toBe(160);
+    expect(s.stats.costTotalUsd).toBeCloseTo(0.003);
+    expect(s.stats.turnCount).toBe(1);
+  });
+
+  it("surfaces provider errors and a failed prompt command settles the turn", () => {
+    const { s, events } = makePiSession();
+    s.pendingTurns = 1;
+    s.setStreaming(true);
+    s.handleStdout(assistantEndLine({ content: [], stopReason: "error", errorMessage: "boom" }));
+    expect(events.find((e) => e.type === "error")?.errorMessage).toBe("boom");
+
+    // A rejected turn-opening prompt means no run ever starts — settle it.
+    s.pendingTurns = 1;
+    s.handleStdout(JSON.stringify({ id: "turn-1", type: "response", command: "prompt", success: false, error: "spawn refused" }) + "\n");
+    expect(events.filter((e) => e.type === "error").map((e) => e.errorMessage)).toContain("spawn refused");
+    expect(s.pendingTurns).toBe(0);
+
+    // A rejected STEER must NOT settle the active turn — only its own message
+    // is dropped; the running turn still ends with its own agent_end.
+    s.pendingTurns = 1;
+    s.setStreaming(true);
+    s.handleStdout(JSON.stringify({ id: "steer-2", type: "response", command: "prompt", success: false, error: "already streaming" }) + "\n");
+    expect(s.pendingTurns).toBe(1);
+
+    // A rejected between-turn follow-up undoes its own pendingTurns increment.
+    s.pendingTurns = 2;
+    s.handleStdout(JSON.stringify({ id: "follow-3", type: "response", command: "prompt", success: false, error: "nope" }) + "\n");
+    expect(s.pendingTurns).toBe(1);
+  });
+
+  it("answers extension dialog requests with cancelled to avoid hanging headless", () => {
+    const { s } = makePiSession();
+    const written: string[] = [];
+    s.process = { stdin: { write: (line: string) => { written.push(line); return true; } } };
+    s.isProcessAlive = true;
+    s.handleStdout(JSON.stringify({ type: "extension_ui_request", id: "u1", method: "confirm", title: "Allow?" }) + "\n");
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0]!)).toEqual({ type: "extension_ui_response", id: "u1", cancelled: true });
+    // Fire-and-forget methods get no response.
+    s.handleStdout(JSON.stringify({ type: "extension_ui_request", id: "u2", method: "notify", message: "hi" }) + "\n");
+    expect(written).toHaveLength(1);
+  });
+
+  it("steers mid-turn injects into the current run without bumping pendingTurns", () => {
+    const { session, s } = makePiSession();
+    const written: string[] = [];
+    s.process = { stdin: { write: (line: string) => { written.push(line); return true; } } };
+    s.isProcessAlive = true;
+    s.pendingTurns = 1;
+    s.setStreaming(true);
+
+    session.injectMessage("change of plan");
+    expect(s.pendingTurns).toBe(1);
+    expect(JSON.parse(written[0]!)).toEqual({
+      id: "steer-1",
+      type: "prompt",
+      message: "change of plan",
+      streamingBehavior: "steer",
+    });
+
+    // Between turns: a plain prompt that counts as its own run.
+    s.pendingTurns = 0;
+    s.setStreaming(false);
+    session.injectMessage("follow-up");
+    expect(s.pendingTurns).toBe(1);
+    expect(JSON.parse(written[1]!)).toEqual({ id: "follow-2", type: "prompt", message: "follow-up" });
+  });
+});
+
+describe("ChatSession Pi RPC — process lifecycle (watchdog kill, stale close, dropped rules)", () => {
+  type LifecycleInternals = {
+    ensurePiProcess(): Promise<void>;
+    armWatchdog(): void;
+    process: unknown | null;
+    processListeners: unknown | null;
+    isProcessAlive: boolean;
+    pendingTurns: number;
+    setStreaming(active: boolean): void;
+    activeOnEvent: ((ev: { type: string; errorMessage?: string }) => void) | null;
+    turnReject: ((e: Error) => void) | null;
+    piExtCleanup: (() => void) | null;
+  };
+
+  // ensurePiProcess touches the MCP registry and vault base path, which the
+  // shared stub doesn't cover.
+  function makePiRepoStub(): FleetRepository {
+    return {
+      getMemoryPath: (n: string) => `_fleet/memory/${n}.md`,
+      getSkillByName: () => undefined,
+      getMemory: async () => null,
+      getAgentByName: () => undefined,
+      getMcpServers: () => [],
+      getVaultBasePath: () => ".",
+    } as unknown as FleetRepository;
+  }
+
+  function makeLifecycleSession(agentOverrides: Partial<AgentConfig> = {}) {
+    const session = new ChatSession(
+      makeAgent({ adapter: "pi", ...agentOverrides }),
+      makeSettings(),
+      makePiRepoStub(),
+      vaultStub,
+      { inAppConversationId: "pi-lifecycle" },
+    );
+    const s = session as unknown as LifecycleInternals;
+    const events: Array<{ type: string; errorMessage?: string }> = [];
+    s.activeOnEvent = (ev) => events.push(ev);
+    return { session, s, events };
+  }
+
+  it("watchdog detaches and kills the hung process before tearing down state", async () => {
+    vi.useFakeTimers();
+    try {
+      const { s } = makeLifecycleSession();
+      await s.ensurePiProcess();
+      const proc = fakeSpawn.procs[fakeSpawn.procs.length - 1]!;
+      s.pendingTurns = 1;
+      s.setStreaming(true);
+      const rejections: Error[] = [];
+      s.turnReject = (e) => rejections.push(e);
+
+      s.armWatchdog();
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+
+      // The old ordering nulled this.process in handleProcessError first, so
+      // kill() was a no-op and the hung process stayed alive with its close
+      // handler attached.
+      expect(proc.killed).toBe(true);
+      expect(s.process).toBeNull();
+      expect(s.processListeners).toBeNull();
+      expect(rejections[0]?.message).toBe("Watchdog timeout");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a stale process's close event does not tear down the replacement's state", async () => {
+    const { session, s, events } = makeLifecycleSession();
+    await s.ensurePiProcess();
+    const orphan = fakeSpawn.procs[fakeSpawn.procs.length - 1]!;
+    const orphanClose = orphan.listeners["close"]!;
+
+    // Simulate the historical bug path: the process is abandoned (nulled)
+    // without a detach, then a replacement spawns under the same session id.
+    s.process = null;
+    s.isProcessAlive = false;
+    await s.ensurePiProcess();
+    const replacement = fakeSpawn.procs[fakeSpawn.procs.length - 1]!;
+    expect(replacement).not.toBe(orphan);
+
+    s.pendingTurns = 1;
+    s.setStreaming(true);
+    const cleanup = vi.fn();
+    s.piExtCleanup = cleanup;
+
+    // The orphan finally exits — its close must be ignored, not settle the
+    // replacement's in-flight turn or run its extension cleanup.
+    orphanClose();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(s.pendingTurns).toBe(1);
+    expect(session.isStreaming).toBe(true);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+
+    // The replacement's own close still tears down normally.
+    replacement.listeners["close"]!();
+    expect(cleanup).toHaveBeenCalled();
+    expect(s.pendingTurns).toBe(0);
+    expect(session.isStreaming).toBe(false);
+  });
+
+  it("warns about deny rules the gate can't express on the chat path too", async () => {
+    resetPiAdapterWarnings();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { s } = makeLifecycleSession({
+        permissionRules: { allow: [], deny: ["WebFetch"] },
+      });
+      await s.ensurePiProcess();
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes("can't be enforced")),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+      resetPiAdapterWarnings();
+    }
   });
 });

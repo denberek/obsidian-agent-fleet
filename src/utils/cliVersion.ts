@@ -23,6 +23,20 @@ export const MIN_CLAUDE_CLI_VERSION = "2.1.219";
 /** Minimum Codex CLI we recommend. */
 export const MIN_CODEX_CLI_VERSION = "0.146.0";
 
+/** Minimum Pi coding-agent CLI we recommend. 0.84.2 is the release this
+ *  version's `--mode json` event parsing and extension API were validated
+ *  against; the project renamed npm scopes shortly before it, so older builds
+ *  may not even resolve the same package name. */
+export const MIN_PI_CLI_VERSION = "0.84.2";
+
+/** The npm package each CLI installs from — single source for every
+ *  "npm install -g …" hint the plugin prints. */
+export const CLI_NPM_PACKAGES = {
+  Claude: "@anthropic-ai/claude-code",
+  Codex: "@openai/codex",
+  Pi: "@earendil-works/pi-coding-agent",
+} as const;
+
 /**
  * Pull a semver triple out of `--version` output.
  *
@@ -64,7 +78,7 @@ export function isBelowMinimum(version: string | null, minimum: string): boolean
  * with no consequence attached is noise people learn to dismiss.
  */
 export function cliVersionWarning(
-  label: "Claude" | "Codex",
+  label: "Claude" | "Codex" | "Pi",
   version: string | null,
   minimum: string,
 ): string | null {
@@ -72,10 +86,13 @@ export function cliVersionWarning(
   const detail =
     label === "Claude"
       ? "Older builds truncate streamed output when the reader is slow, which is how Agent Fleet reads run output."
-      : "This release is validated against 0.146.0; older JSONL and resume behavior may differ.";
+      : label === "Codex"
+        ? "This release is validated against 0.146.0; older JSONL and resume behavior may differ."
+        : "This release is validated against 0.84.2; older builds predate the current JSON event stream and extension API.";
+  const pkg = CLI_NPM_PACKAGES[label];
   return (
     `${label} CLI ${version} is older than the recommended ${minimum}. ${detail} ` +
-    `Update with: npm install -g ${label === "Claude" ? "@anthropic-ai/claude-code" : "@openai/codex"}`
+    `Update with: npm install -g ${pkg}`
   );
 }
 

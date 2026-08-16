@@ -1,4 +1,46 @@
 import type AgentFleetPlugin from "../../main";
+import { CODEX_MODEL_ALIASES, MODEL_ALIASES } from "../../components/modelPicker";
+
+export function isCodexAdapterValue(adapter: string): boolean {
+  const v = adapter.trim().toLowerCase();
+  return v === "codex" || v === "openai-codex";
+}
+
+export function isPiAdapterValue(adapter: string): boolean {
+  const v = adapter.trim().toLowerCase();
+  return v === "pi" || v === "pi-coding-agent";
+}
+
+/**
+ * Model value the form should keep after switching to `adapter`. Pi is
+ * multi-provider, so every shape is valid there. Claude Code and Codex reject
+ * the other family's aliases AND Pi's provider-qualified catalog values
+ * (`anthropic/claude-opus-5`) — both are cleared to "use default" rather than
+ * passed verbatim to a CLI that errors on them. Bedrock ARNs also contain
+ * slashes but are valid Claude ids, so `arn:`-prefixed values are kept.
+ */
+export function modelAfterAdapterSwitch(model: string, adapter: string): string {
+  if (isPiAdapterValue(adapter)) return model;
+  const trimmed = model.trim();
+  const otherAliases = isCodexAdapterValue(adapter) ? MODEL_ALIASES : CODEX_MODEL_ALIASES;
+  if (otherAliases.some((a) => a.value === trimmed)) return "";
+  if (trimmed.includes("/") && !trimmed.startsWith("arn:")) return "";
+  return model;
+}
+
+/**
+ * Caption for a foreign-family permission mode the form keeps verbatim (Pi
+ * never remaps modes — see permModeForAdapter). Mirrors piAdapter's
+ * piToolsArgs: plan/read-only run with the read-only tool set, every other
+ * mode runs with full tools — the caption must state what runtime enforces,
+ * not the other way around.
+ */
+export function keptModeCaption(mode: string, adapter: string): string {
+  if (!isPiAdapterValue(adapter)) return "kept as saved";
+  return mode === "read-only" || mode === "plan"
+    ? "runs with read-only tools on Pi"
+    : "runs as Full Access on Pi";
+}
 
 /**
  * View helpers every extracted form page borrows from the dashboard so the

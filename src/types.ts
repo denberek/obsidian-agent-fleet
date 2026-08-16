@@ -26,6 +26,8 @@ export interface FleetSettings {
   claudeCliPath: string;
   /** Path to the OpenAI Codex CLI binary, used by agents with `adapter: codex`. */
   codexCliPath: string;
+  /** Path to the Pi coding-agent CLI binary, used by agents with `adapter: pi`. */
+  piCliPath: string;
   defaultModel: string;
   awsRegion: string;
   maxConcurrentRuns: number;
@@ -40,6 +42,7 @@ export interface FleetSettings {
    *  adapters can gate flags without spawning another probe per run. */
   claudeCliVersion?: string;
   codexCliVersion?: string;
+  piCliVersion?: string;
   /** Claude sandbox settings projected into each temporary settings file. */
   claudeSandboxNetworkStrictAllowlist: boolean;
   claudeSandboxFilesystemDisabled: boolean;
@@ -520,6 +523,12 @@ export interface ExecutionResult {
   maxBudgetUsd?: number;
   /** The turn cap that applied to this run, if any. */
   maxTurns?: number;
+  /**
+   * Provider-reported errors that ended the run. When set, the run failed
+   * even if the CLI exited 0 (Pi streams text, then reports the failure
+   * in-band); FleetRuntime's status resolution checks this before exitCode.
+   */
+  errors?: string[];
   /**
    * Set when a configured limit — not an error — ended the run. Distinguishes
    * "stopped because you told me to" from a genuine failure, so notifications

@@ -1,6 +1,6 @@
 # Agent Fleet for Obsidian
 
-**Turn your vault into an AI command center.** Build and run autonomous AI agents on Claude Code or OpenAI Codex — schedule tasks, chat in real time, connect Slack, Telegram, and Discord, and hook into any MCP service. Every agent is markdown you own.
+**Turn your vault into an AI command center.** Build and run autonomous AI agents on Claude Code, OpenAI Codex, or the multi-provider Pi harness — schedule tasks, chat in real time, connect Slack, Telegram, and Discord, and hook into any MCP service. Every agent is markdown you own.
 
 <p>
   <a href="https://afleet.md"><img src="https://img.shields.io/badge/website-afleet.md-a78bfa" alt="Website"></a>
@@ -15,13 +15,13 @@
 
 ## What is Agent Fleet?
 
-Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Agents run on the CLI backend of your choice — **Claude Code** (Claude Max/Pro subscription or Anthropic API key) or **OpenAI Codex** — selectable per agent. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
+Agent Fleet is an Obsidian plugin that lets you build, configure, and run AI agents directly from your vault. Agents run on the CLI backend of your choice — **Claude Code** (Claude Max/Pro subscription or Anthropic API key), **OpenAI Codex**, or **Pi** (multi-provider: Anthropic + OpenAI models through one harness) — selectable per agent. Every agent, skill, task, and run log is a markdown file. If the plugin disappears, your knowledge stays.
 
 ### Core Capabilities
 
 🤖 **AI Agents** — Create specialized agents with system prompts, skills, permissions, heartbeat schedules, and memory. Each agent is a folder of markdown files you fully own and control.
 
-🔀 **Dual CLI backends** — Run each agent on **Claude Code** or **OpenAI Codex**, set per agent. Models, chat, tasks, heartbeat, channels, and permission rules all work the same on either backend — pick the engine, keep the workflow.
+🔀 **Three CLI backends** — Run each agent on **Claude Code**, **OpenAI Codex**, or **Pi**, set per agent. Models, chat, tasks, heartbeat, channels, and permission rules all work the same on every backend — pick the engine, keep the workflow. Pi agents get a live dual-vendor model picker: every Anthropic and OpenAI model your connected providers expose.
 
 📚 **Wiki Keeper** — Turn any folder in your vault into a self-maintaining wiki in the spirit of Karpathy's "LLM wiki" pattern. Drop sources into an inbox, point at existing note folders as passive watched sources, and a scoped keeper agent ingests them into an interlinked `_topics/` tree with cross-references, citations, and a log. Each topic page carries a refreshable `## Summary` block synthesized from its claims history, so query-time reads stay cheap as the wiki grows. Substantive Q&A answers compound back into the wiki — both as filed synthesis pages and as dated bullets on every cited topic. Weekly lint surfaces orphans, contradictions, dedup candidates, and stale summaries; the dashboard's Wiki Keepers tab renders the review queue. Scales from one whole-vault keeper to many project-scoped instances; any other agent (e.g. a PM agent) can reference a keeper's scope and query or contribute. See the [Wiki Keeper Guide](WIKI_KEEPER_GUIDE.md).
 
@@ -88,6 +88,13 @@ Agent Fleet runs on the subscriptions you already pay for — no separate API bi
     npm install -g @openai/codex
     codex login  # authenticate on first run
     ```
+  - **[Pi coding agent](https://github.com/earendil-works/pi)** (optional, for `pi` agents):
+    ```bash
+    npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+    pi   # then /login to connect Claude Pro/Max, ChatGPT, or add API keys
+    ```
+    ⚠️ Anthropic bills third-party harness usage per token ("extra usage"), **not** against Claude plan limits — unlike the first-party Claude Code backend. Check [claude.ai/settings/usage](https://claude.ai/settings/usage) before scheduling Pi agents on Anthropic models. OpenAI officially endorses ChatGPT-subscription use in Pi.
+    For MCP servers on Pi agents, also install the community MCP client: `pi install npm:pi-mcp-adapter`.
     Works with a **ChatGPT Plus/Pro plan** or an **OpenAI API key**. **Use 0.146.0 or newer** — this release is validated against that JSONL/resume behavior and includes the current MCP reconnect fixes.
 
   You only need the backend(s) your agents are configured to use — Claude-only users never pay the Codex probe, and vice versa.
@@ -147,7 +154,7 @@ agents/my-agent/
 | **Avatar** | Lucide icon picker (1,400+ icons) or emoji |
 | **System Prompt** | Core instructions that define the agent's behavior |
 | **Model** | Backend-aware picker — Claude aliases (`opus`/`sonnet`/`haiku`/`fable`), pinned IDs, Bedrock/Vertex/Foundry, or Codex slugs; free-text for anything else |
-| **Adapter** | Claude Code or OpenAI Codex — set per agent |
+| **Adapter** | Claude Code, OpenAI Codex, or Pi — set per agent |
 | **Effort** | Low / Medium / High / Extra High / Max / Ultracode. Codex maps unsupported levels safely and reports the fallback once |
 | **Working Directory** | Where the agent operates (defaults to vault root) |
 | **Timeout** | Max execution time in seconds |
@@ -174,7 +181,7 @@ agents/my-agent/
 
 ### Backends
 
-Each agent runs on one of two CLI backends, selected by the **Adapter** field in the agent editor:
+Each agent runs on one of three CLI backends, selected by the **Adapter** field in the agent editor:
 
 | | **Claude Code** (default) | **OpenAI Codex** |
 |---|---|---|
@@ -187,7 +194,17 @@ Each agent runs on one of two CLI backends, selected by the **Adapter** field in
 | Spend / turn limits | Enforced by `--max-budget-usd` / `--max-turns` | Recorded for audit only; Codex exposes neither limit |
 | Structured task output | Inline `--json-schema`; validated JSON read from `structured_output` | Temporary `--output-schema` file; final JSON parsed from the agent message |
 
-Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run logs, model picker — works identically on both. The picker switches its alias list based on the selected adapter; free-text remains the escape hatch for any model ID.
+Everything else — chat, tasks, heartbeat, Slack/Telegram channels, memory, run logs, model picker — works identically on every backend. The picker switches its alias list based on the selected adapter; free-text remains the escape hatch for any model ID.
+
+**The third backend: Pi.** [Pi](https://github.com/earendil-works/pi) is an open-source multi-provider harness — one engine that can run **both Anthropic and OpenAI models** (plus more via API keys). Selecting `pi` as an agent's adapter changes the model picker into a live dual-vendor list discovered from `pi --list-models`: the listing is credential-gated, so it shows exactly the models your connected providers expose. How Pi maps onto the fleet contract:
+
+- **Chat** runs over Pi's RPC protocol with one persistent process per session — messages sent mid-turn *steer* the current run instead of waiting, a capability neither other backend has.
+- **Permission rules**: Pi ships no permission system, so your `Bash(...)` deny rules are compiled into a generated gate extension loaded per run (same rule shapes — and the same dropped patterns — as the Codex execpolicy translation). The gate matches the command **string** (quote-stripped, any position), not the argv of spawned processes like execpolicy does — it catches `sudo rm -rf` and `true && rm -rf` but determined quoting tricks can slip through, so treat deny rules on Pi as guardrails, not a security boundary. Permission Mode maps to tool sets: **Read Only** restricts the agent to read-only tools; everything else runs with full tools plus the gate.
+- **Structured output** uses a generated terminating-tool extension carrying the task's JSON schema (fail-closed: a schema run with no structured result fails rather than returning prose).
+- **MCP** requires the community [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) package (`pi install npm:pi-mcp-adapter`); the fleet registry is projected via a per-run config overlay, tokens delivered by env, never on disk.
+- **Costs** are Pi's catalog-priced estimates (close, but not provider-billed figures). Spend/turn limits are recorded for audit only, like Codex.
+
+> **Billing note:** with a Claude Pro/Max subscription connected to Pi, Anthropic bills usage per token from your *extra usage* balance — it does **not** draw from plan limits the way the first-party Claude Code backend does. OpenAI's ChatGPT-subscription path is officially endorsed for Pi. Prefer the `claude-code` adapter for Anthropic-on-subscription agents; use Pi to reach OpenAI models, API-key providers, or both vendors from one agent roster.
 
 **How Codex permission rules work.** Your `Bash(...)` allow/deny rules are translated into Codex *execpolicy* rules and injected through a per-agent `CODEX_HOME` overlay (the agent's `~/.codex` with auth/config/sessions symlinked through, but its own rules directory). This enforcement is **lossy by design** and degrades safely:
 
