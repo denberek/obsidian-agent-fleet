@@ -5,7 +5,14 @@
    ═══════════════════════════════════════════════════════ */
 
 /* ─── Custom Properties ─── */
-.af-root {
+/* Revision mode mounts on `MarkdownView.contentEl` and on `document.body`,
+   both outside `.af-root`, so the same token set is declared for those hosts.
+   One definition, several scopes — never a second palette. */
+.af-root,
+.view-content.af-revision-active,
+.af-revision-popover,
+.af-revision-floating,
+.af-revision-notice {
   --af-bg-primary: var(--background-primary);
   --af-bg-secondary: var(--background-secondary);
   --af-bg-tertiary: var(--background-secondary-alt, var(--background-secondary));
@@ -4767,4 +4774,776 @@
   margin-top: 2px;
   font-size: 11px;
   color: var(--af-text-muted);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Revision mode — document-attached editor interface
+   REVISION_MODE_DESIGN.md §§6.2, 10.6, 25.1
+   Everything below is scoped to `af-revision-*` classes and the
+   `af-revision-active` host class, which the controller removes on exit.
+   ═══════════════════════════════════════════════════════ */
+
+.view-content.af-revision-active,
+.af-revision-popover,
+.af-revision-floating {
+  --af-revision-rail-width: 280px;
+  --af-revision-surface: var(--background-secondary);
+  --af-revision-surface-alt: var(--background-primary);
+  --af-revision-border: var(--background-modifier-border);
+  --af-revision-text: var(--text-normal);
+  --af-revision-muted: var(--text-muted);
+  --af-revision-faint: var(--text-faint);
+  --af-revision-accent: var(--interactive-accent);
+  --af-revision-radius: 8px;
+  /* Passage annotations use Obsidian's familiar highlight treatment; chrome
+     stays neutral through separate muted/border tokens below. */
+  --af-revision-mark-bg: var(--text-highlight-bg, rgba(255, 191, 105, 0.28));
+  --af-revision-mark-line: var(--color-orange, #c9761a);
+  --af-revision-warn: var(--color-red, #d64550);
+  --af-revision-ok: var(--color-green, #4caf50);
+}
+
+/* ─── Host grid (§25.1) ─── */
+
+/* Row 1 is the document, row 2 holds unknown Obsidian children, row 3 is the
+   narrow-pane dock. There is no toolbar row: the rail owns every control at
+   normal width, so the editor keeps that vertical space (§6.2). */
+.view-content.af-revision-active {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--af-revision-rail-width);
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+/* Unknown Obsidian children (e.g. embedded backlinks) keep their stacking
+   below the editor instead of overlapping it. */
+.view-content.af-revision-active > * {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+}
+
+.view-content.af-revision-active > .markdown-source-view,
+.view-content.af-revision-active > .markdown-reading-view {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.view-content.af-revision-active > .af-revision-rail {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.view-content.af-revision-active > .af-revision-dock {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+/* ─── Visually hidden live status (§17) ─── */
+
+/* Clipped, never `display: none` — hidden-by-display text is not announced. */
+.af-revision-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ─── Shared control deltas ───
+   Every control below is one of Agent Fleet's existing primitives
+   (`af-btn-sm`, `af-btn-icon`, `af-form-select`, `af-form-label`,
+   Obsidian's `clickable-icon`). These rules only place them and carry
+   state; they never restyle the primitive itself. */
+
+/* `af-btn-sm` sets `box-shadow: none !important`, which also suppresses
+   Obsidian's default focus ring, so the chrome supplies an outline instead. */
+.af-revision-rail .af-btn-sm:focus-visible,
+.af-revision-dock .af-btn-sm:focus-visible,
+.af-revision-rail .clickable-icon:focus-visible,
+.af-revision-dock .clickable-icon:focus-visible {
+  outline: 2px solid var(--af-accent);
+  outline-offset: 1px;
+}
+
+.af-revision-rail .af-btn-sm:disabled,
+.af-revision-dock .af-btn-sm:disabled,
+.af-revision-rail .clickable-icon:disabled,
+.af-revision-dock .clickable-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.af-revision-rail .clickable-icon .svg-icon,
+.af-revision-dock .clickable-icon .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.af-revision-action-button {
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* Queued/running/verifying: the label already reports progress, so the motion
+   is only a faint confirmation that something is live. */
+.af-revision-action-busy .af-btn-icon {
+  animation: af-revision-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes af-revision-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ─── Destination section ─── */
+
+.af-revision-destination {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.af-revision-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Reuse the sentence-case field label used by Agent Fleet forms. Its fixed
+   form-row width and top padding are not appropriate in this stacked rail. */
+.af-revision-field-label {
+  width: auto;
+  margin: 0 0 3px;
+  padding: 0;
+  line-height: 1.2;
+}
+
+/* `af-form-select` is a flex-row field by default; the rail stacks instead. */
+.af-revision-select {
+  flex: none;
+  width: 100%;
+  max-width: 100%;
+}
+
+.af-revision-field-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+}
+
+.af-revision-field-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-field-note.af-revision-error {
+  color: var(--af-revision-warn);
+}
+
+/* Hidden-until-relevant controls. Each keeps its own display type — a shared
+   `display: inline-block` would flatten the flex buttons. */
+.af-revision-field-note,
+.af-revision-rail-count,
+.af-revision-popover-counter {
+  display: none;
+}
+
+.af-revision-field-note.af-revision-visible,
+.af-revision-rail-count.af-revision-visible,
+.af-revision-popover-counter.af-revision-visible {
+  display: inline-block;
+}
+
+.af-revision-retry,
+.af-revision-rail-close {
+  display: none;
+}
+
+.af-revision-retry.af-revision-visible,
+.af-revision-rail-close.af-revision-visible {
+  display: inline-flex;
+}
+
+/* ─── Notes rail ─── */
+
+/* Header and footer are flex-pinned rather than `position: sticky`, so the
+   primary action can never be scrolled past. */
+.af-revision-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--af-revision-border);
+  background: var(--af-revision-surface);
+}
+
+.af-revision-rail-header,
+.af-revision-rail-footer {
+  flex: 0 0 auto;
+  background: var(--af-revision-surface);
+}
+
+.af-revision-rail-header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--af-revision-border);
+}
+
+.af-revision-rail-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--af-revision-border);
+}
+
+.af-revision-rail-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.af-revision-rail-icon {
+  display: inline-flex;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-rail-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.af-revision-rail-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--af-revision-text);
+}
+
+.af-revision-rail-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  font-size: 10px;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-rail-close {
+  margin-left: auto;
+}
+
+.af-revision-notes {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+/* ─── Note cards ─── */
+
+.af-revision-note-card {
+  position: relative;
+  padding: 9px 10px 9px 26px;
+  border: 1px solid var(--af-revision-border);
+  border-radius: var(--af-revision-radius);
+  background: var(--af-revision-surface-alt);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.af-revision-note-card:hover,
+.af-revision-note-card.af-revision-note-active {
+  border-color: var(--af-revision-muted);
+  background: var(--background-modifier-hover);
+}
+
+.af-revision-note-card:focus-visible {
+  outline: 2px solid var(--af-revision-accent);
+  outline-offset: 1px;
+}
+
+.af-revision-note-number {
+  position: absolute;
+  top: 9px;
+  left: 8px;
+  width: 14px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-note-quote {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--af-revision-muted);
+  border-left: 2px solid var(--af-revision-border);
+  padding-left: 7px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.af-revision-note-comment {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--af-revision-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.af-revision-note-warning {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--af-revision-warn);
+}
+
+.af-revision-note-warning-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.af-revision-note-card.af-revision-note-orphan {
+  border-style: dashed;
+  border-color: var(--af-revision-warn);
+}
+
+.af-revision-note-card.af-revision-note-reattaching {
+  border-color: var(--af-revision-accent);
+  box-shadow: 0 0 0 1px var(--af-revision-accent) inset;
+}
+
+.af-revision-note-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.af-revision-note-card:hover .af-revision-note-actions,
+.af-revision-note-card:focus-within .af-revision-note-actions {
+  opacity: 1;
+}
+
+.af-revision-rail .af-revision-note-action {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+}
+
+.af-revision-rail .af-revision-note-action .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ─── Empty, attention, reattach ─── */
+
+/* Agent Fleet's shared `af-empty-state`; the rail only tightens its padding. */
+.af-revision-empty {
+  padding: 22px 12px;
+}
+
+.af-revision-empty .af-empty-icon svg {
+  width: 30px;
+  height: 30px;
+}
+
+.af-revision-empty .af-empty-label {
+  font-size: 12px;
+}
+
+.af-revision-empty .af-empty-sublabel {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.af-revision-attention,
+.af-revision-reattach-banner {
+  display: none;
+  flex: 0 0 auto;
+  margin: 10px 10px 0;
+  padding: 8px 10px;
+  border-radius: var(--af-revision-radius);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Attention appears exactly once, here. Retry is the footer action and Open
+   conversation is an overflow item, so the banner carries no buttons. */
+.af-revision-attention.af-revision-visible,
+.af-revision-reattach-banner.af-revision-visible {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.af-revision-attention {
+  border: 1px solid var(--af-revision-warn);
+  background: var(--background-modifier-error-hover, var(--background-secondary-alt));
+  color: var(--af-revision-text);
+}
+
+.af-revision-attention-icon {
+  flex: 0 0 auto;
+  color: var(--af-revision-warn);
+}
+
+.af-revision-attention-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.af-revision-reattach-banner {
+  border: 1px dashed var(--af-revision-accent);
+  color: var(--af-revision-muted);
+}
+
+.af-revision-reattach-banner.af-revision-visible {
+  align-items: center;
+}
+
+.af-revision-reattach-cancel {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* ─── Editor annotations ─── */
+
+.af-revision-mark {
+  background: var(--af-revision-mark-bg);
+  border-bottom: 2px solid var(--af-revision-mark-line);
+  border-radius: 2px;
+}
+
+.af-revision-mark-active {
+  background: var(--af-revision-mark-bg);
+  box-shadow: 0 0 0 2px var(--af-revision-mark-line);
+}
+
+.af-revision-mark-orphan {
+  background: transparent;
+  border-bottom: 2px dashed var(--af-revision-warn);
+}
+
+/* Submission lock: the document stays selectable and scrollable, it just
+   stops accepting keystrokes (the change filter does the real work). */
+.af-revision-locked .cm-content {
+  caret-color: transparent;
+  opacity: 0.85;
+}
+
+/* ─── Floating add-revision action ─── */
+
+.af-revision-floating {
+  position: fixed;
+  z-index: var(--layer-popover, 30);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--af-revision-border);
+  background: var(--background-primary);
+  color: var(--af-revision-text);
+  box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.25));
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.af-revision-floating:hover {
+  background: var(--background-modifier-hover);
+}
+
+.af-revision-floating:focus-visible {
+  outline: 2px solid var(--af-revision-accent);
+  outline-offset: 2px;
+}
+
+.af-revision-floating-icon {
+  display: inline-flex;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-floating-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.af-revision-floating-reattach .af-revision-floating-icon {
+  color: var(--af-revision-accent);
+}
+
+/* ─── Note composer popover ─── */
+
+.af-revision-popover {
+  position: fixed;
+  z-index: var(--layer-modal, 50);
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  padding: 12px;
+  border: 1px solid var(--af-revision-border);
+  border-radius: var(--af-revision-radius);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-l, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+
+.af-revision-popover-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--af-revision-text);
+}
+
+.af-revision-popover-icon {
+  display: inline-flex;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-popover-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.af-revision-popover-quote {
+  margin-top: 8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--af-revision-border);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--af-revision-muted);
+  max-height: 66px;
+  overflow: hidden;
+}
+
+.af-revision-popover-label {
+  display: block;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--af-revision-muted);
+}
+
+.af-revision-popover-input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--af-revision-border);
+  border-radius: var(--af-revision-radius);
+  background: var(--background-modifier-form-field);
+  color: var(--af-revision-text);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.af-revision-popover-input:focus-visible {
+  outline: 2px solid var(--af-revision-accent);
+  outline-offset: -1px;
+}
+
+.af-revision-popover-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.af-revision-popover-counter {
+  margin-right: auto;
+  font-size: 10px;
+  color: var(--af-revision-faint);
+}
+
+.af-revision-popover-counter.af-revision-over {
+  color: var(--af-revision-warn);
+}
+
+.af-revision-popover .af-btn-sm:focus-visible {
+  outline: 2px solid var(--af-accent);
+  outline-offset: 1px;
+}
+
+.af-revision-popover .af-btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── Header action (MarkdownView.addAction) ─── */
+
+.af-revision-action {
+  position: relative;
+}
+
+.af-revision-action-active {
+  color: var(--icon-color, var(--text-muted));
+}
+
+.af-revision-action-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 15px;
+  padding: 0 3px;
+  border: 1px solid var(--background-primary);
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ─── Narrow pane: collapsible overlay rail + bottom dock (§25.1) ─── */
+
+.view-content.af-revision-active.af-revision-narrow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Clipped to the pane, never to the window: `contentEl` is the positioned
+   ancestor, so the overlay can never escape its own leaf. */
+.view-content.af-revision-active.af-revision-narrow > .af-revision-rail {
+  position: absolute;
+  grid-column: 1;
+  grid-row: 1 / -1;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 100%;
+  width: min(320px, 85%);
+  border-left: 1px solid var(--af-revision-border);
+  box-shadow: var(--shadow-l, -6px 0 18px rgba(0, 0, 0, 0.28));
+  transform: translateX(101%);
+  /* `visibility` holds its start value for the whole duration, so the rail
+     still slides out before it leaves the focus order. */
+  transition:
+    transform 150ms ease,
+    visibility 150ms;
+  pointer-events: none;
+}
+
+.view-content.af-revision-active.af-revision-narrow > .af-revision-rail.af-revision-rail-open {
+  transform: none;
+  pointer-events: auto;
+}
+
+/* A closed overlay must not hold focus stops behind the document. */
+.view-content.af-revision-active.af-revision-narrow
+  > .af-revision-rail:not(.af-revision-rail-open) {
+  visibility: hidden;
+}
+
+/* ─── Narrow-pane dock ─── */
+
+/* Absent from the DOM flow at normal width, where the rail owns everything. */
+.af-revision-dock {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--af-revision-border);
+  background: var(--af-revision-surface);
+}
+
+.af-revision-dock.af-revision-visible {
+  display: flex;
+}
+
+.af-revision-dock-notes {
+  flex: 0 0 auto;
+  max-width: 45%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ─── Completion notice (§6.8) ─── */
+
+/* Rendered inside Obsidian's own `.notice`, so it inherits that surface and
+   only owns its internal layout, the check mark, and the action button. */
+.af-revision-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  --af-revision-accent: var(--interactive-accent);
+  --af-revision-muted: var(--text-muted);
+  --af-revision-ok: var(--color-green, #4caf50);
+}
+
+.af-revision-notice-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.af-revision-notice-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--af-revision-ok);
+}
+
+.af-revision-notice-icon .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.af-revision-notice-detail {
+  font-size: 12px;
+  color: var(--af-revision-muted);
+}
+
+/* Shared `af-btn-sm primary`; the notice only pins its placement. */
+.af-revision-notice-action {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.af-revision-notice-action:focus-visible {
+  outline: 2px solid var(--af-accent);
+  outline-offset: 2px;
+}
+
+/* ─── Reduced motion ─── */
+
+@media (prefers-reduced-motion: reduce) {
+  .af-revision-note-card,
+  .af-revision-note-actions,
+  .view-content.af-revision-active.af-revision-narrow > .af-revision-rail {
+    transition: none;
+  }
+
+  .af-revision-action-busy .af-btn-icon {
+    animation: none;
+  }
 }

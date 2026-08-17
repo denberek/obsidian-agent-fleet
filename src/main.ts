@@ -3,6 +3,7 @@ import { readdir, readFile, rm, stat } from "fs/promises";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 import {
+  MarkdownView,
   Notice,
   Plugin,
   TFile,
@@ -23,7 +24,13 @@ import { SlackAdapter } from "./services/channels/slackAdapter";
 import { TelegramAdapter } from "./services/channels/telegramAdapter";
 import { DiscordAdapter } from "./services/channels/discordAdapter";
 import type { ChannelAdapter } from "./services/channels/adapter";
-import type { ChannelConfig, ChannelCredentialEntry, FleetSettings } from "./types";
+import type {
+  ChannelConfig,
+  ChannelCredentialEntry,
+  ConversationMeta,
+  FleetSettings,
+  RevisionDestination,
+} from "./types";
 import { parseMarkdownWithFrontmatter, stringifyMarkdownWithFrontmatter } from "./utils/markdown";
 import { spawnCli, resolveClaudeCliCandidates, resolveCodexCliCandidates, resolvePiCliCandidates, isAbsolutePath } from "./utils/platform";
 import { normalizeAdapter } from "./adapters";
@@ -40,6 +47,21 @@ import { PI_OVERLAY_PID_FILE, piOverlayRoot } from "./services/mcpProjection";
 import { SidebarView } from "./views/sidebarView";
 import { FleetDashboardView } from "./views/dashboardView";
 import { AgentChatView } from "./views/agentChatView";
+import { InAppConversationManager } from "./services/inAppConversationManager";
+import { RevisionManager } from "./services/revisionManager";
+import type { RevisionEvent } from "./services/revisionManager";
+import type { RevisionStore, RevisionStoreEvent } from "./repository/revisionStore";
+import {
+  REVISION_HEADER_ICON,
+  RevisionModeHost,
+  type RevisionUiEvent,
+} from "./components/revisionModeController";
+import { showRevisionCompletionNotice } from "./components/revisionCompletionNotice";
+import {
+  classifyFleetPath,
+  findChatLeafForTarget,
+  toRevisionUiEvent,
+} from "./utils/revisionRouting";
 
 
 export default class AgentFleetPlugin extends Plugin {
@@ -60,6 +82,39 @@ export default class AgentFleetPlugin extends Plugin {
   channelCredentials = new ChannelCredentialStore();
   channelManager!: ChannelManager;
   secretStore!: SecretStore;
+
+  /**
+   * The single owner of in-app `ChatSession` instances — one per exact
+   * `agent::conversation` pair. Both `AgentChatView` and Revision mode acquire
+   * from here; a second manager would race the provider session id, the
+   * conversation file, and `ChatSession`'s single turn slot
+   * (REVISION_MODE_DESIGN.md §11.1). Like `channelManager` it is constructed
+   * once and refreshed in place — never rebuilt in `saveSettings()`.
+   */
+  inAppConversations!: InAppConversationManager;
+  /** Revision draft lifecycle + submission state machine. */
+  revisionManager!: RevisionManager;
+  /** Per-`MarkdownView` revision chrome. One host for the whole workspace. */
+  revisionHost!: RevisionModeHost;
+
+  /**
+   * Live handle on the revision sidecar store. `saveSettings()` rebuilds the
+   * repository (and with it a fresh RevisionStore), so this is swapped only
+   * once the replacement's cache is loaded — see {@link adoptRevisionStore}.
+   */
+  private revisionStoreRef!: RevisionStore;
+  private revisionStoreUnsub?: () => void;
+  /** Fan-out to the revision host/controllers. Plugin-level so a store swap
+   *  never invalidates a controller's subscription. */
+  private revisionUiListeners = new Set<(event: RevisionUiEvent) => void>();
+  /** Header-action elements we added to markdown views, so unload can remove
+   *  exactly ours (§25.5). */
+  private revisionActions = new Map<MarkdownView, HTMLElement>();
+  /** In-flight `RevisionManager.submit()` calls. A store swap waits for these:
+   *  `loadAll()` recovers any `submitting` draft into attention, which would
+   *  mislabel a revision that is actually still running. */
+  private revisionSubmissions = 0;
+  private revisionStoreAdoptionPending = false;
 
   /** Successful CLI verifications, keyed by `${label}:${cliPath}` → timestamp.
    *  Skips re-spawning `--version` for the same binary within the TTL. */
@@ -83,6 +138,18 @@ export default class AgentFleetPlugin extends Plugin {
     this.repository = new FleetRepository(this.app, this.settings);
     this.repository.setChannelCredentialGetter(() => this.channelCredentials.toRecord());
     this.runtime = new FleetRuntime(this.repository, this.settings, this.mcpAuth);
+
+    // Before any view can open: AgentChatView reads `plugin.inAppConversations`
+    // on its first render and there must never be a second owner. Every
+    // dependency is a live getter because `saveSettings()` replaces both the
+    // repository and the runtime underneath this object (§14.7).
+    this.inAppConversations = new InAppConversationManager({
+      getRepository: () => this.repository,
+      getSettings: () => this.settings,
+      vault: this.app.vault,
+      getMcpAuth: () => this.mcpAuth,
+      recordUsage: (record) => this.runtime.recordUsage(record),
+    });
 
     this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new FleetDashboardView(leaf, this));
     this.registerView(VIEW_TYPE_AGENTS, (leaf) => new SidebarView(leaf, this));
@@ -123,6 +190,11 @@ export default class AgentFleetPlugin extends Plugin {
     await this.maybeResolveCodexCliPath(true);
     await this.maybeResolvePiCliPath(true);
     await this.runtime.initialize();
+
+    // Revision mode. Drafts load after the fleet structure exists and before
+    // any header action can ask for a pending-note badge; a draft interrupted
+    // by a crash is recovered into attention here, never auto-resubmitted (§8.5).
+    await this.initializeRevisionMode();
 
     this.addRibbonIcon("bot", "Agent Fleet Dashboard", () => void this.activateDashboardView());
     this.addRibbonIcon("message-circle", "Agent Chat", () => {
@@ -301,7 +373,394 @@ export default class AgentFleetPlugin extends Plugin {
     }
   }
 
+  // ═══════════════════════════════════════════════════════
+  //  Revision mode (REVISION_MODE_DESIGN.md §§7.1, 8.6, 10, 18.2)
+  // ═══════════════════════════════════════════════════════
+
+  /** Live handle on the revision sidecar store. Never cache this in a closure —
+   *  `saveSettings()` can swap the underlying instance. */
+  private get revisionStore(): RevisionStore {
+    return this.revisionStoreRef;
+  }
+
+  /**
+   * Construct the revision services and register their single global hooks.
+   *
+   * Every collaborator handed to `RevisionManager`/`RevisionModeHost` resolves
+   * through `this` rather than being captured, so a `saveSettings()` repository
+   * or runtime rebuild can never leave an open draft talking to a dead object
+   * (§14.7).
+   */
+  private async initializeRevisionMode(): Promise<void> {
+    this.revisionStoreRef = this.repository.revisionStore;
+    try {
+      await this.repository.loadRevisionDrafts();
+    } catch (err) {
+      // A malformed or unreadable sidecar must never block plugin load (§8.4).
+      console.error("Agent Fleet: loading revision drafts failed", err);
+    }
+    this.subscribeRevisionStore();
+
+    this.revisionManager = new RevisionManager({
+      store: {
+        getById: (id) => this.revisionStore.getById(id),
+        getBySourcePath: (path) => this.revisionStore.getBySourcePath(path),
+        save: (draft) => this.revisionStore.save(draft),
+        delete: (id) => this.revisionStore.delete(id),
+        renameSource: (oldPath, newPath) => this.revisionStore.renameSource(oldPath, newPath),
+      },
+      source: {
+        exists: (path) => this.vaultFile(path) !== null,
+        read: async (path) => {
+          const file = this.vaultFile(path);
+          if (!file) throw new Error(`${path} is not a file in this vault.`);
+          // vault.read(), never cachedRead(): the cache can still hold the bytes
+          // the agent just replaced, which would read as "nothing changed" and
+          // turn every successful revision into a no-change failure (§13.3).
+          return this.app.vault.read(file);
+        },
+      },
+      conversations: this.inAppConversations,
+      directory: {
+        getAgent: (agentName) => this.repository.getAgentByName(agentName) ?? null,
+        hasConversation: async (agentName, conversationId) => {
+          const agent = this.repository.getAgentByName(agentName);
+          if (!agent) return false;
+          const conversations = await this.repository.listConversations(agent);
+          return conversations.some((c) => c.id === conversationId);
+        },
+      },
+      // Flush the open editor before hashing, so the revision is built from the
+      // bytes the user can see rather than from the last autosave (§6.7).
+      getEditorFlush: (sourcePath) => {
+        const view = this.markdownViewForPath(sourcePath);
+        return view ? () => view.save() : null;
+      },
+      // Computed here for the CLI request only — never persisted (§15).
+      getVaultBasePath: () => this.repository.getVaultBasePath(),
+      onEvent: (event) => this.onRevisionManagerEvent(event),
+    });
+
+    this.revisionHost = new RevisionModeHost({
+      app: this.app,
+      getDraftForPath: (path) => this.revisionStore.getBySourcePath(path),
+      createDraft: (path) => this.revisionStore.create(path),
+      saveDraft: (draft) => this.revisionStore.save(draft),
+      discardDraft: (id) => this.revisionStore.delete(id),
+      listAgents: () => this.runtime.getSnapshot().agents,
+      listConversations: (agentName) => this.listAgentConversations(agentName),
+      createConversation: (agentName, name) => this.createAgentConversation(agentName, name),
+      submitDraft: (id) => this.submitRevision(id),
+      subscribe: (listener) => {
+        this.revisionUiListeners.add(listener);
+        return () => {
+          this.revisionUiListeners.delete(listener);
+        };
+      },
+      openConversation: (destination) =>
+        this.openChatView(destination.agentName, destination.conversationId),
+      suggestDestination: () => this.suggestRevisionDestination(),
+    });
+
+    // ONE editor extension for the whole plugin. Obsidian removes it and
+    // refreshes every editor on unload (§25.2) — nothing to undo by hand.
+    this.registerEditorExtension(this.revisionHost.editorExtension);
+    this.registerRevisionWorkspaceEvents();
+  }
+
+  /** Command, context menu, and the header-action rescans (§10.5). */
+  private registerRevisionWorkspaceEvents(): void {
+    this.addCommand({
+      id: "toggle-revision-mode",
+      name: "Toggle revision mode",
+      // Editor-aware: the command is offered only for a markdown view with a
+      // real file behind it, in Reading view as well as source (entering from
+      // Reading switches the leaf first — see toggleRevisionMode).
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) return false;
+        if (!checking) void this.toggleRevisionMode(view);
+        return true;
+      },
+    });
+
+    // ONE global `editor-menu` handler, delegated to whichever controller owns
+    // this editor. Controllers never register workspace events themselves.
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        if (!this.revisionHost?.canAddNote(info, editor)) return;
+        menu.addItem((item) =>
+          item
+            .setTitle("Add revision note")
+            .setIcon(REVISION_HEADER_ICON)
+            .onClick(() => this.revisionHost.openNoteComposer(info, editor)),
+        );
+      }),
+    );
+
+    const rescan = (): void => {
+      // handleLayoutChange prunes closed panes and exits Revision mode in a leaf
+      // that switched files — the draft itself is untouched (§10.5).
+      this.revisionHost.handleLayoutChange();
+      this.syncRevisionHeaderActions();
+    };
+    this.app.workspace.onLayoutReady(rescan);
+    this.registerEvent(this.app.workspace.on("layout-change", rescan));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => rescan()));
+    this.registerEvent(this.app.workspace.on("file-open", () => rescan()));
+  }
+
+  /**
+   * Add the Revision mode action to every open markdown view and drop the ones
+   * whose view or element is gone. `MarkdownView.addAction()` binds to a view
+   * instance, so new panes need a rescan and unload needs the element back.
+   */
+  private syncRevisionHeaderActions(): void {
+    for (const [view, el] of this.revisionActions) {
+      if (view.containerEl.isConnected && el.isConnected) continue;
+      el.remove();
+      this.revisionActions.delete(view);
+      this.revisionHost.unregisterHeaderAction(view);
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) continue;
+      if (this.revisionActions.has(view)) continue;
+      const el = view.addAction(REVISION_HEADER_ICON, "Revision mode", () => {
+        void this.toggleRevisionMode(view);
+      });
+      this.revisionActions.set(view, el);
+      this.revisionHost.registerHeaderAction(view, el);
+    }
+    this.revisionHost.refreshHeaderActions();
+  }
+
+  /**
+   * Enter or leave Revision mode for one markdown view.
+   *
+   * Invoked from Reading view, the leaf is switched to `source` through the
+   * public view state FIRST. Agent Fleet never registers a third
+   * `MarkdownViewModeType` and never patches Obsidian's mode switch (§6.1).
+   */
+  async toggleRevisionMode(view: MarkdownView): Promise<void> {
+    if (!this.revisionHost) return;
+    if (this.revisionHost.isActive(view)) {
+      this.revisionHost.deactivate(view);
+      this.syncRevisionHeaderActions();
+      return;
+    }
+    if (!view.file) {
+      new Notice("Revision mode needs a saved markdown document.");
+      return;
+    }
+    let target = view;
+    if (target.getMode() !== "source") {
+      const state = target.leaf.getViewState();
+      await target.leaf.setViewState({
+        ...state,
+        state: { ...(state.state ?? {}), mode: "source" },
+      });
+      // Re-resolve: the leaf may hand back a different view instance.
+      const current = target.leaf.view;
+      if (current instanceof MarkdownView) target = current;
+    }
+    await this.revisionHost.activate(target);
+    this.syncRevisionHeaderActions();
+  }
+
+  /**
+   * Submit a draft as one exclusive conversation turn.
+   *
+   * A failed turn persists `attention`, and the resulting draft update is what
+   * releases the panel's submitting lock. `blocked` (pre-flight refusal —
+   * nothing was sent) and `interrupted` persist no such change, so they are
+   * rethrown: the panel's own error path unlocks the controls and surfaces the
+   * message. Without this the toolbar would sit on "Waiting for conversation"
+   * forever after, say, choosing a read-only agent.
+   */
+  private async submitRevision(draftId: string): Promise<void> {
+    this.revisionSubmissions++;
+    try {
+      const outcome = await this.revisionManager.submit(draftId);
+      if (!outcome.ok && (outcome.reason === "blocked" || outcome.reason === "interrupted")) {
+        throw new Error(outcome.message);
+      }
+    } finally {
+      this.revisionSubmissions--;
+      if (this.revisionSubmissions === 0 && this.revisionStoreAdoptionPending) {
+        this.revisionStoreAdoptionPending = false;
+        void this.adoptRevisionStore();
+      }
+    }
+  }
+
+  private async listAgentConversations(agentName: string): Promise<ConversationMeta[]> {
+    const agent = this.repository.getAgentByName(agentName);
+    if (!agent) throw new Error(`Agent "${agentName}" is no longer available.`);
+    return this.repository.listConversations(agent);
+  }
+
+  private async createAgentConversation(agentName: string, name: string): Promise<ConversationMeta> {
+    const agent = this.repository.getAgentByName(agentName);
+    if (!agent) throw new Error(`Agent "${agentName}" is no longer available.`);
+    // Same id shape the chat view mints: 8 hex chars is plenty per agent folder.
+    const id = Math.random().toString(16).slice(2, 10);
+    await this.repository.createConversation(agent, id, name);
+    return { id, name, lastActive: new Date().toISOString(), messageCount: 0 };
+  }
+
+  /**
+   * §6.3 allows preselecting the destination when exactly one visible Agent
+   * Chat view has a conversation open. Anything ambiguous returns null —
+   * guessing would send a document revision into the wrong conversation.
+   */
+  private suggestRevisionDestination(): RevisionDestination | null {
+    const candidates: RevisionDestination[] = [];
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
+      const view = leaf.view;
+      if (!(view instanceof AgentChatView)) continue;
+      if (!view.containerEl.isShown()) continue;
+      const agentName = view.selectedAgentName;
+      const conversationId = view.selectedConversationId;
+      if (!agentName || !conversationId) continue;
+      candidates.push({ agentName, conversationId });
+    }
+    return candidates.length === 1 ? candidates[0]! : null;
+  }
+
+  private subscribeRevisionStore(): void {
+    this.revisionStoreUnsub?.();
+    this.revisionStoreUnsub = this.revisionStoreRef.subscribe((event) =>
+      this.onRevisionStoreEvent(event),
+    );
+  }
+
+  /** Sidecar change → the UI event both panes' controllers consume. */
+  private onRevisionStoreEvent(event: RevisionStoreEvent): void {
+    const uiEvent = toRevisionUiEvent(event);
+    if (uiEvent) this.emitRevisionUiEvent(uiEvent);
+  }
+
+  private emitRevisionUiEvent(event: RevisionUiEvent): void {
+    for (const listener of [...this.revisionUiListeners]) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error("Agent Fleet: revision UI listener failed", err);
+      }
+    }
+  }
+
+  /** Submission state → UI. `state` carries queued/running/verifying, so the
+   *  toolbar's Waiting/Revising states are driven by the same snapshot that was
+   *  persisted rather than by polling. */
+  private onRevisionManagerEvent(event: RevisionEvent): void {
+    switch (event.type) {
+      case "state":
+      case "attention":
+        this.emitRevisionUiEvent({ type: "draft-updated", draft: event.draft });
+        // A failure can land after the user left Revision mode, so it also
+        // needs to be visible outside the panel. Notes are always retained.
+        if (event.type === "attention") new Notice(event.message, 12000);
+        break;
+      case "blocked":
+        // Deliberately silent here: `blocked` is only reachable through a UI
+        // submission, and submitRevision() rethrows it so the panel reports it
+        // once, next to the controls the user has to fix.
+        break;
+      case "completed":
+        void this.showRevisionCompleted(event.sourcePath, event.destination, event.noteCount);
+        break;
+    }
+  }
+
+  private async showRevisionCompleted(
+    sourcePath: string,
+    destination: RevisionDestination,
+    noteCount: number,
+  ): Promise<void> {
+    let conversationName: string | undefined;
+    try {
+      const conversations = await this.listAgentConversations(destination.agentName);
+      conversationName = conversations.find((c) => c.id === destination.conversationId)?.name;
+    } catch {
+      // Display detail only — never let a listing failure swallow the notice.
+    }
+    showRevisionCompletionNotice({
+      sourcePath,
+      destination,
+      ...(conversationName ? { conversationName } : {}),
+      noteCount,
+      // Exact routing: the pair the user selected, never a sibling conversation.
+      openConversation: (target) => this.openChatView(target.agentName, target.conversationId),
+    });
+  }
+
+  /**
+   * Point Revision mode at the rebuilt repository's store after `saveSettings()`.
+   *
+   * The outgoing store stays fully usable (it holds only the vault and a lazy
+   * dir getter), so while a submission is in flight we keep reading from it
+   * instead of swapping to an empty cache: an empty cache would let a
+   * controller mint a SECOND sidecar for a document that already has a draft,
+   * and `loadAll()` would recover the running submission into attention.
+   */
+  private async adoptRevisionStore(): Promise<void> {
+    const next = this.repository.revisionStore;
+    if (!this.revisionStoreRef || next === this.revisionStoreRef) return;
+    if (this.revisionSubmissions > 0) {
+      this.revisionStoreAdoptionPending = true;
+      return;
+    }
+    try {
+      await next.loadAll();
+    } catch (err) {
+      // Keep the working store rather than adopting an empty one.
+      console.error("Agent Fleet: reloading revision drafts failed", err);
+      return;
+    }
+    this.revisionStoreRef = next;
+    this.subscribeRevisionStore();
+    this.revisionHost?.refreshHeaderActions();
+  }
+
+  private vaultFile(path: string): TFile | null {
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    return file instanceof TFile ? file : null;
+  }
+
+  /** The open markdown pane showing a document, if any. */
+  private markdownViewForPath(path: string): MarkdownView | null {
+    const target = normalizePath(path);
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (view instanceof MarkdownView && view.file?.path === target) return view;
+    }
+    return null;
+  }
+
   onunload(): void {
+    // ── Revision mode first (§14.8) ──
+    // Obsidian's unload is effectively synchronous, so the flushes below are
+    // best-effort. That is safe by design: the sidecar on disk still says
+    // "submitting", and RevisionStore.loadAll() recovers it into attention on
+    // the next load rather than auto-retrying (§8.5).
+    if (this.revisionHost) {
+      void this.revisionHost.flushPendingSaves();
+      this.revisionHost.destroy();
+    }
+    for (const el of this.revisionActions.values()) el.remove();
+    this.revisionActions.clear();
+    this.revisionUiListeners.clear();
+    this.revisionStoreUnsub?.();
+    this.revisionStoreUnsub = undefined;
+    if (this.revisionManager) {
+      this.revisionManager.shutdown();
+      void this.revisionManager.flushPendingWrites();
+    }
+    // Abort active turns / hibernate idle sessions before the runtime goes.
+    this.inAppConversations?.shutdown();
+
     this.runtimeUnsubscribe?.();
     this.runtimeUnsubscribe = undefined;
     if (this.vaultChangeTimer) {
@@ -354,6 +813,14 @@ export default class AgentFleetPlugin extends Plugin {
       await this.repository.ensureFleetStructure();
       await this.runtime.initialize();
       this.registerRuntimeListeners();
+      // Cached in-app sessions must not keep pointing at the outgoing
+      // repository, settings, MCP auth, or usage sink (§14.7). The manager
+      // itself is NOT rebuilt — that would orphan live sessions and any queued
+      // revision turn.
+      this.inAppConversations?.refreshDependencies();
+      // Adopt the rebuilt repository's revision store once it has loaded, so
+      // open drafts and controllers stay valid across the swap.
+      await this.adoptRevisionStore();
       this.notifyViews();
       this.refreshStatusBar();
       // Reload credentials and reconcile channels in place. The channel manager is
@@ -402,22 +869,60 @@ export default class AgentFleetPlugin extends Plugin {
     void this.app.workspace.revealLeaf(leaf);
   }
 
-  async openChatView(agentName?: string): Promise<void> {
-    // If a specific agent is requested, check if a tab already has it open
+  /**
+   * Open (or reveal) the chat tab for an exact destination (§11.8).
+   *
+   * With a `conversationId`, deduplication compares BOTH values — deduping by
+   * agent alone reveals whichever tab happens to hold that agent, which is the
+   * wrong conversation as soon as one agent has several open. A requested
+   * conversation that no longer exists produces a Notice and stops: silently
+   * falling back to a sibling conversation would send the user to a thread that
+   * never saw their revision.
+   */
+  async openChatView(agentName?: string, conversationId?: string): Promise<void> {
     if (agentName) {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
-      for (const leaf of existing) {
-        if (leaf.view instanceof AgentChatView && leaf.view.selectedAgentName === agentName) {
-          void this.app.workspace.revealLeaf(leaf);
+      const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+      const views = leaves.map((leaf) => leaf.view);
+      const chatViews = views.filter((view): view is AgentChatView => view instanceof AgentChatView);
+      const match = findChatLeafForTarget(chatViews, agentName, conversationId);
+      if (match >= 0) {
+        const leaf = leaves[views.indexOf(chatViews[match]!)];
+        if (leaf) {
+          await this.app.workspace.revealLeaf(leaf);
+          this.app.workspace.setActiveLeaf(leaf, { focus: true });
           return;
         }
       }
     }
+
+    if (agentName && conversationId) {
+      const agent = this.repository.getAgentByName(agentName);
+      if (!agent) {
+        new Notice(`Agent "${agentName}" is no longer available.`);
+        return;
+      }
+      const conversations = await this.repository.listConversations(agent);
+      if (!conversations.some((c) => c.id === conversationId)) {
+        new Notice(`That conversation for "${agentName}" no longer exists.`);
+        return;
+      }
+    }
+
     const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getLeaf(true);
-    await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true, state: agentName ? { agentName } : {} });
-    void this.app.workspace.revealLeaf(leaf);
+    await leaf.setViewState({
+      type: VIEW_TYPE_CHAT,
+      active: true,
+      state: agentName ? { agentName, ...(conversationId ? { conversationId } : {}) } : {},
+    });
+    await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
     if (agentName && leaf.view instanceof AgentChatView) {
-      leaf.view.selectAgent(agentName);
+      // Awaited: callers reveal or send into the conversation right after, and
+      // must know the requested pair is actually loaded.
+      const selected = await leaf.view.selectConversation(agentName, conversationId);
+      if (!selected && conversationId) {
+        new Notice(`Couldn't open that conversation for "${agentName}".`);
+      }
     }
   }
 
@@ -865,39 +1370,119 @@ export default class AgentFleetPlugin extends Plugin {
     }, 500);
   }
 
+  /**
+   * Vault events, classified before the fleet refresh runs (§8.6).
+   *
+   *  - `_fleet/revisions/**` → RevisionStore, then RETURN. A debounced anchor
+   *    save happens while the user types; a full entity reparse + scheduler
+   *    reconcile per save is exactly what the design forbids.
+   *  - `_fleet/usage/**` → ignored, as before (appended on every chat turn).
+   *  - other fleet paths → the existing debounced refresh.
+   *  - everything else → source-document routing (re-anchor, rename, delete),
+   *    which never touches the fleet.
+   */
   private registerVaultHandlers(): void {
-    // The usage ledger (`_fleet/usage/`) is appended on every chat/channel turn
-    // and holds no parsed entities — skip it so the hot path never triggers a
-    // full fleet reparse.
-    const isLedgerPath = (p: string) => p.startsWith(`${this.settings.fleetFolder}/usage/`);
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`) && !isLedgerPath(file.path)) {
-          this.debouncedVaultRefresh();
-        }
+        if (file instanceof TFile) void this.handleVaultFileChange(file.path);
       }),
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof TFile && file.path.startsWith(`${this.settings.fleetFolder}/`) && !isLedgerPath(file.path)) {
-          this.debouncedVaultRefresh();
-        }
+        if (file instanceof TFile) void this.handleVaultFileChange(file.path);
       }),
     );
     this.registerEvent(
-      this.app.vault.on("rename", (file) => {
-        if (file.path.startsWith(`${this.settings.fleetFolder}/`)) {
-          this.debouncedVaultRefresh();
-        }
+      this.app.vault.on("rename", (file, oldPath) => {
+        void this.handleVaultRename(file.path, oldPath, file instanceof TFile);
       }),
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file.path.startsWith(`${this.settings.fleetFolder}/`)) {
-          this.debouncedVaultRefresh();
-        }
+        void this.handleVaultDelete(file.path, file instanceof TFile);
       }),
     );
+  }
+
+  private async handleVaultFileChange(path: string): Promise<void> {
+    switch (classifyFleetPath(this.settings.fleetFolder, path)) {
+      case "revision":
+        // The store drops echoes of its own writes, so only genuinely external
+        // sidecar changes (sync, another device, a hand edit) reach the UI.
+        await this.revisionStore?.reloadFile(path).catch((err: unknown) => {
+          console.warn(`Agent Fleet: re-reading revision sidecar ${path} failed`, err);
+          return null;
+        });
+        return;
+      case "usage":
+        return;
+      case "entity":
+        this.debouncedVaultRefresh();
+        return;
+      case "outside":
+        // A reviewed document changed outside this pane's editor: re-anchor its
+        // notes. No fleet refresh — the fleet did not change.
+        this.notifyRevisionSourceChanged(path);
+        return;
+    }
+  }
+
+  private async handleVaultRename(newPath: string, oldPath: string, isFile: boolean): Promise<void> {
+    const folder = this.settings.fleetFolder;
+    const fromKind = classifyFleetPath(folder, oldPath);
+    const toKind = classifyFleetPath(folder, newPath);
+
+    if (fromKind === "revision" || toKind === "revision") {
+      if (fromKind === "revision") this.revisionStore?.forgetFile(oldPath);
+      if (toKind === "revision" && isFile) await this.revisionStore?.reloadFile(newPath);
+      return;
+    }
+
+    // A renamed source keeps its draft — the sidecar stores the path, so only
+    // the path moves (§14.4).
+    if (this.revisionManager) {
+      if (isFile) {
+        await this.revisionManager.onSourceRenamed(oldPath, newPath);
+      } else {
+        // Obsidian reports one event for a renamed folder; its children keep
+        // their drafts, so remap every draft that lived underneath it.
+        const prefix = `${oldPath}/`;
+        for (const draft of this.revisionStore.list()) {
+          if (!draft.sourcePath.startsWith(prefix)) continue;
+          await this.revisionManager.onSourceRenamed(
+            draft.sourcePath,
+            `${newPath}/${draft.sourcePath.slice(prefix.length)}`,
+          );
+        }
+      }
+    }
+
+    if (toKind !== "outside" || fromKind !== "outside") this.debouncedVaultRefresh();
+  }
+
+  private async handleVaultDelete(path: string, isFile: boolean): Promise<void> {
+    switch (classifyFleetPath(this.settings.fleetFolder, path)) {
+      case "revision":
+        this.revisionStore?.forgetFile(path);
+        return;
+      case "usage":
+      case "entity":
+        this.debouncedVaultRefresh();
+        return;
+      case "outside":
+        // Keep the notes: an accidental delete followed by a restore must not
+        // destroy user-authored comments (§14.4).
+        if (isFile) await this.revisionManager?.onSourceDeleted(path);
+        return;
+    }
+  }
+
+  /** Push the current draft back into any pane reviewing this document so its
+   *  anchors re-resolve against the new bytes (§9.3). */
+  private notifyRevisionSourceChanged(path: string): void {
+    const draft = this.revisionStore?.getBySourcePath(path);
+    if (!draft) return;
+    this.emitRevisionUiEvent({ type: "draft-updated", draft });
   }
 
   private registerRuntimeListeners(): void {

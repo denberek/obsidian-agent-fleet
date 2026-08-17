@@ -13,6 +13,17 @@
 
 These are the Claude Code permission modes. **Codex agents** use sandbox levels instead — `workspace-write` / `read-only` (and `bypassPermissions` maps to full access); the modes above are mapped to the nearest Codex equivalent. `Bash(...)` allow/deny rules are translated to Codex execpolicy where possible (command-prefix patterns only). See the "Agent Configuration" permissions notes in `tools.md` for the full Codex behavior. The "Claude Code CLI Flags" section below applies to `claude-code` agents only.
 
+## Claude Sandbox Settings (fleet-wide)
+
+Two fleet-wide toggles in Settings → Agent Fleet project Claude Code's own sandbox settings into every `claude-code` agent run. Both are off by default and Claude-only:
+
+| Setting | Projects | Use when |
+|---|---|---|
+| Strict Claude sandbox network allowlist | `sandbox.network.strictAllowlist: true` | Your Claude settings already define the allowed domains — otherwise runs lose network access |
+| Disable Claude filesystem sandbox | `sandbox.filesystem.disabled: true` | Claude's filesystem sandbox conflicts with an external sandbox |
+
+They are written to a temporary `settings.local.json` alongside the agent's permission rules for the duration of the run, then cleaned up. Existing files are restored. `permissions.json` allow/deny rules still apply; disabling the filesystem sandbox does not disable those rules.
+
 ## Cron Expression Format
 
 Five fields: `minute hour day-of-month month day-of-week`
@@ -44,6 +55,14 @@ claude -p --output-format stream-json --verbose [--model <model>] \
 The prompt is sent on stdin. Interactive chat also runs print/SDK mode with
 `--input-format stream-json --include-partial-messages`. MCP load failures from
 the init event are recorded in the run note and shown on both the run and MCP pages.
+
+## CLI Versions
+
+Agent Fleet detects CLI versions at startup and warns below the supported baselines: **Claude Code 2.1.219+**, **Codex 0.146.0+**, and **Pi 0.84.2+**.
+
+Known-old builds gate version-sensitive behavior with an actionable error rather than silently dropping a safety or output contract. An unparseable version remains unknown and passes the requested flags: a loud CLI rejection is safer than silently ignoring a spend cap or schema.
+
+Startup warnings are visible but non-blocking — an out-of-date CLI can still run where its supported feature set allows.
 
 On macOS/Linux, commands run through a login shell (`/bin/zsh -l -c` or `/bin/bash -l -c`) so shell profile environment variables are available. On Windows, commands spawn directly — Windows inherits environment variables from the system without a shell wrapper.
 

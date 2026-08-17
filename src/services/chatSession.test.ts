@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { TFile } from "obsidian";
 import { ChatSession } from "./chatSession";
 import { resetPiAdapterWarnings } from "../adapters/piAdapter";
 import { ExecutionManager } from "./executionManager";
@@ -183,6 +184,56 @@ describe("ChatSession.getChatFilePath", () => {
     });
     const path = (session as unknown as { getChatFilePath(): string }).getChatFilePath();
     expect(path).toBe("_fleet/memory/pm-agent-conversations/q4-planning-okrs.json");
+  });
+});
+
+describe("ChatSession persistence", () => {
+  it("serializes writes so an older snapshot cannot finish after a newer one", async () => {
+    const file = new TFile();
+    file.path = "_fleet/memory/test-agent-conversations/conv.json";
+    const releases: Array<() => void> = [];
+    const contents: string[] = [];
+    const vault = {
+      getAbstractFileByPath: () => file,
+      modify: vi.fn((_file: TFile, content: string) => {
+        contents.push(content);
+        return new Promise<void>((resolve) => releases.push(resolve));
+      }),
+    };
+    const session = new ChatSession(
+      makeAgent(),
+      makeSettings(),
+      makeRepositoryStub(),
+      vault as never,
+      { inAppConversationId: "conv" },
+    );
+
+    session.messages = [
+      { id: "one", role: "user", content: "first", timestamp: "2026-01-01T00:00:00Z" },
+    ];
+    const first = session.persist();
+    for (let i = 0; i < 4 && contents.length === 0; i++) await Promise.resolve();
+    expect(contents).toHaveLength(1);
+
+    session.messages.push({
+      id: "two",
+      role: "assistant",
+      content: "second",
+      timestamp: "2026-01-01T00:00:01Z",
+    });
+    const second = session.persist();
+    await Promise.resolve();
+    expect(contents).toHaveLength(1);
+
+    releases.shift()?.();
+    await first;
+    for (let i = 0; i < 4 && contents.length === 1; i++) await Promise.resolve();
+    expect(contents).toHaveLength(2);
+    releases.shift()?.();
+    await second;
+
+    expect(JSON.parse(contents[0] ?? "{}").messages).toHaveLength(1);
+    expect(JSON.parse(contents[1] ?? "{}").messages).toHaveLength(2);
   });
 });
 

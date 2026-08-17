@@ -1,5 +1,5 @@
 import { App, FileSystemAdapter, TFile, Vault, normalizePath } from "obsidian";
-import { FLEET_SUBFOLDERS } from "./constants";
+import { FLEET_SUBFOLDERS, REVISIONS_SUBFOLDER } from "./constants";
 import { DEFAULT_FILES } from "./defaults";
 import {
   createFileIfMissing,
@@ -22,6 +22,7 @@ import { EntityStore } from "./repository/entityStore";
 import { MemoryStore } from "./repository/memoryStore";
 import { McpRegistry } from "./repository/mcpRegistry";
 import { ProposalStore } from "./repository/proposalStore";
+import { RevisionStore } from "./repository/revisionStore";
 import { RunLogStore } from "./repository/runLogStore";
 import { UsageLedger } from "./repository/usageLedger";
 import type {
@@ -81,6 +82,7 @@ export class FleetRepository {
   private readonly proposals: ProposalStore;
   private readonly mcp: McpRegistry;
   private readonly memory: MemoryStore;
+  private readonly revisions: RevisionStore;
 
   constructor(private readonly app: App, private readonly settings: FleetSettings) {
     this.vault = app.vault;
@@ -115,6 +117,9 @@ export class FleetRepository {
       // validation-issue map, same as every other parser's.
       reportIssue: (path, message) => this.entities.setIssue(path, message),
     });
+    // Lazy dir getter, like every other store: `settings.fleetFolder` can change
+    // between calls, and the folder itself only exists while drafts do.
+    this.revisions = new RevisionStore(app, () => this.getRevisionsDir());
   }
 
   /** Inject a live credential getter so validation reads from the credential store
@@ -260,6 +265,31 @@ export class FleetRepository {
 
   getRunsRoot(): string {
     return this.getSubfolder("runs");
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  Revision drafts (§8) — delegates to RevisionStore
+  // ═══════════════════════════════════════════════════════
+
+  /** Transient revision sidecars. Created on demand and removed with the last
+   *  draft, so this path is deliberately outside {@link FLEET_SUBFOLDERS}. */
+  getRevisionsDir(): string {
+    return normalizePath(`${this.getFleetRoot()}/${REVISIONS_SUBFOLDER}`);
+  }
+
+  /**
+   * The revision draft store. Exposed as a typed accessor rather than mirrored
+   * behind a dozen delegates: Revision mode drives the store's full API
+   * (including its event subscription and sidecar-routing entry points), and
+   * duplicating that surface on the facade would only add drift.
+   */
+  get revisionStore(): RevisionStore {
+    return this.revisions;
+  }
+
+  /** Scan the revisions folder and recover interrupted drafts (§8.5). */
+  async loadRevisionDrafts(): Promise<void> {
+    return this.revisions.loadAll();
   }
 
   // ═══════════════════════════════════════════════════════

@@ -14,16 +14,20 @@ import type AgentFleetPlugin from "../main";
 import type { AgentConfig, ConversationMeta } from "../types";
 import { createIcon } from "../utils/icons";
 import { stripRememberTags } from "../utils/memoryFormat";
-import {
+// Type-only now: the view no longer constructs ChatSession instances — the
+// shared conversation manager owns session identity.
+import type {
   ChatSession,
-  type ChatSessionStats,
-  type StreamEvent,
-  type ToolCall,
+  ChatSessionStats,
+  StreamEvent,
+  ToolCall,
 } from "../services/chatSession";
-
-interface ManagedSession {
-  session: ChatSession;
-}
+import type {
+  ConversationTarget,
+  InAppConversationManager,
+  ManagedConversation,
+  ManagedConversationEvent,
+} from "../services/inAppConversationManager";
 
 interface LiveAssistantMessage {
   bubble: HTMLElement;
@@ -121,11 +125,9 @@ class AssistantMessageStreamRenderer {
   }
 }
 
-/** Compose the sessions-map key. Two parallel chats with the same agent share
- *  a key only when their conversationId matches, so they can both run side
- *  by side without colliding on the chat.json singleton. */
-function sessionKey(agentName: string, conversationId: string): string {
-  return `${agentName}::${conversationId}`;
+/** Correlation id for one managed turn request originated by this view. */
+function newRequestId(): string {
+  return `req-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
 function newConversationId(): string {
@@ -217,7 +219,30 @@ export class AgentChatView extends ItemView {
    *  selected (switchToAgent resolves it to an existing or freshly-created
    *  conversation). Persisted via getState. */
   selectedConversationId: string = "";
-  private sessions = new Map<string, ManagedSession>();
+  /** The managed conversation this view currently displays. The manager owns
+   *  the session; this view is one consumer of it. */
+  private current: {
+    target: ConversationTarget;
+    managed: ManagedConversation;
+    consumerId: string;
+    /** The manager this reference was acquired from. Pinned so release always
+     *  returns the reference to whoever issued it, even if the view adopts the
+     *  plugin-owned manager in between. */
+    manager: InAppConversationManager;
+  } | null = null;
+  private convoUnsub: (() => void) | null = null;
+  /** Base consumer id; each attach uses `${base}#${token}` so a stale attach
+   *  can release exactly its own reference. */
+  private readonly consumerBaseId = `chat-view-${Math.random().toString(16).slice(2, 10)}`;
+  /** Monotonic switch token — guards every await in switchToAgent/attach so a
+   *  superseded switch can never write into the new conversation's DOM. */
+  private switchToken = 0;
+  /** Turn request ids this view originated. Lets the shared subscription skip
+   *  re-rendering a user bubble the view already added optimistically, while
+   *  still rendering turns started elsewhere (e.g. Revision mode). */
+  private selfRequestIds = new Set<string>();
+  /** Renderer for the turn currently streaming into this view, if any. */
+  private liveTurnRenderer: AssistantMessageStreamRenderer | null = null;
   /** Conversation list cache, used by the side rail. Refreshed on agent
    *  switch and after any conversation create/rename/delete. */
   private conversationsCache: ConversationMeta[] = [];
@@ -336,11 +361,12 @@ export class AgentChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    // Abort any active sessions
-    for (const { session } of this.sessions.values()) {
-      session.abort();
-    }
-    this.sessions.clear();
+    // Release the consumer reference — do NOT abort. The session is shared:
+    // another consumer (a queued or running Revision turn) may still own the
+    // active turn, and the manager hibernates the subprocess once the
+    // conversation is genuinely idle.
+    this.switchToken++;
+    this.detachConversation();
     this.statsUnsub?.();
     this.statsUnsub = null;
     this.activityUnsub?.();
@@ -381,20 +407,7 @@ export class AgentChatView extends ItemView {
    *  to the most-recent existing conversation, or auto-creates one if the
    *  agent has none. */
   selectAgent(agentName: string, conversationId?: string): void {
-    if (conversationId) {
-      const leaves = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
-      for (const leaf of leaves) {
-        if (
-          leaf.view !== this &&
-          leaf.view instanceof AgentChatView &&
-          (leaf.view).selectedAgentName === agentName &&
-          (leaf.view).selectedConversationId === conversationId
-        ) {
-          void this.plugin.app.workspace.revealLeaf(leaf);
-          return;
-        }
-      }
-    }
+    if (conversationId && this.revealExistingPair(agentName, conversationId)) return;
     this.selectedAgentName = agentName;
     if (conversationId) this.selectedConversationId = conversationId;
     if (this.agentSelect) {
@@ -402,6 +415,56 @@ export class AgentChatView extends ItemView {
     }
     this.leaf.updateHeader();
     void this.switchToAgent(agentName, conversationId);
+  }
+
+  /**
+   * Awaitable exact-target selection. Same behavior as `selectAgent()` (which
+   * stays as the fire-and-forget wrapper existing callers use), but resolves
+   * only once the requested conversation has been acquired, loaded, and
+   * rendered — so a caller can reveal the leaf or send into the conversation
+   * knowing it is live.
+   *
+   * REQUIRED main.ts WIRING (Agent E owns that file):
+   *
+   *   async openChatView(agentName?: string, conversationId?: string): Promise<void>
+   *
+   * must dedup open chat leaves on BOTH values when `conversationId` is given
+   * (`view.selectedAgentName === agentName && view.selectedConversationId ===
+   * conversationId`), reveal the match, and otherwise `await
+   * view.selectConversation(agentName, conversationId)` on the new/target leaf.
+   * Deduping by agent alone steals the wrong tab when one agent has several
+   * conversations open.
+   *
+   * Returns `true` when this view now displays the exact requested pair, and
+   * `false` when it did not (unknown agent, another tab already owned the pair
+   * and was revealed instead, creation failed, or a newer switch superseded
+   * this one). Callers that must not silently fall back — an unknown
+   * conversation id, per §11.8 — should surface a Notice on `false`.
+   */
+  async selectConversation(agentName: string, conversationId?: string): Promise<boolean> {
+    if (conversationId && this.revealExistingPair(agentName, conversationId)) return false;
+    if (this.agentSelect) this.agentSelect.value = agentName;
+    await this.switchToAgent(agentName, conversationId);
+    if (this.selectedAgentName !== agentName) return false;
+    return conversationId === undefined || this.selectedConversationId === conversationId;
+  }
+
+  /** Reveal another chat tab already showing this exact pair, if one exists.
+   *  Two tabs on one pair would show divergent histories of a single shared
+   *  session. Returns true when a tab was revealed. */
+  private revealExistingPair(agentName: string, conversationId: string): boolean {
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
+      if (
+        leaf.view !== this &&
+        leaf.view instanceof AgentChatView &&
+        leaf.view.selectedAgentName === agentName &&
+        leaf.view.selectedConversationId === conversationId
+      ) {
+        void this.plugin.app.workspace.revealLeaf(leaf);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Build the static shell (header, messages area, input). Only runs once. */
@@ -510,7 +573,7 @@ export class AgentChatView extends ItemView {
     };
     this.textarea.addEventListener("input", autoResize);
     this.textarea.addEventListener("focus", () => {
-      const managed = this.getCurrentSession();
+      const managed = this.getCurrentManaged();
       if (managed) this.setStatsSource(managed.session);
     });
 
@@ -719,10 +782,23 @@ export class AgentChatView extends ItemView {
   //  Session management
   // ═══════════════════════════════════════════════════════
 
+  /**
+   * The shared conversation manager. The plugin is its single owner — it is
+   * constructed in `onload()` before any view can open, so one `ChatSession`
+   * exists per exact `agent::conversation` pair no matter how many chat tabs
+   * (or headless revision turns) reach for it (§11.2).
+   */
+  private get conversations(): InAppConversationManager {
+    return this.plugin.inAppConversations;
+  }
+
   private async switchToAgent(
     agentName: string,
     conversationId?: string,
   ): Promise<void> {
+    // Every await below re-checks this token: a rapid second switch must win
+    // outright rather than interleave DOM writes for two conversations.
+    const token = ++this.switchToken;
     const agents = this.plugin.runtime.getSnapshot().agents;
     const agent = agents.find((a) => a.name === agentName);
     if (!agent) return;
@@ -735,6 +811,7 @@ export class AgentChatView extends ItemView {
     //   3. Nothing exists yet for this agent → auto-create one. Picker row
     //      shows from the very first frame with a real file on disk.
     await this.loadConversations(agent);
+    if (token !== this.switchToken) return;
     let resolvedId: string;
     if (conversationId && this.conversationsCache.some((c) => c.id === conversationId)) {
       resolvedId = conversationId;
@@ -749,24 +826,17 @@ export class AgentChatView extends ItemView {
         return;
       }
       await this.loadConversations(agent);
+      if (token !== this.switchToken) return;
     }
 
     // Re-check the reveal-dedup with the resolved id now that we know it.
     // (selectAgent does this for explicitly-provided ids, but for resolved
     // ones we have to do it here.)
-    if (!conversationId || conversationId !== resolvedId) {
-      const leaves = this.plugin.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
-      for (const leaf of leaves) {
-        if (
-          leaf.view !== this &&
-          leaf.view instanceof AgentChatView &&
-          (leaf.view).selectedAgentName === agentName &&
-          (leaf.view).selectedConversationId === resolvedId
-        ) {
-          void this.plugin.app.workspace.revealLeaf(leaf);
-          return;
-        }
-      }
+    if (
+      (!conversationId || conversationId !== resolvedId) &&
+      this.revealExistingPair(agentName, resolvedId)
+    ) {
+      return;
     }
 
     this.selectedAgentName = agentName;
@@ -782,23 +852,18 @@ export class AgentChatView extends ItemView {
 
     this.renderConvoPanel();
 
-    // Get or create session, keyed by (agent, conversation) so parallel
-    // chats with the same agent each get their own ChatSession instance.
-    const key = sessionKey(agentName, resolvedId);
-    let managed = this.sessions.get(key);
-    if (!managed) {
-      const session = new ChatSession(
-        agent,
-        this.plugin.settings,
-        this.plugin.repository,
-        this.app.vault,
-        { inAppConversationId: resolvedId, mcpAuth: this.plugin.mcpAuth },
-      );
-      session.setUsageRecorder((r) => this.plugin.runtime.recordUsage(r));
-      managed = { session };
-      this.sessions.set(key, managed);
-      await session.loadPersistedState();
+    // Acquire the SHARED session for this exact pair. The manager owns session
+    // identity (one ChatSession per `agent::conversation`), loads persisted
+    // state once, and serializes turns from every consumer — this view no
+    // longer constructs competing ChatSession instances.
+    let managed: ManagedConversation | null;
+    try {
+      managed = await this.attachConversation({ agentName, conversationId: resolvedId }, token);
+    } catch (err) {
+      new Notice(`Couldn't open conversation: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
+    if (!managed || token !== this.switchToken) return;
 
     // Swap the stats subscription to the newly-selected session.
     this.setStatsSource(managed.session);
@@ -833,7 +898,7 @@ export class AgentChatView extends ItemView {
       // Defensive: only render if the subscribed session is still the one
       // being viewed. Handles the edge case where an activity event fires
       // during a rapid agent switch.
-      if (this.getCurrentSession()?.session === current) {
+      if (this.getCurrentManaged()?.session === current) {
         this.renderIndicators(current);
       }
     });
@@ -842,9 +907,172 @@ export class AgentChatView extends ItemView {
     this.textarea.focus();
   }
 
-  private getCurrentSession(): ManagedSession | undefined {
-    if (!this.selectedAgentName) return undefined;
-    return this.sessions.get(sessionKey(this.selectedAgentName, this.selectedConversationId));
+  /**
+   * Acquire the shared conversation for `target`, releasing whatever this view
+   * held before. Returns null when a newer switch superseded this one.
+   */
+  private async attachConversation(
+    target: ConversationTarget,
+    token: number,
+  ): Promise<ManagedConversation | null> {
+    const manager = this.conversations;
+    this.detachConversation();
+    // Per-attach consumer id so a superseded attach releases only its own
+    // reference, never the reference the winning attach just registered.
+    const consumerId = `${this.consumerBaseId}#${token}`;
+    const managed = await manager.acquire(target, consumerId);
+    if (token !== this.switchToken) {
+      manager.release(target, consumerId);
+      return null;
+    }
+    this.current = { target, managed, consumerId, manager };
+    this.convoUnsub = manager.subscribe(target, (event) => this.handleConversationEvent(event));
+    return managed;
+  }
+
+  /** Drop this view's consumer reference and stop listening. Never aborts. */
+  private detachConversation(): void {
+    this.convoUnsub?.();
+    this.convoUnsub = null;
+    this.liveTurnRenderer = null;
+    this.selfRequestIds.clear();
+    const previous = this.current;
+    this.current = null;
+    if (previous) previous.manager.release(previous.target, previous.consumerId);
+  }
+
+  /** The managed conversation currently displayed, if the view's selection and
+   *  the attached conversation still agree. */
+  private getCurrentManaged(): ManagedConversation | undefined {
+    const current = this.current;
+    if (!current || !this.selectedAgentName) return undefined;
+    if (
+      current.target.agentName !== this.selectedAgentName ||
+      current.target.conversationId !== this.selectedConversationId
+    ) {
+      return undefined;
+    }
+    return current.managed;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  Shared-conversation rendering
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Single rendering path for every turn on the attached conversation —
+   * including turns this view did not send (a Revision mode submission on the
+   * same conversation streams here live). Events for any other conversation
+   * can't arrive: the subscription is per-target and is dropped on switch.
+   */
+  private handleConversationEvent(event: ManagedConversationEvent): void {
+    const managed = this.getCurrentManaged();
+    const current = this.current;
+    if (!managed || !current) return;
+    if (
+      event.target.agentName !== current.target.agentName ||
+      event.target.conversationId !== current.target.conversationId
+    ) {
+      return;
+    }
+
+    const isSelf = event.requestId !== undefined && this.selfRequestIds.has(event.requestId);
+
+    switch (event.type) {
+      case "turn-start":
+        // Externally-started turn: render the user message this view never saw.
+        if (!isSelf) this.addBubble("user", event.displayText ?? "", event.attachments);
+        this.liveTurnRenderer = this.createTurnRenderer();
+        break;
+      case "messages-changed":
+        // A follow-up injected into the live turn by another consumer.
+        if (event.injected && !isSelf) {
+          this.addBubble("user", event.displayText ?? "", event.attachments);
+        }
+        break;
+      case "stream":
+        if (event.streamEvent) this.handleStreamEvent(event.streamEvent, managed);
+        break;
+      case "turn-end":
+        this.liveTurnRenderer = null;
+        // This view renders failures for its own sends from handleSend's catch
+        // (which also knows about the user-initiated stop).
+        if (event.error && !isSelf && event.error !== "Aborted") {
+          this.addErrorBubble(event.error);
+        }
+        break;
+      case "queued":
+        // The turn is waiting behind another one. The optimistic user bubble
+        // is already on screen; no additional chrome in v1.
+        break;
+    }
+  }
+
+  private createTurnRenderer(): AssistantMessageStreamRenderer {
+    return new AssistantMessageStreamRenderer(
+      () => this.addBubble("assistant"),
+      (bubble, draft) => this.renderThinkingPreview(bubble, draft),
+      (bubble, partial) => this.renderStreamingAssistantText(bubble, partial),
+      (bubble, finalText) => this.finalizeAssistantBubble(bubble, finalText),
+    );
+  }
+
+  /** Lazily create the renderer: attaching mid-turn (switching into a
+   *  conversation that is already streaming) misses `turn-start`, but the
+   *  remaining text should still render into a bubble. */
+  private ensureTurnRenderer(): AssistantMessageStreamRenderer {
+    if (!this.liveTurnRenderer) this.liveTurnRenderer = this.createTurnRenderer();
+    return this.liveTurnRenderer;
+  }
+
+  private handleStreamEvent(event: StreamEvent, managed: ManagedConversation): void {
+    if (
+      event.type === "message_start" ||
+      event.type === "thinking" ||
+      event.type === "text" ||
+      event.type === "message_stop"
+    ) {
+      this.ensureTurnRenderer().handle(event);
+      return;
+    }
+    if (event.type === "error") {
+      // CLI reported an error (API error, context overflow, watchdog timeout,
+      // etc). Render a red error bubble so the user knows exactly what
+      // happened; state clean-up is handled by the session.
+      const msg = event.errorMessage?.trim() || "The agent's run ended with an error.";
+      this.addErrorBubble(msg);
+      return;
+    }
+    if (event.type === "compacted") {
+      // /compact completed — not a bubble. The session writes
+      // `stats.lastCompact` and re-emits stats, so the inline notice appears
+      // in the stats strip under the composer and self-clears next turn.
+      return;
+    }
+    if (event.type === "result") {
+      const renderer = this.ensureTurnRenderer();
+      renderer.handle(event);
+      const completed = renderer.takeCompleted();
+      const ids = event.messageIds ?? [];
+      for (const [index, message] of completed.entries()) {
+        const id = ids[index];
+        if (id && message.bubble.isConnected) {
+          this.attachThreadAffordance(message.bubble, id, managed.session);
+        }
+      }
+      const last = completed[completed.length - 1];
+      if (last && last.bubble.isConnected && event.toolCalls && event.toolCalls.length > 0) {
+        // Attach thread affordances first; the turn-scoped tool summary joins
+        // the final provider message on the same row.
+        const row = this.getOrCreateAffordancesRow(last.bubble);
+        this.buildToolSummary(event.toolCalls, row);
+      } else if (event.toolCalls && event.toolCalls.length > 0) {
+        // Tool-only turn with no text — drop the summary inline (no
+        // affordances row possible because there's no anchor bubble).
+        this.buildToolSummary(event.toolCalls);
+      }
+      this.liveTurnRenderer = null;
+    }
   }
 
   // ═══════════════════════════════════════════════════════
@@ -1029,10 +1257,13 @@ export class AgentChatView extends ItemView {
       // fall through to the ChatSession path below which can create the
       // file via persist().
     }
-    // Push into the live session if this row is the one currently loaded,
-    // so the next persist() doesn't write the stale in-memory name back.
-    const key = sessionKey(this.selectedAgentName, conversationId);
-    const managed = this.sessions.get(key);
+    // Push into the live session if one is cached for this row, so the next
+    // persist() doesn't write the stale in-memory name back. `peek` never
+    // creates a session for a conversation nobody has opened.
+    const managed = this.conversations.peek({
+      agentName: this.selectedAgentName,
+      conversationId,
+    });
     if (managed) {
       await managed.session.setConversationName(name);
     }
@@ -1080,15 +1311,31 @@ export class AgentChatView extends ItemView {
       confirmText: "Delete",
       danger: true,
       onConfirm: async () => {
-        const key = sessionKey(agentName, meta.id);
-        // dispose() (not abort()) so any open thread sub-sessions also get
-        // their subprocesses killed. abort() would only stop the parent —
-        // see ChatSession.dispose for the distinction.
-        this.sessions.get(key)?.session.dispose();
-        this.sessions.delete(key);
+        const deletionSwitchToken = this.switchToken;
+        const wasCurrent =
+          this.current?.target.conversationId === meta.id &&
+          this.current.target.agentName === agentName;
+        // Detach first when the deleted conversation is the attached one, so
+        // this view stops holding a consumer reference to a session that is
+        // about to be disposed.
+        if (wasCurrent) this.detachConversation();
+        // disposeConversation() rejects queued work and calls
+        // ChatSession.dispose() — which tears down open thread sub-sessions
+        // too. abort() would only stop the parent turn.
+        await this.conversations.disposeConversation({ agentName, conversationId: meta.id });
         try {
           await this.plugin.repository.deleteConversation(agent, meta.id);
         } catch (err) {
+          // The file still exists, so restore the exact conversation instead
+          // of leaving its selected row attached to no managed session.
+          if (
+            wasCurrent &&
+            this.switchToken === deletionSwitchToken &&
+            this.selectedAgentName === agentName &&
+            this.selectedConversationId === meta.id
+          ) {
+            await this.switchToAgent(agentName, meta.id);
+          }
           new Notice(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`);
           return;
         }
@@ -1097,7 +1344,10 @@ export class AgentChatView extends ItemView {
         // recent remaining one — or let switchToAgent auto-create a fresh
         // conversation if the list is now empty (passing undefined triggers
         // the resolve-or-create path).
-        if (meta.id === this.selectedConversationId) {
+        if (
+          this.switchToken === deletionSwitchToken &&
+          meta.id === this.selectedConversationId
+        ) {
           const fallback = this.conversationsCache[0]?.id;
           await this.switchToAgent(agentName, fallback);
         }
@@ -1787,7 +2037,7 @@ export class AgentChatView extends ItemView {
   }
 
   private handleStop(): void {
-    const managed = this.getCurrentSession();
+    const managed = this.getCurrentManaged();
     if (!managed) return;
     // session.abort() flips isStreaming → the subscription re-renders
     // indicators, so we don't clear them manually.
@@ -1947,8 +2197,9 @@ export class AgentChatView extends ItemView {
   // ═══════════════════════════════════════════════════════
 
   private async handleSend(): Promise<void> {
-    const managed = this.getCurrentSession();
-    if (!managed) return;
+    const current = this.current;
+    const managed = this.getCurrentManaged();
+    if (!managed || !current) return;
 
     const userText = this.textarea.value.trim();
     if (!userText) return;
@@ -1970,87 +2221,43 @@ export class AgentChatView extends ItemView {
 
     const fullText = attachmentContext ? `${attachmentContext}${userText}` : undefined;
 
-    // Show user bubble with attachment indicators
+    // Show user bubble with attachment indicators. Marked as this view's own
+    // request so the shared subscription doesn't render a second bubble when
+    // the turn starts.
+    const requestId = newRequestId();
+    this.selfRequestIds.add(requestId);
     this.addBubble("user", userText, attachedNames.length > 0 ? attachedNames : undefined);
 
-    // If agent is currently streaming, inject into the existing process
-    if (managed.session.isStreaming) {
-      managed.session.injectMessage(userText, fullText, attachedNames.length > 0 ? attachedNames : undefined);
-      return;
-    }
-
-    // Indicator DOM is now driven by the subscription in switchToAgent() that
-    // re-renders from `session.isStreaming` + `session.currentToolName`.
-    // We no longer flip them manually here — just handle bubble rendering.
-    const streamRenderer = new AssistantMessageStreamRenderer(
-      () => this.addBubble("assistant"),
-      (bubble, draft) => this.renderThinkingPreview(bubble, draft),
-      (bubble, partial) => this.renderStreamingAssistantText(bubble, partial),
-      (bubble, finalText) => this.finalizeAssistantBubble(bubble, finalText),
-    );
-    // Snapshot the session at send-time so the callbacks can check "am I still
-    // writing into the DOM of the tab that submitted this?" — without this
-    // guard, events from Agent A kept firing into Agent B's DOM after the
-    // user switched tabs mid-stream. Final messages still land in
-    // `managed.session.messages` via the session layer, so switching back to
-    // Agent A picks them up via switchToAgent's history render.
-    const sendingSession = managed.session;
-    const isViewed = () => this.getCurrentSession()?.session === sendingSession;
-
+    // The manager decides between starting a turn, folding this message into a
+    // running interactive turn (`injectMessage`, unchanged live follow-up
+    // behavior), and queueing behind an exclusive turn. Streamed output is
+    // rendered by the shared subscription — including when it started
+    // elsewhere — so nothing is rendered from here.
+    // Send through the manager this view's reference came from, so the turn
+    // lands on the session it is rendering.
+    const target = current.target;
     try {
-      await managed.session.sendMessage(userText, (event) => {
-        if (!isViewed()) {
-          // User is looking at a different tab. Do NOT touch the DOM —
-          // that's what caused answers from Agent A to appear in Agent B.
-          // Drop the event; history will re-render correctly on switch-back.
-          return;
-        }
-        if (
-          event.type === "message_start" ||
-          event.type === "thinking" ||
-          event.type === "text" ||
-          event.type === "message_stop"
-        ) {
-          streamRenderer.handle(event);
-        } else if (event.type === "error") {
-          // CLI reported an error (API error, context overflow, watchdog
-          // timeout, etc). Render a red error bubble so the user knows
-          // exactly what happened; state clean-up is handled by the session.
-          const msg = event.errorMessage?.trim() || "The agent's run ended with an error.";
-          this.addErrorBubble(msg);
-        } else if (event.type === "compacted") {
-          // /compact completed — not a bubble anymore. The session writes
-          // `stats.lastCompact` and re-emits stats, so the inline notice
-          // appears in the stats strip under the composer and self-clears
-          // on the next user turn.
-        } else if (event.type === "result") {
-          streamRenderer.handle(event);
-          const completed = streamRenderer.takeCompleted();
-          const ids = event.messageIds ?? [];
-          for (const [index, message] of completed.entries()) {
-            const id = ids[index];
-            if (id && message.bubble.isConnected) {
-              this.attachThreadAffordance(message.bubble, id, managed.session);
-            }
-          }
-          const last = completed[completed.length - 1];
-          if (last && last.bubble.isConnected && event.toolCalls && event.toolCalls.length > 0) {
-            // Attach thread affordances first; the turn-scoped tool summary
-            // joins the final provider message on the same row.
-            const row = this.getOrCreateAffordancesRow(last.bubble);
-            this.buildToolSummary(event.toolCalls, row);
-          } else if (event.toolCalls && event.toolCalls.length > 0) {
-            // Tool-only turn with no text — drop the summary inline (no
-            // affordances row possible because there's no anchor bubble).
-            this.buildToolSummary(event.toolCalls);
-          }
-        }
-      }, fullText, attachedNames.length > 0 ? attachedNames : undefined);
+      await current.manager.send(target, {
+        displayText: userText,
+        fullText,
+        attachments: attachedNames.length > 0 ? attachedNames : undefined,
+        origin: "chat",
+        policy: "interactive",
+        requestId,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg !== "Aborted") {
+      // Only surface the failure if this view is still showing the
+      // conversation that failed — otherwise the bubble would land in whatever
+      // conversation the user switched to.
+      const stillAttached =
+        this.current?.target.agentName === target.agentName &&
+        this.current.target.conversationId === target.conversationId;
+      if (msg !== "Aborted" && stillAttached) {
         this.addErrorBubble(msg);
       }
+    } finally {
+      this.selfRequestIds.delete(requestId);
     }
   }
 

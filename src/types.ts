@@ -543,6 +543,25 @@ export interface ExecutionResult {
   mcpServerErrors?: McpServerError[];
 }
 
+/**
+ * Optional provenance for a stored chat message. Additive and forward
+ * compatible: `ChatMessage.content` always carries the complete, human-readable
+ * text, so a build that doesn't know these fields still renders the message
+ * correctly. Metadata only lets a view render a compact treatment (e.g.
+ * "Revision request · document · N notes") for a turn it did not send.
+ */
+export interface ChatMessageMetadata {
+  /** Which surface produced the turn. Absent means ordinary chat. */
+  origin?: "chat" | "revision";
+  /** Set when the turn was a Revision mode submission. */
+  revision?: {
+    draftId: string;
+    /** Vault-relative path of the revised document. Never an absolute path. */
+    documentPath: string;
+    noteCount: number;
+  };
+}
+
 export interface ChatMessage {
   /** Stable message id. Freshly-created messages get a uuid v4; legacy
    *  messages without an id get one derived from sha1(timestamp+content)
@@ -553,6 +572,8 @@ export interface ChatMessage {
   timestamp: string;
   toolCalls?: Array<{ name: string; command?: string }>;
   attachments?: string[]; // filenames of attached documents
+  /** Optional provenance. Omitted for ordinary typed chat turns. */
+  metadata?: ChatMessageMetadata;
 }
 
 /** One conversation listing entry for an agent. Used by the chat side rail
@@ -638,4 +659,72 @@ export interface McpServer {
   scope: "user" | "project" | "unknown";
   tools: string[];
   toolDetails: McpTool[];
+}
+
+// ═══════════════════════════════════════════════════════
+//  Revision mode (REVISION_MODE_DESIGN.md §8)
+// ═══════════════════════════════════════════════════════
+
+/**
+ * A revision draft is one temporary collection of review notes for one source
+ * document, persisted as a JSON sidecar under `_fleet/revisions/<uuid>.json`.
+ * Annotating never modifies the reviewed markdown — the sidecar is the only
+ * storage. Absolute filesystem paths are never persisted here (§15).
+ */
+export type RevisionDraftStatus = "collecting" | "submitting" | "attention";
+
+/** Exact top-level in-app conversation a revision is sent to. Routing always
+ *  uses the opaque conversation id; names are display data only. */
+export interface RevisionDestination {
+  agentName: string;
+  conversationId: string;
+}
+
+export interface RevisionAnchor {
+  /** Raw markdown character offsets in the source document, `[from, to)`. */
+  from: number;
+  to: number;
+  /** Exact raw markdown selected when the anchor was last healthy. */
+  exact: string;
+  /** Up to 128 raw characters immediately before/after the range. */
+  prefix: string;
+  suffix: string;
+  /** SHA-256 of `exact`; avoids repeated large-string comparisons. */
+  exactHash: string;
+}
+
+export interface RevisionNote {
+  id: string;
+  anchor: RevisionAnchor;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Set when the anchor cannot be found in the current source. Orphaned
+   *  notes block submission until the user reattaches or deletes them. */
+  orphaned?: boolean;
+}
+
+/** Persisted sub-state of `status: "submitting"` (§13.1). */
+export type RevisionSubmissionPhase = "queued" | "running" | "verifying";
+
+export interface RevisionSubmissionState {
+  attemptId: string;
+  phase: RevisionSubmissionPhase;
+  requestedAt: string;
+  startedAt?: string;
+  sourceHashBefore: string;
+  error?: string;
+}
+
+export interface RevisionDraft {
+  schemaVersion: 1;
+  id: string;
+  sourcePath: string;
+  status: RevisionDraftStatus;
+  destination?: RevisionDestination;
+  notes: RevisionNote[];
+  createdAt: string;
+  updatedAt: string;
+  submission?: RevisionSubmissionState;
+  attentionMessage?: string;
 }

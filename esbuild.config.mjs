@@ -10,7 +10,11 @@ const prod = process.argv.includes("production");
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
-  external: ["obsidian", "electron", ...builtins],
+  // CodeMirror 6 is supplied by Obsidian at runtime. Bundling a second copy
+  // would give us StateField/Extension/EditorView identities the host editor
+  // does not recognize, so the revision editor extension would silently do
+  // nothing (REVISION_MODE_DESIGN.md §10.2).
+  external: ["obsidian", "electron", "@codemirror/state", "@codemirror/view", ...builtins],
   format: "cjs",
   // Obsidian plugins run in an Electron renderer with Node integration enabled,
   // so Node-only npm packages (e.g. `ws` for the Slack adapter's Socket Mode

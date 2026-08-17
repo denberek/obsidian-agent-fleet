@@ -2,7 +2,13 @@ import { type ChildProcess } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { normalizePath, TFile } from "obsidian";
 import type { Vault } from "obsidian";
-import type { AgentConfig, ChatMessage, FleetSettings, UsageRecord } from "../types";
+import type {
+  AgentConfig,
+  ChatMessage,
+  ChatMessageMetadata,
+  FleetSettings,
+  UsageRecord,
+} from "../types";
 import type { FleetRepository } from "../fleetRepository";
 import { slugify } from "../utils/markdown";
 import { resolveModel, shouldPassModelFlag } from "./../utils/modelResolution";
@@ -72,6 +78,26 @@ export interface ChatSessionOptions {
 export interface ToolCall {
   name: string;
   command?: string;
+}
+
+/** Per-turn options. Kept as a trailing optional object so existing
+ *  `sendMessage(text, onEvent, fullText, attachments)` call sites (chat
+ *  threads, channels) are unaffected. */
+export interface ChatTurnOptions {
+  /** Persisted on the stored user `ChatMessage`. Lets a shared owner mark a
+   *  turn's provenance (e.g. a Revision mode request) without making the
+   *  message unreadable to older builds. */
+  metadata?: ChatMessageMetadata;
+}
+
+/** Dependencies a long-lived session can be re-pointed at. The plugin rebuilds
+ *  its repository and runtime inside `saveSettings()`; cached sessions must
+ *  follow rather than keep writing through the outgoing object graph. */
+export interface ChatSessionDependencies {
+  repository?: FleetRepository;
+  settings?: FleetSettings;
+  mcpAuth?: McpAuthManager;
+  usageRecorder?: (record: UsageRecord) => void;
 }
 
 export interface StreamEvent {
@@ -430,8 +456,10 @@ export class ChatSession {
      *  edits made in the UI take effect on the next message in this session
      *  (no need to recreate the chat tab). */
     public agent: AgentConfig,
-    private readonly settings: FleetSettings,
-    private readonly repository: FleetRepository,
+    /** Not readonly: `refreshDependencies()` re-points a cached session at the
+     *  settings/repository the plugin rebuilt in `saveSettings()`. */
+    private settings: FleetSettings,
+    private repository: FleetRepository,
     vault: Vault,
     options?: ChatSessionOptions,
   ) {
@@ -447,7 +475,34 @@ export class ChatSession {
   }
 
   /** Keychain-backed MCP token store for projecting HTTP bearer/OAuth tokens. */
-  private readonly mcpAuth?: McpAuthManager;
+  private mcpAuth?: McpAuthManager;
+
+  /**
+   * Re-point this session at the plugin's current dependencies. Called by the
+   * shared in-app conversation manager after `saveSettings()` rebuilds the
+   * repository/runtime, so a cached session never writes through the outgoing
+   * object graph. Only the fields the caller supplies change.
+   *
+   * Safe mid-turn: nothing here touches the live subprocess or turn
+   * bookkeeping. A running turn finishes against the process it started with;
+   * the next spawn picks up the new settings.
+   */
+  refreshDependencies(deps: ChatSessionDependencies): void {
+    if (deps.settings) this.settings = deps.settings;
+    if (deps.repository && deps.repository !== this.repository) {
+      this.repository = deps.repository;
+      // MemoryWriter holds the repository — rebuild it so captures land in the
+      // live vault graph. Its lock is per-agent and per-instance; rebuilding
+      // between turns is safe, and captures are fire-and-forget per turn.
+      this.memoryWriter = new MemoryWriter(deps.repository);
+    }
+    if (deps.mcpAuth) this.mcpAuth = deps.mcpAuth;
+    if (deps.usageRecorder) this.usageRecorder = deps.usageRecorder;
+    // Threads are owned by this session and share its dependencies.
+    for (const thread of this.threads.values()) {
+      thread.refreshDependencies(deps);
+    }
+  }
 
   /**
    * Resolve the effective MCP servers for this session (enabled fleet registry
@@ -479,8 +534,9 @@ export class ChatSession {
     };
   }
 
-  /** Single locked choke point for this session's memory captures. */
-  private readonly memoryWriter: MemoryWriter;
+  /** Single locked choke point for this session's memory captures. Rebuilt by
+   *  `refreshDependencies()` when the repository is swapped. */
+  private memoryWriter: MemoryWriter;
 
   /** Provenance label for facts learned in this conversation. */
   private captureSource(): string {
@@ -570,9 +626,31 @@ export class ChatSession {
     return { ...this.threadIndex };
   }
 
+  /** FIFO for conversation writes. Without serialization, an older snapshot
+   *  can finish after a newer one and silently roll chat history backward. */
+  private persistQueue: Promise<void> = Promise.resolve();
+
   /** Persist current chat state. For thread sessions, writes a ThreadState
    *  shape to the thread file AND updates the parent's index in chat.json. */
   async persist(): Promise<void> {
+    const operation = this.persistQueue.catch(() => undefined).then(() => this.persistNow());
+    this.persistQueue = operation;
+    return operation;
+  }
+
+  /** Ordering/durability barrier used by managed turns before reporting that a
+   *  conversation result is complete. */
+  async flushPersistence(): Promise<void> {
+    await this.persistQueue;
+  }
+
+  private persistInBackground(): void {
+    void this.persist().catch((error: unknown) => {
+      console.warn(`Agent Fleet: failed to persist chat with "${this.agent.name}"`, error);
+    });
+  }
+
+  private async persistNow(): Promise<void> {
     const now = new Date().toISOString();
     const path = this.getChatFilePath();
 
@@ -1615,7 +1693,7 @@ export class ChatSession {
       this.pendingTurns = 0;
       this.clearWatchdog();
       this.setStreaming(false);
-      void this.persist();
+      this.persistInBackground();
       const resolve = this.turnResolve;
       this.turnResolve = null;
       this.turnReject = null;
@@ -1711,7 +1789,7 @@ export class ChatSession {
     this.setStreaming(false);
 
     if (resolve && result) {
-      void this.persist();
+      this.persistInBackground();
       this.turnResolve = null;
       this.turnReject = null;
       resolve(result);
@@ -1725,6 +1803,7 @@ export class ChatSession {
   /**
    * Send a message. `displayText` is stored in history (what user typed).
    * `fullText` (optional) is what actually gets sent to Claude (may include attachment content).
+   * `options.metadata` (optional) is persisted on the stored user message.
    * Returns a promise that resolves when all pending turns (including injected messages) complete.
    */
   async sendMessage(
@@ -1732,6 +1811,7 @@ export class ChatSession {
     onEvent: (event: StreamEvent) => void,
     fullText?: string,
     attachments?: string[],
+    options?: ChatTurnOptions,
   ): Promise<{ text: string; toolCalls: ToolCall[] }> {
     this.lastActiveAt = Date.now();
 
@@ -1742,6 +1822,7 @@ export class ChatSession {
       content: displayText,
       timestamp: new Date().toISOString(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      metadata: options?.metadata,
     });
 
     // Build message content
@@ -2015,7 +2096,12 @@ export class ChatSession {
    * Inject a follow-up message into the running process (while agent is still working).
    * Does NOT spawn a new process — writes to existing stdin.
    */
-  injectMessage(text: string, fullText?: string, attachments?: string[]): void {
+  injectMessage(
+    text: string,
+    fullText?: string,
+    attachments?: string[],
+    options?: ChatTurnOptions,
+  ): void {
     // Pi: the RPC protocol takes mid-turn prompts natively. While streaming,
     // "steer" folds the message into the CURRENT run (delivered before the
     // next LLM call, settled by the same agent_end) — pendingTurns unchanged.
@@ -2028,6 +2114,7 @@ export class ChatSession {
         content: text,
         timestamp: new Date().toISOString(),
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
+        metadata: options?.metadata,
       });
       const steering = this.isStreaming || this.pendingTurns > 0;
       const command: Record<string, unknown> = {
@@ -2056,6 +2143,7 @@ export class ChatSession {
         content: text,
         timestamp: new Date().toISOString(),
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
+        metadata: options?.metadata,
       });
       this.codexQueue.push(fullText ?? text);
       this.pendingTurns++;
@@ -2071,6 +2159,7 @@ export class ChatSession {
       content: text,
       timestamp: new Date().toISOString(),
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
+      metadata: options?.metadata,
     });
 
     const messageText = fullText ?? text;
@@ -2117,6 +2206,15 @@ export class ChatSession {
     this.turnResolve = null;
     this.turnReject = null;
     reject?.(new Error("Aborted"));
+  }
+
+  /** Permanent teardown plus a barrier for writes already queued by the root
+   *  or a thread. Conversation deletion awaits this before trashing files so
+   *  a late write cannot recreate them. */
+  async disposeAndFlushPersistence(): Promise<void> {
+    const sessions = [this, ...this.threads.values()];
+    this.dispose();
+    await Promise.all(sessions.map((session) => session.flushPersistence()));
   }
 
   /** Permanent teardown for when the conversation is being deleted (not

@@ -36,6 +36,17 @@ export const DEFAULT_SETTINGS: FleetSettings = {
 
 export const FLEET_SUBFOLDERS = ["agents", "skills", "tasks", "runs", "memory", "channels", "mcp", "usage"] as const;
 
+/**
+ * Transient revision-draft sidecars (`_fleet/revisions/<uuid>.json`).
+ *
+ * Deliberately NOT in {@link FLEET_SUBFOLDERS}: the folder is created on demand
+ * by RevisionStore and removed again when its last draft is trashed
+ * (REVISION_MODE_DESIGN.md §8.4), so `ensureFleetStructure()` must not recreate
+ * an empty one on every load. Entity loading only ever parses markdown, so JSON
+ * sidecars stay outside the fleet parse path either way.
+ */
+export const REVISIONS_SUBFOLDER = "revisions";
+
 // ─── Memory v2 defaults (see MEMORY_EVOLUTION_DESIGN.md) ───
 /** Steady-state token budget for an agent's injected working memory. */
 export const DEFAULT_MEMORY_TOKEN_BUDGET = 1500;

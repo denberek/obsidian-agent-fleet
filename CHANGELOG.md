@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.0 — 2026-08-16
+
+**New: Revision mode.** Review a document your agent wrote and send precise, passage-anchored feedback back to the exact conversation that produced it — without annotation syntax ever touching the markdown.
+
+- Enter **Revision mode** from any markdown document's header, then pick the agent and the specific conversation that should receive the work.
+- Select a passage and attach a revision note via the floating action or the editor context menu (**Add revision note**). All notes collect in a document-attached notes rail.
+- Notes are transient JSON sidecars under `_fleet/revisions/` — the source markdown is never modified, and unfinished feedback survives Obsidian restarts, CLI failures, and busy conversations.
+- Anchors follow ordinary edits, so you can keep writing while collecting notes.
+- **Send** delivers all notes as one structured turn; the agent edits the file directly (no accept/reject step). If the conversation is mid-turn, the revision queues rather than interrupting.
+- On success the notes are cleaned up, the document returns to Live Preview, and an **Open conversation** notification routes to the exact `agent + conversation` — never a guessed one.
+
+Also in this release:
+
+- In-app conversation session handling was centralized across chat and revision turns.
+- Runtime safety guidance in the built-in skills was expanded.
+
 ## 0.19.0 — 2026-08-14
 
 **New backend: Pi (multi-provider).** Agents can now run on the open-source [Pi coding agent](https://github.com/earendil-works/pi) (`adapter: pi`) alongside Claude Code and Codex. One Pi agent reaches **both Anthropic and OpenAI models** — the model picker becomes a live dual-vendor list discovered from `pi --list-models` (credential-gated: it shows exactly what your connected providers expose), with free text for everything else Pi supports. Recommended CLI: **Pi 0.84.2+**. See `PI_SETUP.md`.
